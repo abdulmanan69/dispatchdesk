@@ -1,0 +1,1229 @@
+// DispatchDesk database schema (SQLite via Prisma).
+// String "enum" columns are validated in the application layer (see src/lib/constants.js).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------------------------------------------------------------------------
+// Identity, RBAC, sessions
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  key         String           @unique // super_admin | admin | team_manager | dispatcher | user
+  name        String
+  description String?
+  rank        Int              @default(0)
+  permissions RolePermission[]
+  users       User[]
+}
+
+model Permission {
+  id          Int              @id @default(autoincrement())
+  key         String           @unique
+  description String?
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  phone           String?
+  bio             String?
+  avatarPath      String?
+  roleId          Int
+  status          String    @default("active") // active | suspended
+  emailVerifiedAt DateTime?
+  theme           String    @default("system") // light | dark | system
+  timezone        String    @default("America/Chicago")
+  emailSignature  String?
+  notifyEmail     Boolean   @default(true)
+  notifyInApp     Boolean   @default(true)
+  notifyFollowUps Boolean   @default(true)
+  notifyCommunity Boolean   @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  role                Role                  @relation(fields: [roleId], references: [id])
+  sessions            Session[]
+  tokens              AuthToken[]
+  teamMembership      TeamMember?
+  ownedTeams          Team[]                @relation("TeamOwner")
+  sentInvitations     Invitation[]          @relation("InvitedBy")
+  subscriptions       Subscription[]
+  payments            Payment[]
+  carriers            Carrier[]             @relation("CarrierOwner")
+  assignedCarriers    Carrier[]             @relation("CarrierAssignee")
+  carrierNotes        CarrierNote[]
+  tags                Tag[]
+  opportunities       Opportunity[]
+  customers           Customer[]
+  calls               Call[]
+  emailAccounts       EmailAccount[]
+  emails              Email[]
+  emailTemplates      EmailTemplate[]
+  emailSequences      EmailSequence[]
+  enrollments         SequenceEnrollment[]
+  followUps           FollowUp[]
+  activities          Activity[]
+  brokers             Broker[]
+  loads               Load[]
+  callSettings        CallSettings?
+  callAttempts        CallAttempt[]
+  callScripts         CallScript[]
+  apiTokens           ApiToken[]
+  leadGenerators      LeadGenerator[]
+  leadGenRuns         LeadGenRun[]
+  documents           Document[]            @relation("DocumentOwner")
+  uploadedDocuments   Document[]            @relation("DocumentUploader")
+  trainingCourses     TrainingCourse[]
+  trainingProgress    TrainingProgress[]
+  trainingRequests    TrainingRequest[]
+  trainerThread       TrainerMessage[]      @relation("TrainerThread")
+  trainerAuthored     TrainerMessage[]      @relation("TrainerAuthor")
+  listings            MarketplaceListing[]
+  sentMarketMessages  MarketplaceMessage[]  @relation("MarketSender")
+  recvMarketMessages  MarketplaceMessage[]  @relation("MarketRecipient")
+  posts               CommunityPost[]
+  comments            CommunityComment[]
+  reports             ContentReport[]       @relation("Reporter")
+  resolvedReports     ContentReport[]       @relation("Resolver")
+  aiConversations     AIConversation[]
+  knowledgeDocuments  AIKnowledgeDocument[]
+  automations         Automation[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  suppressions        EmailSuppression[]
+  prospectLists       ProspectList[]
+  settingsUpdated     SystemSetting[]
+
+  @@index([roleId])
+  @@index([createdAt])
+}
+
+model Session {
+  id         String   @id // sha256 of the cookie token
+  userId     String
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthToken {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String // verify_email | reset_password
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+// ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
+
+model Team {
+  id                 String       @id @default(cuid())
+  name               String
+  ownerId            String
+  leaderboardEnabled Boolean      @default(true)
+  managersSeeAll     Boolean      @default(true)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  owner              User         @relation("TeamOwner", fields: [ownerId], references: [id])
+  members            TeamMember[]
+  invitations        Invitation[]
+  subscriptions      Subscription[]
+  activities         Activity[]
+
+  @@index([ownerId])
+}
+
+model TeamMember {
+  id                String   @id @default(cuid())
+  teamId            String
+  userId            String   @unique // one team per user
+  role              String   @default("dispatcher") // owner | manager | dispatcher
+  canViewTeamData   Boolean  @default(false)
+  canManageMembers  Boolean  @default(false)
+  joinedAt          DateTime @default(now())
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  teamId      String
+  email       String
+  role        String    @default("dispatcher")
+  tokenHash   String    @unique
+  invitedById String
+  status      String    @default("pending") // pending | accepted | revoked | expired
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  team        Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([teamId, status])
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// Billing
+// ---------------------------------------------------------------------------
+
+model Plan {
+  id                Int            @id @default(autoincrement())
+  key               String         @unique // free | pro | annual | teams | company
+  name              String
+  description       String?
+  priceCents        Int            @default(0)
+  basePriceCents    Int            @default(0) // flat fee on top of per-seat (company)
+  interval          String         @default("month") // month | year
+  perSeat           Boolean        @default(false)
+  minSeats          Int            @default(1)
+  trialDays         Int            @default(0)
+  stripePriceId     String?
+  stripeBasePriceId String?
+  maxCarriers       Int            @default(500)
+  dailyEmailLimit   Int            @default(20)
+  monthlyAiMessages Int            @default(30)
+  maxSequences      Int            @default(1)
+  maxAutomations    Int            @default(0)
+  maxDiscoveryPerDay Int           @default(100)
+  monthlyLeadGenLimit Int          @default(50) // leads the lead generator may create per month
+  maxLeadGenerators  Int           @default(1)
+  leadGenAutoRun     Boolean       @default(false) // scheduled (daily/weekly) generator runs
+  advancedReports   Boolean        @default(false)
+  trainingIncluded  Boolean        @default(false)
+  teamFeatures      Boolean        @default(false)
+  active            Boolean        @default(true)
+  sortOrder         Int            @default(0)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  subscriptions     Subscription[]
+}
+
+model Subscription {
+  id                   String    @id @default(cuid())
+  userId               String
+  teamId               String?
+  planId               Int
+  status               String // incomplete | trialing | active | past_due | canceled | unpaid
+  seats                Int       @default(1)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?   @unique
+  stripeCheckoutId     String?   @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  trialEndsAt          DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team                 Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  plan                 Plan      @relation(fields: [planId], references: [id])
+  payments             Payment[]
+
+  @@index([userId, status])
+  @@index([teamId])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  subscriptionId  String?
+  stripeInvoiceId String?       @unique
+  amountCents     Int
+  currency        String        @default("usd")
+  status          String // paid | open | void | uncollectible | failed
+  description     String?
+  invoiceUrl      String?
+  invoicePdf      String?
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription    Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
+
+model StripeEvent {
+  id          String   @id // Stripe event id, for idempotency
+  type        String
+  processedAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// CRM core
+// ---------------------------------------------------------------------------
+
+model PipelineStage {
+  id        Int       @id @default(autoincrement())
+  key       String    @unique // lead | prospecting | sequence | opportunity | trial | customer | archived
+  name      String
+  sortOrder Int
+  color     String    @default("#64748b")
+  carriers  Carrier[]
+}
+
+model Carrier {
+  id               String    @id @default(cuid())
+  ownerId          String
+  assignedToId     String?
+  stageId          Int
+  companyName      String
+  dbaName          String?
+  dotNumber        String?
+  mcNumber         String?
+  phone            String?
+  email            String?
+  address          String?
+  city             String?
+  state            String?
+  zip              String?
+  equipment        String? // comma separated: dry_van, reefer, flatbed, step_deck, power_only, hotshot, box_truck, tanker, car_hauler, other
+  fleetSize        Int?
+  drivers          Int?
+  authorityStatus  String? // active | inactive | pending | unknown
+  authorityDate    DateTime?
+  operatingStatus  String?
+  classification   String?
+  carrierOperation String?
+  source           String    @default("manual") // manual | csv | fmcsa_census | fmcsa_qc
+  sourceRef        String?
+  verifiedAt       DateTime?
+  timezone         String?
+  doNotCall        Boolean   @default(false)
+  doNotEmail       Boolean   @default(false)
+  truckStatus       String    @default("unknown") // unknown | available | loaded | off_duty | maintenance
+  locationCity      String?
+  locationState     String?
+  locationLat       Float?
+  locationLng       Float?
+  locationUpdatedAt DateTime?
+  availableAt       DateTime?
+  priority         Int       @default(0) // 0 normal, 1 high, 2 hot
+  lastContactedAt  DateTime?
+  nextFollowUpAt   DateTime?
+  stageChangedAt   DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  owner         User                 @relation("CarrierOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  assignedTo    User?                @relation("CarrierAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  stage         PipelineStage        @relation(fields: [stageId], references: [id])
+  contacts      CarrierContact[]
+  notes         CarrierNote[]
+  tags          CarrierTag[]
+  opportunity   Opportunity?
+  customer      Customer?
+  calls         Call[]
+  callAttempts  CallAttempt[]
+  emails        Email[]
+  enrollments   SequenceEnrollment[]
+  followUps     FollowUp[]
+  activities    Activity[]
+  loads         Load[]
+  documents     Document[]
+  listItems     ProspectListItem[]
+
+  @@unique([ownerId, dotNumber])
+  @@unique([ownerId, mcNumber])
+  @@index([ownerId, stageId])
+  @@index([ownerId, companyName])
+  @@index([ownerId, phone])
+  @@index([assignedToId])
+  @@index([state])
+}
+
+model CarrierContact {
+  id        String   @id @default(cuid())
+  carrierId String
+  name      String
+  title     String?
+  phone     String?
+  email     String?
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  carrier   Carrier  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+
+  @@index([carrierId])
+}
+
+model CarrierNote {
+  id        String   @id @default(cuid())
+  carrierId String
+  authorId  String
+  body      String
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  carrier   Carrier  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([carrierId, createdAt])
+}
+
+model Tag {
+  id        String       @id @default(cuid())
+  ownerId   String
+  name      String
+  color     String       @default("#2563eb")
+  createdAt DateTime     @default(now())
+  owner     User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  carriers  CarrierTag[]
+
+  @@unique([ownerId, name])
+}
+
+model CarrierTag {
+  carrierId String
+  tagId     String
+  carrier   Carrier @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([carrierId, tagId])
+  @@index([tagId])
+}
+
+model ProspectList {
+  id          String             @id @default(cuid())
+  ownerId     String
+  name        String
+  description String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  owner       User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  items       ProspectListItem[]
+
+  @@unique([ownerId, name])
+}
+
+model ProspectListItem {
+  listId    String
+  carrierId String
+  addedAt   DateTime     @default(now())
+  list      ProspectList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  carrier   Carrier      @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+
+  @@id([listId, carrierId])
+  @@index([carrierId])
+}
+
+model Opportunity {
+  id                  String    @id @default(cuid())
+  carrierId           String    @unique
+  ownerId             String
+  status              String    @default("open") // open | negotiating | trial | won | lost
+  estimatedValueCents Int       @default(0) // estimated monthly dispatch revenue
+  dispatchFeePercent  Float?
+  probability         Int       @default(25)
+  nextFollowUpAt      DateTime?
+  notes               String?
+  lostReason          String?
+  trialStartedAt      DateTime?
+  closedAt            DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  carrier             Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner               User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, status])
+}
+
+model Customer {
+  id                 String         @id @default(cuid())
+  carrierId          String         @unique
+  ownerId            String
+  status             String         @default("active") // active | paused | churned
+  signedAt           DateTime       @default(now())
+  dispatchFeePercent Float?
+  minRatePerMile     Float?
+  maxDeadheadMiles   Int?
+  homeBase           String?
+  notes              String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  carrier            Carrier        @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner              User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  lanes              CustomerLane[]
+
+  @@index([ownerId, status])
+}
+
+model CustomerLane {
+  id          String   @id @default(cuid())
+  customerId  String
+  origin      String
+  destination String
+  notes       String?
+  createdAt   DateTime @default(now())
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+model Call {
+  id          String   @id @default(cuid())
+  carrierId   String
+  userId      String
+  outcome     String // no_answer | busy | voicemail | interested | not_interested | call_back | follow_up | converted
+  notes       String?
+  durationSec Int?
+  calledAt    DateTime @default(now())
+  provider    String? // provider used to place the call (tel, google_voice, twilio, ...)
+  carrier     Carrier  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempts    CallAttempt[]
+
+  @@index([userId, calledAt])
+  @@index([carrierId, calledAt])
+}
+
+// ---------------------------------------------------------------------------
+// Telephony, scripts and API tokens
+// ---------------------------------------------------------------------------
+
+/** Per-user click-to-call configuration. Twilio credentials are AES-GCM encrypted. */
+model CallSettings {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  provider             String   @default("tel") // tel | google_voice | teams | zoom_phone | ringcentral | dialpad | eight_by_eight | callto | sip | custom | twilio
+  urlTemplate          String? // custom provider: e.g. https://example.com/dial?n={number}
+  myNumber             String? // the dispatcher's own phone (Twilio rings this first)
+  callerId             String? // Twilio verified/owned number shown to the carrier
+  twilioAccountSid     String?
+  twilioAuthTokenEnc   String?
+  autoOpenLog          Boolean  @default(true) // open the log-call form as soon as a call starts
+  autoAdvance          Boolean  @default(true) // power dialer moves to the next carrier after logging
+  enforceCallingHours  Boolean  @default(true) // block dialing outside 8:00–19:00 carrier local time
+  autoLogUnanswered    Boolean  @default(true) // bridge calls: auto-log no-answer/busy outcomes
+  defaultScriptId      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/** One dial action. Link providers stop at "dialed"; bridge providers (Twilio) report real status by webhook. */
+model CallAttempt {
+  id             String    @id @default(cuid())
+  userId         String
+  carrierId      String?
+  callId         String?
+  provider       String
+  toNumber       String
+  status         String    @default("dialed") // dialed | queued | ringing | in_progress | completed | no_answer | busy | failed | canceled
+  providerCallId String?   @unique
+  answeredAt     DateTime?
+  endedAt        DateTime?
+  durationSec    Int?
+  error          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  carrier        Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  call           Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([carrierId])
+}
+
+model CallScript {
+  id        String   @id @default(cuid())
+  ownerId   String
+  name      String
+  category  String   @default("cold_call") // cold_call | follow_up | voicemail | objection | onboarding | broker
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+}
+
+/** Personal access token for the browser extension / integrations. Only the sha256 is stored. */
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  prefix     String // first characters, shown in the UI to identify the token
+  tokenHash  String    @unique
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model FollowUp {
+  id          String    @id @default(cuid())
+  carrierId   String
+  userId      String
+  dueAt       DateTime
+  type        String    @default("call") // call | email | text | task | meeting
+  title       String?
+  note        String?
+  priority    Int       @default(0) // 0 normal | 1 high | 2 urgent
+  recurrence  String    @default("none") // none | daily | weekdays | weekly | biweekly | monthly
+  remindMinutesBefore Int @default(0)
+  status      String    @default("pending") // pending | done | canceled
+  outcome     String? // what happened, recorded on completion
+  snoozeCount Int       @default(0)
+  completedAt DateTime?
+  notifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  carrier     Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, dueAt])
+  @@index([carrierId])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String
+  carrierId String?
+  teamId    String?
+  type      String // call | email | note | stage_change | follow_up | document | carrier_created | import | opportunity | customer | load | sequence | ai
+  summary   String
+  metadata  String? // small JSON payload for display only
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  carrier   Carrier? @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  team      Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([carrierId, createdAt])
+  @@index([teamId, createdAt])
+  @@index([type, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
+
+model EmailAccount {
+  id              String    @id @default(cuid())
+  userId          String
+  provider        String // smtp | hostinger | gmail | outlook
+  label           String
+  fromEmail       String
+  fromName        String?
+  smtpHost        String?
+  smtpPort        Int?
+  smtpSecure      Boolean   @default(true)
+  smtpUser        String?
+  secretEnc       String? // AES-256-GCM encrypted password or OAuth refresh token
+  accessTokenEnc  String?
+  tokenExpiresAt  DateTime?
+  status          String    @default("connected") // connected | error | disconnected
+  lastError       String?
+  lastVerifiedAt  DateTime?
+  dailyLimit      Int       @default(50)
+  cooldownSeconds Int       @default(30)
+  lastSentAt      DateTime?
+  isDefault       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emails          Email[]
+
+  @@index([userId])
+}
+
+model EmailTemplate {
+  id        String         @id @default(cuid())
+  ownerId   String
+  name      String
+  subject   String
+  body      String
+  category  String         @default("carrier") // carrier | broker | follow_up | other
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  steps     SequenceStep[]
+  emails    Email[]
+
+  @@index([ownerId])
+}
+
+model Email {
+  id                String              @id @default(cuid())
+  userId            String
+  carrierId         String?
+  brokerId          String?
+  emailAccountId    String?
+  templateId        String?
+  enrollmentId      String?
+  toEmail           String
+  subject           String
+  body              String
+  status            String              @default("draft") // draft | scheduled | sending | sent | failed | canceled
+  providerMessageId String?
+  error             String?
+  attempts          Int                 @default(0)
+  scheduledAt       DateTime?
+  nextAttemptAt     DateTime?
+  sentAt            DateTime?
+  aiGenerated       Boolean             @default(false)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  carrier           Carrier?            @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  broker            Broker?             @relation(fields: [brokerId], references: [id], onDelete: SetNull)
+  emailAccount      EmailAccount?       @relation(fields: [emailAccountId], references: [id], onDelete: SetNull)
+  template          EmailTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  enrollment        SequenceEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([status, scheduledAt])
+  @@index([carrierId])
+}
+
+model EmailSuppression {
+  id        String   @id @default(cuid())
+  ownerId   String
+  email     String
+  reason    String   @default("manual") // manual | unsubscribed | bounced
+  createdAt DateTime @default(now())
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, email])
+}
+
+model EmailSequence {
+  id                  String               @id @default(cuid())
+  ownerId             String
+  name                String
+  description         String?
+  active              Boolean              @default(true)
+  respectBusinessHours Boolean             @default(true)
+  windowStartHour     Int                  @default(9)
+  windowEndHour       Int                  @default(17)
+  skipWeekends        Boolean              @default(true)
+  maxEmailsPerDay     Int                  @default(50)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  owner               User                 @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  steps               SequenceStep[]
+  enrollments         SequenceEnrollment[]
+
+  @@index([ownerId])
+}
+
+model SequenceStep {
+  id           String         @id @default(cuid())
+  sequenceId   String
+  order        Int
+  dayOffset    Int
+  type         String // call | email | task
+  templateId   String?
+  subject      String?
+  body         String?
+  instructions String?
+  sequence     EmailSequence  @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  template     EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@unique([sequenceId, order])
+}
+
+model SequenceEnrollment {
+  id          String        @id @default(cuid())
+  sequenceId  String
+  carrierId   String
+  userId      String
+  status      String        @default("active") // active | paused | completed | stopped
+  currentStep Int           @default(0) // index into ordered steps
+  nextStepAt  DateTime?
+  startedAt   DateTime      @default(now())
+  completedAt DateTime?
+  stopReason  String?
+  sequence    EmailSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  carrier     Carrier       @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emails      Email[]
+
+  @@unique([sequenceId, carrierId])
+  @@index([userId, status, nextStepAt])
+}
+
+// ---------------------------------------------------------------------------
+// Brokers, loads, documents
+// ---------------------------------------------------------------------------
+
+model Broker {
+  id           String   @id @default(cuid())
+  ownerId      String
+  companyName  String
+  contactName  String?
+  email        String?
+  phone        String?
+  address      String?
+  city         String?
+  state        String?
+  zip          String?
+  mcNumber     String?
+  dotNumber    String?
+  paymentTerms String? // e.g. Net 30, Quick pay 2%
+  daysToPay    Int?
+  creditRating String?
+  creditLimitCents Int?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  loads        Load[]
+  emails       Email[]
+
+  @@index([ownerId, companyName])
+}
+
+model Load {
+  id                  String    @id @default(cuid())
+  ownerId             String
+  brokerId            String?
+  carrierId           String?
+  referenceNumber     String?
+  originCity          String
+  originState         String
+  destCity            String
+  destState           String
+  originLat           Float?
+  originLng           Float?
+  destLat             Float?
+  destLng             Float?
+  pickupDate          DateTime?
+  deliveryDate        DateTime?
+  equipment           String?
+  commodity           String?
+  weightLbs           Int?
+  loadedMiles         Int
+  deadheadMiles       Int       @default(0)
+  rateCents           Int
+  detentionHours      Float     @default(0)
+  detentionRateCents  Int       @default(0)
+  fuelPricePerGallon  Float?
+  mpg                 Float?
+  otherCostsCents     Int       @default(0)
+  dispatchFeePercent  Float?
+  status              String    @default("planned") // planned | booked | in_transit | delivered | invoiced | paid | canceled
+  notes               String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  owner               User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  broker              Broker?   @relation(fields: [brokerId], references: [id], onDelete: SetNull)
+  carrier             Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  documents           Document[]
+
+  @@index([ownerId, status])
+  @@index([brokerId])
+  @@index([carrierId])
+  @@index([ownerId, originState, destState])
+}
+
+model Document {
+  id           String    @id @default(cuid())
+  ownerId      String
+  uploadedById String
+  carrierId    String?
+  loadId       String?
+  type         String // agreement | mc_authority | w9 | coi | permit | rate_confirmation | bol | pod | other
+  originalName String
+  storedName   String    @unique
+  mimeType     String
+  sizeBytes    Int
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  owner        User      @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  uploadedBy   User      @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+  carrier      Carrier?  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  load         Load?     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([carrierId])
+  @@index([loadId])
+}
+
+// ---------------------------------------------------------------------------
+// Training
+// ---------------------------------------------------------------------------
+
+model TrainingCourse {
+  id          String           @id @default(cuid())
+  title       String
+  slug        String           @unique
+  description String?
+  category    String           @default("fundamentals") // fundamentals | sales | operations | compliance | tools | business
+  level       String           @default("beginner") // beginner | intermediate | advanced
+  published   Boolean          @default(false)
+  sortOrder   Int              @default(0)
+  createdById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  createdBy   User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  lessons     TrainingLesson[]
+}
+
+model TrainingLesson {
+  id              String             @id @default(cuid())
+  courseId        String
+  title           String
+  content         String             @default("") // markdown
+  videoUrl        String?
+  attachmentPath  String?
+  attachmentName  String?
+  durationMinutes Int                @default(10)
+  sortOrder       Int                @default(0)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  course          TrainingCourse     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  progress        TrainingProgress[]
+
+  @@index([courseId, sortOrder])
+}
+
+model TrainingProgress {
+  id          String         @id @default(cuid())
+  userId      String
+  lessonId    String
+  completedAt DateTime       @default(now())
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson      TrainingLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+}
+
+model TrainingRequest {
+  id        String   @id @default(cuid())
+  userId    String?
+  name      String
+  email     String
+  phone     String?
+  message   String?
+  status    String   @default("new") // new | contacted | enrolled | closed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+}
+
+model TrainerMessage {
+  id          String    @id @default(cuid())
+  threadUserId String // the student whose thread this is
+  authorId    String
+  fromTrainer Boolean   @default(false)
+  body        String
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  threadUser  User      @relation("TrainerThread", fields: [threadUserId], references: [id], onDelete: Cascade)
+  author      User      @relation("TrainerAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([threadUserId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace & community
+// ---------------------------------------------------------------------------
+
+model MarketplaceListing {
+  id           String               @id @default(cuid())
+  sellerId     String
+  title        String
+  category     String // dispatch_tools | training | software | services | hiring | employment | consulting
+  description  String
+  priceCents   Int?
+  priceType    String               @default("fixed") // fixed | hourly | monthly | free | contact
+  location     String?
+  contactEmail String?
+  websiteUrl   String?
+  imagePath    String?
+  status       String               @default("active") // active | hidden | removed
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  seller       User                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  messages     MarketplaceMessage[]
+  reports      ContentReport[]
+
+  @@index([status, category, createdAt])
+  @@index([sellerId])
+}
+
+model MarketplaceMessage {
+  id          String             @id @default(cuid())
+  listingId   String
+  senderId    String
+  recipientId String
+  body        String
+  readAt      DateTime?
+  createdAt   DateTime           @default(now())
+  listing     MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  sender      User               @relation("MarketSender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient   User               @relation("MarketRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, createdAt])
+  @@index([listingId])
+}
+
+model CommunityPost {
+  id        String             @id @default(cuid())
+  authorId  String
+  category  String             @default("general") // general | prospecting | brokers | loads | compliance | tools | wins
+  title     String
+  body      String
+  status    String             @default("published") // published | hidden | removed
+  pinned    Boolean            @default(false)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  author    User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  comments  CommunityComment[]
+  reports   ContentReport[]
+
+  @@index([status, category, createdAt])
+  @@index([authorId])
+}
+
+model CommunityComment {
+  id        String             @id @default(cuid())
+  postId    String
+  authorId  String
+  parentId  String?
+  body      String
+  status    String             @default("published")
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  post      CommunityPost      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent    CommunityComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   CommunityComment[] @relation("CommentReplies")
+  reports   ContentReport[]
+
+  @@index([postId, createdAt])
+}
+
+model ContentReport {
+  id           String              @id @default(cuid())
+  reporterId   String
+  listingId    String?
+  postId       String?
+  commentId    String?
+  reason       String // spam | scam | abuse | inappropriate | other
+  details      String?
+  status       String              @default("open") // open | resolved | dismissed
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  reporter     User                @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  resolvedBy   User?               @relation("Resolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  listing      MarketplaceListing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  post         CommunityPost?      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comment      CommunityComment?   @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI
+// ---------------------------------------------------------------------------
+
+model AIConversation {
+  id        String      @id @default(cuid())
+  userId    String
+  title     String      @default("New conversation")
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  AIMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model AIMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  role           String // user | assistant
+  content        String
+  sources        String? // JSON array [{title,url,date,kind}]
+  createdAt      DateTime       @default(now())
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model AIKnowledgeDocument {
+  id           String             @id @default(cuid())
+  ownerId      String
+  scope        String             @default("private") // private (owner only) | global (admin-approved, everyone)
+  approved     Boolean            @default(true)
+  title        String
+  originalName String
+  storedName   String             @unique
+  mimeType     String
+  status       String             @default("processing") // processing | ready | error
+  error        String?
+  chunkCount   Int                @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  owner        User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  chunks       AIKnowledgeChunk[]
+
+  @@index([ownerId])
+  @@index([scope, approved])
+}
+
+model AIKnowledgeChunk {
+  id         String              @id @default(cuid())
+  documentId String
+  idx        Int
+  content    String
+  embedding  String? // JSON float array when an embeddings model is configured
+  document   AIKnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, idx])
+}
+
+// ---------------------------------------------------------------------------
+// Automation, notifications, audit, settings
+// ---------------------------------------------------------------------------
+
+model Automation {
+  id           String    @id @default(cuid())
+  ownerId      String
+  name         String
+  trigger      String // carrier_created | stage_changed | call_outcome
+  triggerValue String? // stage key or call outcome
+  action       String // create_follow_up | enroll_sequence | move_stage | add_tag | notify
+  actionValue  String? // stage key / sequence id / tag name / note text
+  delayDays    Int       @default(0)
+  active       Boolean   @default(true)
+  runCount     Int       @default(0)
+  lastRunAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  owner        User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, trigger, active])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  ip         String?
+  details    String?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action])
+}
+
+model SystemSetting {
+  key         String   @id
+  value       String
+  secret      Boolean  @default(false) // value is AES-GCM encrypted
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  updatedBy   User?    @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+}
+
+/** Saved lead-generation profile: FMCSA Census criteria that produce fresh, de-duplicated leads on demand or on a schedule. */
+model LeadGenerator {
+  id         String       @id @default(cuid())
+  ownerId    String
+  name       String
+  criteria   String // JSON: states, cargo, fleet, authority age, contact requirements
+  batchSize  Int          @default(25)
+  stageKey   String       @default("lead")
+  listId     String? // prospect list new leads are added to
+  sequenceId String? // sequence new leads are enrolled in
+  minScore   Int          @default(0)
+  autoRun    Boolean      @default(false)
+  frequency  String       @default("daily") // daily | weekly
+  nextRunAt  DateTime?
+  lastRunAt  DateTime?
+  active     Boolean      @default(true)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  owner      User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  runs       LeadGenRun[]
+
+  @@index([ownerId])
+  @@index([autoRun, nextRunAt])
+}
+
+model LeadGenRun {
+  id          String        @id @default(cuid())
+  generatorId String?
+  ownerId     String
+  trigger     String        @default("manual") // manual | scheduled
+  status      String        @default("ok") // ok | limited | exhausted | error
+  scanned     Int           @default(0)
+  created     Int           @default(0)
+  skipped     Int           @default(0)
+  belowScore  Int           @default(0)
+  carrierIds  String        @default("[]") // JSON array of created carrier ids
+  message     String?
+  createdAt   DateTime      @default(now())
+  generator   LeadGenerator? @relation(fields: [generatorId], references: [id], onDelete: SetNull)
+  owner       User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, createdAt])
+  @@index([generatorId, createdAt])
+}

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DispatchDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="popup">
+  <header class="bar">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>DispatchDesk</span>
+    <span id="status" class="status" role="status">Checking…</span>
+  </header>
+
+  <section id="setup" class="empty" hidden>
+    <p>Connect the extension to your DispatchDesk account to call and add carriers.</p>
+    <button id="open-options" class="btn primary" type="button">Connect</button>
+  </section>
+
+  <main id="main" hidden>
+    <div class="actions">
+      <button id="workspace" class="btn primary" type="button" title="Alt+Shift+D">Open workspace</button>
+      <button id="panel" class="btn" type="button">Call panel</button>
+    </div>
+    <div class="section-head">
+      <h2>On this page</h2>
+      <button id="rescan" class="link" type="button">Scan again</button>
+    </div>
+    <p id="scan-note" class="muted small"></p>
+    <ul id="results" class="list"></ul>
+
+    <form id="manual" class="manual">
+      <label for="manual-input" class="small muted">Call a number or look up USDOT / MC</label>
+      <div class="row">
+        <input id="manual-input" type="text" placeholder="(214) 555-0101 or MC-123456" autocomplete="off" />
+        <button class="btn" type="submit">Go</button>
+      </div>
+    </form>
+  </main>
+
+  <p id="message" class="message" role="alert" hidden></p>
+
+  <footer class="foot">
+    <button id="open-app" class="link" type="button">Open app</button>
+    <button id="settings" class="link" type="button">Settings</button>
+  </footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

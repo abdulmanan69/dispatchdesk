@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DispatchDesk call panel</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="panel">
+  <header class="bar">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Call panel</span>
+    <span id="status" class="status" role="status">Checking…</span>
+  </header>
+
+  <section id="setup" class="empty" hidden>
+    <p>Connect the extension to your DispatchDesk account first.</p>
+    <button id="open-options" class="btn primary" type="button">Connect</button>
+  </section>
+
+  <main id="main" hidden>
+    <div class="panel-head">
+      <span id="position" class="muted small mono"></span>
+      <button id="reload" class="link" type="button">Refresh queue</button>
+    </div>
+
+    <section id="empty" class="card-lite" hidden>
+      <p class="muted">Nothing due in your call queue. Call a number from a web page, or open the power dialer.</p>
+      <button id="open-dialer" class="btn" type="button">Open power dialer</button>
+    </section>
+
+    <section id="carrier" class="card-lite" hidden>
+      <div class="carrier-top">
+        <div class="carrier-main">
+          <a id="c-name" class="c-name" href="#" target="_blank" rel="noopener"></a>
+          <div id="c-ids" class="muted small mono"></div>
+          <div id="c-where" class="muted small"></div>
+        </div>
+        <div class="carrier-clock">
+          <div id="c-time" class="mono"></div>
+          <div id="c-window" class="small"></div>
+        </div>
+      </div>
+      <p id="c-reason" class="small muted reason"></p>
+      <div class="row call-row">
+        <button id="call" class="btn primary grow" type="button">Call</button>
+        <span id="call-status" class="small muted" role="status"></span>
+      </div>
+    </section>
+
+    <section id="script-box" class="card-lite" hidden>
+      <div class="section-head"><h2>Script</h2><button id="script-toggle" class="link" type="button">Show all</button></div>
+      <div id="script" class="script collapsed"></div>
+    </section>
+
+    <section id="dispo" class="card-lite" hidden>
+      <h2>Outcome</h2>
+      <div id="outcomes" class="outcomes" role="radiogroup" aria-label="Call outcome"></div>
+      <label for="notes" class="small muted lbl">Notes</label>
+      <textarea id="notes" rows="3" placeholder="Equipment, lanes, who you spoke with"></textarea>
+      <div class="small muted lbl">Follow-up</div>
+      <div id="followup"></div>
+      <input id="followup-at" type="datetime-local" aria-label="Follow-up time" hidden />
+      <div class="row split">
+        <button id="skip" class="btn" type="button">Skip</button>
+        <button id="save" class="btn primary" type="button" disabled>Save and next</button>
+      </div>
+    </section>
+
+    <section id="email-box" class="card-lite" hidden>
+      <h2>Send email</h2>
+      <p id="email-to" class="small muted"></p>
+      <div class="row">
+        <div id="template-slot" class="grow"></div>
+        <button id="send-email" class="btn" type="button">Send</button>
+      </div>
+    </section>
+
+    <p class="muted small keys">Keys: <kbd>C</kbd> call · <kbd>1</kbd>–<kbd>8</kbd> outcome · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save · <kbd>S</kbd> skip</p>
+  </main>
+
+  <p id="message" class="message" role="alert" hidden></p>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

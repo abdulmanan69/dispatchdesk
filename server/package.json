@@ -1,0 +1,46 @@
+{
+  "name": "dispatchdesk-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:seed": "node scripts/bootstrap.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "create-admin": "node scripts/create-admin.js"
+  },
+  "dependencies": {
+    "@prisma/adapter-better-sqlite3": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "bcryptjs": "2.4.3",
+    "cookie-parser": "1.4.7",
+    "csv-parse": "7.0.3",
+    "csv-stringify": "6.5.2",
+    "express": "4.22.3",
+    "express-rate-limit": "7.5.0",
+    "helmet": "8.0.0",
+    "multer": "2.5.0",
+    "nodemailer": "10.4.0",
+    "pdf-parse": "1.1.1",
+    "stripe": "17.5.0",
+    "zod": "4.6.7",
+    "prisma": "7.10.1"
+  },
+  "devDependencies": {
+    "supertest": "7.0.0",
+    "vitest": "5.1.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "@prisma/engines@7.10.1": true,
+    "prisma@7.10.1": true
+  }
+}

@@ -1,0 +1,19 @@
+node_modules/
+dist/
+server/data/
+*.db
+*.db-journal
+.env
+coverage/
+e2e/test-results/
+e2e/.state.json
+e2e/results-*.json
+e2e/results-ui.json
+e2e/playwright-report/
+
+# local tooling / artifacts
+.claude/
+unslop/
+e2e/*.png
+e2e/test-results/
+*.log

@@ -1,0 +1,29 @@
+# One application service: API, web client, SQLite database, file storage and scheduler
+# all run inside this single container. Data persists in the named volume.
+services:
+  app:
+    build: .
+    image: dispatchdesk:latest
+    container_name: dispatchdesk
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATA_DIR: /data
+      DATABASE_URL: file:/data/app.db
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    volumes:
+      - dispatchdesk-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  dispatchdesk-data:
