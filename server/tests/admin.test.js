@@ -87,3 +87,23 @@ describe('admin panel', () => {
     expect((await prisma.communityPost.findUnique({ where: { id: post.id } })).status).toBe('hidden');
   });
 });
+
+describe('admin temporary password', () => {
+  it('sets a one-time password, signs the user out, and the new password works', async () => {
+    const admin = await createAdmin();
+    const target = await registerUser();
+    const res = await admin.agent.post(`/api/admin/users/${target.user.id}/temp-password`);
+    expect(res.status).toBe(200);
+    expect(res.body.password).toMatch(/^Tmp-/);
+    expect((await target.agent.get('/api/auth/me')).body.user).toBeNull();
+    const fresh = await agent();
+    expect((await fresh.post('/api/auth/login').send({ email: target.email, password: res.body.password })).status).toBe(200);
+    const stored = await prisma.user.findUnique({ where: { id: target.user.id } });
+    expect(stored.passwordHash).not.toContain(res.body.password);
+  });
+  it('is admin-only', async () => {
+    const a = await registerUser();
+    const b = await registerUser();
+    expect((await a.agent.post(`/api/admin/users/${b.user.id}/temp-password`)).status).toBe(403);
+  });
+});

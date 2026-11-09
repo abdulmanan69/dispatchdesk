@@ -9,7 +9,7 @@ import { audit } from '../lib/audit.js';
 import { getBool, getSetting } from '../lib/settings.js';
 import { createSession, destroySession, requireAuth, publicUser } from '../middleware/auth.js';
 import { authLimiter } from '../middleware/security.js';
-import { sendSystemMail } from '../services/email/system.js';
+import { sendSystemMail, systemMailConfigured } from '../services/email/system.js';
 
 const r = Router();
 const DUMMY_HASH = bcrypt.hashSync('timing-equalizer', 10);
@@ -50,14 +50,14 @@ async function meResponse(userId) {
     where: { id: userId },
     include: { role: { include: { permissions: { include: { permission: true } } } }, teamMembership: { include: { team: true } } },
   });
-  return publicUser(user, user.role.permissions.map((p) => p.permission.key));
+  return { ...publicUser(user, user.role.permissions.map((p) => p.permission.key)), mailConfigured: await systemMailConfigured() };
 }
 
 r.get('/csrf', (req, res) => res.json({ ok: true }));
 
 r.get('/me', ah(async (req, res) => {
   if (!req.user) return res.json({ user: null });
-  res.json({ user: publicUser(req.user, req.permissions) });
+  res.json({ user: { ...publicUser(req.user, req.permissions), mailConfigured: await systemMailConfigured() } });
 }));
 
 r.post('/register', authLimiter, ah(async (req, res) => {

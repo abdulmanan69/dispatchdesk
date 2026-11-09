@@ -67,16 +67,18 @@ async function fetchDiesel(apiKey, fetchImpl = globalThis.fetch) {
 
 /** All EIA regions, cached. Returns { configured, regions, fetchedAt, error? }. */
 export async function dieselRegions({ fetchImpl } = {}) {
-  const apiKey = await getSetting('eia.apiKey');
+  // EIA's public DEMO_KEY is used until an admin adds their own free key (it is rate limited; prices are cached 6 hours).
+  const ownKey = await getSetting('eia.apiKey');
+  const apiKey = ownKey || (process.env.EIA_DISABLE_DEMO_KEY === 'true' ? null : 'DEMO_KEY');
   if (!apiKey) return { configured: false, regions: {}, gasoline: {}, history: [], error: 'Add a free EIA API key in Admin → Settings → Integrations to show diesel prices.' };
-  if (cache.diesel && cache.dieselKey === apiKey && Date.now() - cache.dieselAt < DIESEL_TTL) return { configured: true, ...cache.diesel };
+  if (cache.diesel && cache.dieselKey === apiKey && Date.now() - cache.dieselAt < DIESEL_TTL) return { configured: true, demoKey: !ownKey, ...cache.diesel };
   try {
     const { regions, gasoline, history } = await fetchDiesel(apiKey, fetchImpl);
     cache.diesel = { regions, gasoline, history, fetchedAt: new Date().toISOString() };
     markOk('eia');
     cache.dieselAt = Date.now();
     cache.dieselKey = apiKey;
-    return { configured: true, ...cache.diesel };
+    return { configured: true, demoKey: !ownKey, ...cache.diesel };
   } catch (err) {
     markError('eia', err.message);
     // Serve the last good value if we have one, and say it is stale.

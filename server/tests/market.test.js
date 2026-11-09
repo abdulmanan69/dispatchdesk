@@ -50,13 +50,27 @@ describe('market data', () => {
     expect(regionForState('CA')).toBe('SCA');
   });
 
-  it('diesel is honestly unconfigured without an EIA key', async () => {
+  it('diesel is honestly unconfigured without an EIA key when the demo key is disabled', async () => {
+    await setEiaKey('');
+    process.env.EIA_DISABLE_DEMO_KEY = 'true';
+    try {
+      const fetchMock = mockFetch();
+      const res = await A.agent.get('/api/market/diesel?state=MA');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ configured: false, price: null, source: 'EIA' });
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes('eia.gov'))).toBe(false);
+    } finally {
+      delete process.env.EIA_DISABLE_DEMO_KEY;
+    }
+  });
+
+  it('without its own key, diesel uses the public EIA DEMO_KEY', async () => {
     await setEiaKey('');
     const fetchMock = mockFetch();
     const res = await A.agent.get('/api/market/diesel?state=MA');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ configured: false, price: null, source: 'EIA' });
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('eia.gov'))).toBe(false);
+    const eiaCall = fetchMock.mock.calls.find(([u]) => String(u).includes('eia.gov'));
+    expect(eiaCall && new URL(String(eiaCall[0])).searchParams.get('api_key')).toBe('DEMO_KEY');
   });
 
   it('diesel by state uses the EIA region with week-over-week change', async () => {

@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { prisma } from '../db.js';
 import { ah, badRequest, forbidden, notFound, conflict } from '../lib/errors.js';
@@ -129,6 +131,21 @@ r.patch('/users/:id', requirePermission('admin.users'), ah(async (req, res) => {
   if (body.status === 'suspended') await prisma.session.deleteMany({ where: { userId: target.id } });
   await audit(req, 'admin.user_updated', { entityType: 'user', entityId: target.id, details: body });
   res.json({ user: { id: user.id, role: user.role.key, status: user.status, emailVerified: !!user.emailVerifiedAt } });
+}));
+
+/**
+ * Set a one-time temporary password (for users who cannot reset by email, e.g. platform email is not configured).
+ * The password is returned once to the admin, never stored in plain text, and every session of that user is signed out.
+ */
+r.post('/users/:id/temp-password', requirePermission('admin.users'), ah(async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: String(req.params.id) }, include: { role: true } });
+  if (!target) throw notFound('User not found');
+  if (ADMIN_ROLES.includes(target.role.key) && target.id !== req.user.id && !req.permissions.has('admin.roles')) throw forbidden('Only a super admin can reset administrator accounts');
+  const password = `Tmp-${randomBytes(9).toString('base64url')}7`;
+  await prisma.user.update({ where: { id: target.id }, data: { passwordHash: await bcrypt.hash(password, 12) } });
+  await prisma.session.deleteMany({ where: { userId: target.id } });
+  await audit(req, 'admin.user_temp_password', { entityType: 'user', entityId: target.id });
+  res.json({ password, note: 'Share this once with the user. Ask them to change it in Settings → Security after signing in.' });
 }));
 
 r.delete('/users/:id', requirePermission('admin.users'), ah(async (req, res) => {

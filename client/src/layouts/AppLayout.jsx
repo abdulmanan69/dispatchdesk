@@ -275,7 +275,8 @@ function UserMenu() {
 function VerifyBanner() {
   const { user } = useAuth();
   const [sent, setSent] = useState(null);
-  if (!user || user.emailVerified) return null;
+  // Without platform email there is nothing to resend, so the banner would only nag.
+  if (!user || user.emailVerified || user.mailConfigured === false) return null;
   const resend = async () => {
     try { const r = await api.post('/api/auth/resend-verification'); setSent(r.emailSent ? 'Verification email sent.' : `Could not send email: ${r.reason || 'email not configured'}`); }
     catch (e) { setSent(e.message); }
