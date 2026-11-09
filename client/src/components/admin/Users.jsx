@@ -5,6 +5,7 @@ import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
+import GrantPlanModal from './GrantPlanModal.jsx';
 import { date, relative } from '../../lib/format.js';
 import { Card, Input, Select, DataTable, Pagination, QueryState, Badge, IconButton, Button } from '../ui.jsx';
 
@@ -20,6 +21,7 @@ export default function AdminUsers() {
   const update = useApiMutation(({ id, ...body }) => api.patch(`/api/admin/users/${id}`, body), { success: 'User updated', invalidate: inv });
   const remove = useApiMutation((id) => api.del(`/api/admin/users/${id}`), { success: 'User deleted', invalidate: inv });
   const [temp, setTemp] = useState(null); // { name, password }
+  const [grantFor, setGrantFor] = useState(null);
   const resetPw = useApiMutation(({ id }) => api.post(`/api/admin/users/${id}/temp-password`), { onSuccess: (d, v) => setTemp({ name: v.name, password: d.password }) });
   const canAssignAdmin = can('admin.roles');
   const isAdminRole = (k) => k === 'admin' || k === 'super_admin';
@@ -67,6 +69,7 @@ export default function AdminUsers() {
               { key: 'actions', header: '', className: 'text-right whitespace-nowrap', render: (u) => u.id === me.id ? null : (
                 <>
                   {!u.emailVerified && <Button variant="ghost" size="sm" onClick={() => update.mutate({ id: u.id, emailVerified: true })}>Verify</Button>}
+                  <Button variant="ghost" size="sm" onClick={() => setGrantFor(u)}>Grant plan</Button>
                   <Button variant="ghost" size="sm" onClick={async () => {
                     if (await confirm({ title: `Reset password for ${u.name}?`, message: 'A temporary password is generated and shown once. They are signed out everywhere.', confirmLabel: 'Reset password' })) resetPw.mutate({ id: u.id, name: u.name });
                   }}>Reset password</Button>
@@ -84,6 +87,7 @@ export default function AdminUsers() {
           </>
         )}
       </QueryState>
+      {grantFor && <GrantPlanModal user={grantFor} onClose={() => setGrantFor(null)} />}
       {temp && (
         <Modal open onClose={() => setTemp(null)} title={`Temporary password for ${temp.name}`} size="sm"
           footer={<><Button variant="secondary" onClick={() => navigator.clipboard?.writeText(temp.password)}>Copy</Button><Button onClick={() => setTemp(null)}>Done</Button></>}>

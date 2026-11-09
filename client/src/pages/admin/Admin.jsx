@@ -9,8 +9,10 @@ import AdminPlans from '../../components/admin/Plans.jsx';
 import Moderation from '../../components/admin/Moderation.jsx';
 import SystemSettings from '../../components/admin/SystemSettings.jsx';
 import AuditLog from '../../components/admin/AuditLog.jsx';
+import AdminSetup from '../../components/admin/Setup.jsx';
 
 const TABS = [
+  { value: 'setup', label: 'Setup', perm: 'admin.settings' },
   { value: 'overview', label: 'Overview', perm: 'admin.access' },
   { value: 'users', label: 'Users', perm: 'admin.users' },
   { value: 'subscriptions', label: 'Subscriptions', perm: 'admin.billing' },
@@ -24,13 +26,14 @@ export default function Admin() {
   const { can } = useAuth();
   const [params, setParams] = useSearchParams();
   const tabs = TABS.filter((t) => can(t.perm));
-  const tab = tabs.some((t) => t.value === params.get('tab')) ? params.get('tab') : 'overview';
+  const tab = tabs.some((t) => t.value === params.get('tab')) ? params.get('tab') : (tabs[0]?.value || 'overview');
   const setTab = (v) => setParams({ tab: v });
   return (
     <div className="space-y-5">
       <PageHeader title="Admin" subtitle="Platform users, billing, moderation and configuration"
         actions={can('training.manage') && <Button variant="secondary" icon={GraduationCap} to="/app/admin/training">Training admin</Button>} />
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
+      {tab === 'setup' && <AdminSetup onTab={setTab} />}
       {tab === 'overview' && <Overview onTab={setTab} />}
       {tab === 'users' && <AdminUsers />}
       {tab === 'subscriptions' && <AdminSubscriptions />}

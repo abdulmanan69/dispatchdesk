@@ -12,7 +12,11 @@ export async function activeSubscription(user) {
   return prisma.subscription.findFirst({
     where: {
       status: { in: LIVE },
-      OR: [{ userId: user.id, teamId: null }, ...(teamId ? [{ teamId }] : [])],
+      AND: [
+        { OR: [{ userId: user.id, teamId: null }, ...(teamId ? [{ teamId }] : [])] },
+        // Plans granted by an admin (no Stripe subscription) stop at their end date; Stripe plans follow webhooks.
+        { OR: [{ stripeSubscriptionId: { not: null } }, { currentPeriodEnd: null }, { currentPeriodEnd: { gt: new Date() } }] },
+      ],
     },
     include: { plan: true },
     orderBy: { createdAt: 'desc' },

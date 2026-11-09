@@ -24,7 +24,7 @@ export function planFeatures(p) {
     `${n(p.dailyEmailLimit, 'emails')} / day`,
     `${n(p.monthlyAiMessages, 'AI messages')} / month`,
     n(p.maxSequences, p.maxSequences === 1 ? 'sequence' : 'sequences'),
-    p.maxAutomations === 0 ? 'No automations' : n(p.maxAutomations, 'automations'),
+    p.maxAutomations === 0 ? 'No automations' : n(p.maxAutomations, p.maxAutomations === 1 ? 'automation' : 'automations'),
     'CRM, pipeline, prospecting & follow-ups',
   ];
   if (p.advancedReports) f.push('Advanced reporting');
@@ -68,6 +68,7 @@ r.get('/me', ah(async (req, res) => {
       id: subscription.id, status: subscription.status, seats: subscription.seats, planKey: subscription.plan.key,
       currentPeriodEnd: subscription.currentPeriodEnd, trialEndsAt: subscription.trialEndsAt, cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
       managedByTeam: !!teamOwned, isOwner: subscription.userId === req.user.id, hasPortal: !!subscription.stripeCustomerId,
+      granted: !subscription.stripeSubscriptionId && !subscription.stripeCheckoutId,
     },
     pendingSubscription: pending && { id: pending.id, status: pending.status, planKey: pending.plan.key, createdAt: pending.createdAt },
     usage: u,

@@ -186,3 +186,23 @@ body {
 *::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 9999px; border: 3px solid transparent; background-clip: padding-box; }
 *::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); border: 2px solid transparent; background-clip: padding-box; }
 *::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- Public site (marketing + auth) ---- */
+/* Hue classes built from a variable in pages/public/sections.jsx. */
+@source inline("{bg,text}-c-{blue,green,amber,purple,red,teal,pink,orange,gray}{,-soft} border-c-{blue,green,amber,purple,red,teal,pink,orange,gray}/30 bg-c-{blue,green,amber,purple,red,teal,pink,orange,gray}-soft/50");
+
+.pub-hero-bg {
+  background:
+    radial-gradient(60% 50% at 15% 0%, color-mix(in oklab, var(--c-teal) 18%, transparent), transparent 70%),
+    radial-gradient(45% 45% at 90% 10%, color-mix(in oklab, var(--c-blue) 16%, transparent), transparent 70%),
+    radial-gradient(40% 40% at 60% 100%, color-mix(in oklab, var(--c-purple) 12%, transparent), transparent 70%);
+}
+.pub-cta {
+  background:
+    radial-gradient(50% 80% at 0% 0%, rgba(255, 255, 255, 0.14), transparent 60%),
+    linear-gradient(135deg, #0f7d73 0%, #0b5f8a 55%, #4338ca 100%);
+}
+.pub-float { animation: pub-float 9s ease-in-out infinite; }
+@keyframes pub-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.pub-dots { background-image: radial-gradient(color-mix(in oklab, var(--fg) 12%, transparent) 1px, transparent 1px); background-size: 22px 22px; }
+@media (prefers-reduced-motion: reduce) { .pub-float { animation: none; } }

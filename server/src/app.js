@@ -38,6 +38,7 @@ import communityRoutes from './routes/community.js';
 import teamRoutes from './routes/teams.js';
 import billingRoutes, { webhookHandler } from './routes/billing.js';
 import adminRoutes from './routes/admin.js';
+import adminSetupRoutes from './routes/adminSetup.js';
 import settingsRoutes from './routes/settings.js';
 import notificationRoutes from './routes/notifications.js';
 import publicRoutes from './routes/public.js';
@@ -124,6 +125,7 @@ export function createApp() {
   app.use('/api/automations', requireAuth, automationRoutes);
   app.use('/api/ai', requireAuth, aiRoutes);
   app.use('/api/teams', teamRoutes); // invitation preview is public
+  app.use('/api/admin/setup', requireAuth, adminSetupRoutes);
   app.use('/api/admin', requireAuth, adminRoutes);
   app.use('/api/settings', requireAuth, settingsRoutes);
   app.use('/api/notifications', requireAuth, notificationRoutes);

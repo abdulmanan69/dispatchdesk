@@ -132,7 +132,7 @@ test('admin pages render for the admin account', async ({ page }) => {
   const errors = watch(page);
   await login(page, ADMIN.email, ADMIN.password);
   for (const r of ADMIN_ROUTES) await visit(page, errors, r);
-  for (const tab of ['Users', 'Subscriptions', 'Plans', 'Moderation', 'Settings', 'Audit']) {
+  for (const tab of ['Setup', 'Overview', 'Users', 'Subscriptions', 'Plans', 'Moderation', 'Settings', 'Audit']) {
     const t = page.getByRole('tab', { name: new RegExp(tab, 'i') });
     if (await t.count()) { await t.first().click(); await page.waitForLoadState('networkidle'); }
   }

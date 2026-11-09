@@ -4,6 +4,10 @@ A dispatching and sales CRM for truck dispatchers. It covers carrier lead discov
 
 This is an original implementation inspired by the public functionality of selldispatch.com. No proprietary code, branding or assets are reused. See [docs/FEATURE_SPEC.md](docs/FEATURE_SPEC.md) for the research notes and [docs/CHECKLIST.md](docs/CHECKLIST.md) for implementation status.
 
+## Production
+
+The live deployment (Coolify, domain, email, Stripe, keys, backups) is documented step by step in [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md). Admins see the same checklist, checked against the real configuration, under **Admin → Setup**.
+
 ## Quick start
 
 ```bash

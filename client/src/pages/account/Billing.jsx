@@ -61,6 +61,7 @@ export default function Billing() {
 
   const actionFor = (p) => {
     if (p.key === d.plan.key) return <Button variant="secondary" className="w-full" disabled>Current plan</Button>;
+    if (sub?.granted) return null; // plan given by an admin: no checkout changes from here
     if (p.key === 'free') return sub && sub.isOwner && !sub.cancelAtPeriodEnd ? <Button variant="secondary" className="w-full" onClick={onCancel}>Downgrade to Free</Button> : null;
     if (!p.purchasable || !payable) return <Button variant="secondary" className="w-full" disabled title="This plan is not available for online checkout yet">Not available yet</Button>;
     if (sub?.isOwner) {
@@ -112,8 +113,9 @@ export default function Billing() {
           {sub ? (
             <dl className="mt-4 space-y-1.5 text-sm">
               {sub.trialEndsAt && sub.status === 'trialing' && <div className="flex justify-between"><dt className="text-muted">Trial ends</dt><dd>{date(sub.trialEndsAt)}</dd></div>}
-              <div className="flex justify-between"><dt className="text-muted">{sub.cancelAtPeriodEnd ? 'Ends on' : 'Renews on'}</dt><dd>{date(sub.currentPeriodEnd)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted">{sub.cancelAtPeriodEnd || sub.granted ? 'Ends on' : 'Renews on'}</dt><dd>{sub.currentPeriodEnd ? date(sub.currentPeriodEnd) : 'No end date'}</dd></div>
               {sub.seats > 1 && <div className="flex justify-between"><dt className="text-muted">Seats</dt><dd className="tabular">{sub.seats}</dd></div>}
+              {sub.granted && <p className="text-xs text-muted">Given to you by an administrator{sub.currentPeriodEnd ? '' : ' with no end date'}. No payment is taken.</p>}
               {sub.managedByTeam && <p className="text-xs text-muted">Provided by your team. The team owner manages this subscription.</p>}
             </dl>
           ) : <p className="mt-4 text-sm text-muted">Free forever. Upgrade any time for higher limits.</p>}

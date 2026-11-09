@@ -1,8 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Gift } from 'lucide-react';
 import { api } from '../../lib/api.js';
+import { useApiMutation } from '../../lib/hooks.js';
+import { useConfirm } from '../Modal.jsx';
+import GrantPlanModal from './GrantPlanModal.jsx';
 import { date, label, money } from '../../lib/format.js';
-import { Card, Select, DataTable, Pagination, QueryState, Badge, EmptyState, Tabs } from '../ui.jsx';
+import { Button, Card, Select, DataTable, Pagination, QueryState, Badge, EmptyState, Tabs } from '../ui.jsx';
 
 const COLORS = { active: 'green', trialing: 'blue', past_due: 'amber', incomplete: 'amber', unpaid: 'red', canceled: 'gray' };
 
@@ -11,11 +15,15 @@ export default function AdminSubscriptions() {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const subs = useQuery({ queryKey: ['admin', 'subs', status, page], queryFn: () => api.get('/api/admin/subscriptions', { status, page, pageSize: 25 }), enabled: view === 'subscriptions' });
+  const [granting, setGranting] = useState(false);
+  const confirm = useConfirm();
+  const revoke = useApiMutation((id) => api.post(`/api/admin/subscriptions/${id}/revoke`), { success: 'Plan revoked', invalidate: [['admin', 'subs']] });
   const pays = useQuery({ queryKey: ['admin', 'payments', page], queryFn: () => api.get('/api/admin/payments', { page, pageSize: 25 }), enabled: view === 'payments' });
   return (
     <Card bodyClass="p-0">
       <div className="flex flex-wrap items-end justify-between gap-2 px-3 pt-1">
         <Tabs value={view} onChange={(v) => { setView(v); setPage(1); }} tabs={[{ value: 'subscriptions', label: 'Subscriptions' }, { value: 'payments', label: 'Payments' }]} className="border-0" />
+        {view === 'subscriptions' && <Button size="sm" icon={Gift} className="mb-2 ml-auto" onClick={() => setGranting(true)}>Grant plan</Button>}
         {view === 'subscriptions' && (
           <Select aria-label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="mb-2 w-40">
             <option value="">All statuses</option>
@@ -34,7 +42,9 @@ export default function AdminSubscriptions() {
                   { key: 'seats', header: 'Seats', className: 'tabular' },
                   { key: 'status', header: 'Status', render: (s) => <Badge color={COLORS[s.status]}>{label(s.status)}{s.cancelAtPeriodEnd ? ' · ending' : ''}</Badge> },
                   { key: 'currentPeriodEnd', header: 'Period end', render: (s) => date(s.currentPeriodEnd) },
-                  { key: 'stripe', header: 'Stripe ID', render: (s) => <span className="font-mono text-xs text-muted">{s.stripeSubscriptionId || '—'}</span> },
+                  { key: 'stripe', header: 'Source', render: (s) => (s.granted
+                    ? <span className="flex items-center gap-2"><Badge color="purple">Granted</Badge>{['active', 'trialing'].includes(s.status) && <Button variant="ghost" size="sm" onClick={async () => { if (await confirm({ title: `Revoke ${s.plan} for ${s.user.name}?`, message: 'They move back to Free right away. Their data is kept.', confirmLabel: 'Revoke', danger: true })) revoke.mutate(s.id); }}>Revoke</Button>}</span>
+                    : <span className="font-mono text-xs text-muted">{s.stripeSubscriptionId || '—'}</span>) },
                   { key: 'createdAt', header: 'Created', render: (s) => date(s.createdAt) },
                 ]} />
                 <div className="border-t border-line px-3"><Pagination page={d.page} pages={d.pages} total={d.total} onPage={setPage} /></div>
@@ -59,6 +69,7 @@ export default function AdminSubscriptions() {
           </QueryState>
         )}
       </div>
+      {granting && <GrantPlanModal onClose={() => setGranting(false)} />}
     </Card>
   );
 }

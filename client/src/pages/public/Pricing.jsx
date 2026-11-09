@@ -4,6 +4,7 @@ import { api } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Button, Loading, ErrorState } from '../../components/ui.jsx';
 import PlanCard from '../../components/billing/PlanCard.jsx';
+import { SectionHead, FaqList, CtaBand } from './sections.jsx';
 
 const lim = (v) => (v < 0 ? 'Unlimited' : v.toLocaleString('en-US'));
 const ROWS = [
@@ -27,11 +28,16 @@ export default function Pricing() {
   const q = useQuery({ queryKey: ['plans'], queryFn: () => api.get('/api/billing/plans') });
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-14">
-      <div className="mx-auto max-w-2xl text-center">
-        <h1 className="text-3xl font-medium tracking-[-0.01em] sm:text-4xl">Simple plans for dispatchers</h1>
-        <p className="mt-3 text-muted">Start free and keep using it as long as you like. Upgrade when you need higher limits, the advanced AI dispatcher, or a team.</p>
+    <>
+    <section className="relative isolate overflow-hidden border-b border-line">
+      <div aria-hidden className="pub-hero-bg absolute inset-0 -z-10" />
+      <div className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
+        <p className="mb-3 text-[13px] font-semibold text-c-teal">Pricing</p>
+        <h1 className="text-[34px] font-semibold tracking-[-0.025em] text-fg sm:text-[46px]">Simple plans for dispatchers</h1>
+        <p className="mt-4 text-[17px] leading-7 text-fg-2">Start free and keep using it as long as you like. Upgrade when you need higher limits, scheduled lead generation, the advanced AI dispatcher or a team.</p>
       </div>
+    </section>
+    <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : (
         <>
           <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -79,5 +85,11 @@ export default function Pricing() {
         </>
       )}
     </div>
+    <section className="mx-auto max-w-3xl px-4 pb-20 sm:px-6">
+      <SectionHead eyebrow="Questions" hue="pink" title="Common questions" center />
+      <div className="mt-10"><FaqList /></div>
+    </section>
+    <CtaBand user={user} />
+    </>
   );
 }

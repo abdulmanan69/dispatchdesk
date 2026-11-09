@@ -107,3 +107,38 @@ describe('admin temporary password', () => {
     expect((await a.agent.post(`/api/admin/users/${b.user.id}/temp-password`)).status).toBe(403);
   });
 });
+
+describe('admin plan grants', () => {
+  it('grants Pro without payment, limits apply, then revoke returns the user to Free', async () => {
+    const admin = await createAdmin();
+    const u = await registerUser();
+    const res = await admin.agent.post('/api/admin/subscriptions/grant').send({ userId: u.user.id, planKey: 'pro', months: 3 });
+    expect(res.status).toBe(201);
+    const me = (await u.agent.get('/api/billing/me')).body;
+    expect(me.plan.key).toBe('pro');
+    expect(me.subscription).toMatchObject({ granted: true, status: 'active' });
+    expect(new Date(me.subscription.currentPeriodEnd).getTime()).toBeGreaterThan(Date.now() + 80 * 86400000);
+    // granting again updates the same subscription instead of stacking
+    expect((await admin.agent.post('/api/admin/subscriptions/grant').send({ userId: u.user.id, planKey: 'teams', months: null })).status).toBe(200);
+    expect((await u.agent.get('/api/billing/me')).body.plan.key).toBe('teams');
+    const list = (await admin.agent.get('/api/admin/subscriptions')).body.items.find((s) => s.user.id === u.user.id);
+    expect(list.granted).toBe(true);
+    expect((await admin.agent.post(`/api/admin/subscriptions/${list.id}/revoke`)).status).toBe(200);
+    expect((await u.agent.get('/api/billing/me')).body.plan.key).toBe('free');
+  });
+
+  it('granted plans stop at their end date', async () => {
+    const admin = await createAdmin();
+    const u = await registerUser();
+    await admin.agent.post('/api/admin/subscriptions/grant').send({ userId: u.user.id, planKey: 'pro', months: 1 });
+    await prisma.subscription.updateMany({ where: { userId: u.user.id }, data: { currentPeriodEnd: new Date(Date.now() - 1000) } });
+    expect((await u.agent.get('/api/billing/me')).body.plan.key).toBe('free');
+  });
+
+  it('rejects free plan grants and non-admins', async () => {
+    const admin = await createAdmin();
+    const u = await registerUser();
+    expect((await admin.agent.post('/api/admin/subscriptions/grant').send({ userId: u.user.id, planKey: 'free' })).status).toBe(400);
+    expect((await u.agent.post('/api/admin/subscriptions/grant').send({ userId: u.user.id, planKey: 'pro' })).status).toBe(403);
+  });
+});

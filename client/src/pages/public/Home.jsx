@@ -1,101 +1,27 @@
-import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
-import { Radar, PhoneCall, ListOrdered, Handshake, BadgeCheck, Mail, Bot, Calculator, FileText, Users, GraduationCap, ArrowRight } from 'lucide-react';
+import { Link } from 'react-router';
+import { Check, ShieldCheck, PhoneOff, Database } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { Button, LocalClock, cx } from '../../components/ui.jsx';
-import ShaderBackground from '../../components/ShaderBackground.jsx';
+import { Button } from '../../components/ui.jsx';
+import {
+  Chip, SectionHead, HeroPreview, WorkflowStrip, FeatureGrid, SequencePreview, MapShowcase, FleetPreview, ExtensionPreview,
+  SourcesStrip, PricingTeaser, FaqList, CtaBand,
+} from './sections.jsx';
 
-// Illustrative preview rows (fictional carriers) that show how the call queue looks.
-const QUEUE = [
-  { name: 'Red River Transport LLC', mc: '1184420', city: 'Shreveport, LA', tz: 'America/Chicago', fleet: 4, step: 'Call 2 of 4', stage: 'Sequence', stageColor: '#6b6b6b' },
-  { name: 'Blue Ridge Reefer Co', mc: '1093317', city: 'Roanoke, VA', tz: 'America/New_York', fleet: 2, step: 'Follow-up · overdue', stage: 'Prospecting', stageColor: '#8a8a8a', overdue: true },
-  { name: 'Sunbelt Flatbed Inc', mc: '1240085', city: 'Mesa, AZ', tz: 'America/Phoenix', fleet: 7, step: 'Rate talk', stage: 'Opportunity', stageColor: '#d97706' },
-  { name: 'Lone Pine Hauling', mc: '1312906', city: 'Missoula, MT', tz: 'America/Denver', fleet: 1, step: 'First call', stage: 'Lead', stageColor: '#a3a3a3' },
-];
+const PROVIDERS = ['Google Voice', '8x8', 'RingCentral', 'Dialpad', 'Microsoft Teams', 'Zoom Phone', 'Twilio', 'Phone app'];
 
-function localHour(tz) {
-  try { return Number(new Date().toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false })) % 24; } catch { return 12; }
-}
-
-function QueuePreview() {
-  const [, tick] = useState(0);
-  useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 30000); return () => clearInterval(id); }, []);
+function Split({ eyebrow, hue, title, text, points, visual, flip, id }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)]" aria-label="Preview of the daily call queue">
-      <div className="flex items-center justify-between border-b border-line px-5 py-3">
-        <div className="flex items-center gap-2 text-sm font-medium"><PhoneCall className="size-4 text-muted" strokeWidth={1.75} />Today's call queue</div>
-        <span className="font-mono text-xs text-muted">4 due · 1 overdue</span>
+    <section id={id} className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:py-20">
+      <div className={flip ? 'lg:order-2' : ''}>
+        <SectionHead eyebrow={eyebrow} hue={hue} title={title} sub={text} />
+        <ul className="mt-6 space-y-3">
+          {points.map((p) => (
+            <li key={p} className="flex gap-3 text-[15px] leading-6 text-fg-2"><Check className="mt-0.5 size-5 shrink-0 text-c-green" aria-hidden />{p}</li>
+          ))}
+        </ul>
       </div>
-      <ul className="divide-y divide-line">
-        {QUEUE.map((c, i) => {
-          const h = localHour(c.tz);
-          const callable = h >= 8 && h < 19;
-          return (
-            <li key={c.mc} className={cx('grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-3', i === 0 && 'bg-surface-2/60')}>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{c.name}</span>
-                  <span className="hidden items-center gap-1.5 text-xs text-muted sm:flex"><span className="size-1.5 rounded-full" style={{ background: c.stageColor }} />{c.stage}</span>
-                </div>
-                <div className="mt-0.5 truncate font-mono text-xs text-muted">MC {c.mc} · {c.city} · {c.fleet} {c.fleet === 1 ? 'truck' : 'trucks'}</div>
-              </div>
-              <div className="flex flex-col items-end gap-1">
-                <LocalClock timezone={c.tz} />
-                <span className={cx('text-xs', c.overdue ? 'text-red-600 dark:text-red-400' : callable ? 'text-fg-2' : 'text-muted')}>{callable ? c.step : 'Outside calling hours'}</span>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <div className="grid grid-cols-[1fr_auto] items-end gap-4 border-t border-line bg-bg px-5 py-4">
-        <div>
-          <div className="text-xs text-muted">Rate check · Dallas, TX to Atlanta, GA · dry van</div>
-          <div className="mt-1 font-mono text-sm text-fg-2 tabular">$2,200 ÷ 781 loaded mi</div>
-        </div>
-        <div className="text-right">
-          <div className="text-[28px] font-medium leading-none text-brand-700 tabular dark:text-brand-300">$2.82</div>
-          <div className="mt-1 font-mono text-xs text-muted">per mile · $2.68 all-in</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const FLOW = [
-  { icon: Radar, title: 'Find', text: 'Search the public FMCSA census by state, fleet size and authority age, or import your own list.' },
-  { icon: PhoneCall, title: 'Call', text: 'A daily queue ordered by priority and each carrier’s local time. Log the outcome in two clicks.' },
-  { icon: ListOrdered, title: 'Sequence', text: 'Day-by-day cadences of calls, emails and tasks that schedule the next touch for you.' },
-  { icon: Handshake, title: 'Negotiate', text: 'Track fee, value, probability and the next follow-up while you talk terms.' },
-  { icon: BadgeCheck, title: 'Sign', text: 'Keep the agreement, W-9, COI, authority letter, lanes and load history together.' },
-];
-
-const FEATURES = [
-  { icon: Mail, title: 'Email from your own mailbox', text: 'Gmail, Outlook, Hostinger or any SMTP account. Templates, scheduling, daily limits and opt-outs.' },
-  { icon: Calculator, title: 'Rate calculator', text: 'Paste a load-board posting and get rate per mile, deadhead, fuel and profit.' },
-  { icon: FileText, title: 'Carrier paperwork', text: 'Agreements, W-9s, insurance certificates and permits with expiry tracking.' },
-  { icon: Bot, title: 'AI dispatcher', text: 'Drafts broker emails and call scripts from your own training documents. It never invents rates.' },
-  { icon: Users, title: 'Teams', text: 'Every dispatcher keeps a private pipeline. Owners see the team board and leaderboard.' },
-  { icon: GraduationCap, title: 'Training center', text: 'Lessons on prospecting, onboarding, negotiation and running a dispatch business.' },
-];
-
-const STEPS = ['Learn the basics', 'Find one carrier', 'Open a load board account', 'Negotiate the load', 'Complete the carrier packet', 'Receive the rate confirmation', 'Pickup', 'Delivery', 'Invoice and get paid'];
-
-function AskBox() {
-  const [q, setQ] = useState('');
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const go = (e) => {
-    e.preventDefault();
-    const target = `/app/ai${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''}`;
-    navigate(user ? target : `/register?next=${encodeURIComponent(target)}`);
-  };
-  return (
-    <form onSubmit={go} className="flex flex-col gap-2 sm:flex-row">
-      <label htmlFor="ask" className="sr-only">Ask a dispatch question</label>
-      <input id="ask" value={q} onChange={(e) => setQ(e.target.value)} placeholder="A carrier says they already have a dispatcher. What do I say?"
-        className="h-12 flex-1 rounded-lg border border-line-strong bg-surface px-4 text-sm placeholder:text-muted transition-ui focus:border-brand-500 focus:outline-none" />
-      <Button type="submit" size="lg" variant="secondary">Ask</Button>
-    </form>
+      <div className={flip ? 'lg:order-1' : ''}>{visual}</div>
+    </section>
   );
 }
 
@@ -103,94 +29,114 @@ export default function Home() {
   const { user } = useAuth();
   return (
     <>
+      {/* Hero */}
       <section className="relative isolate overflow-hidden border-b border-line">
-        <ShaderBackground className="-z-20" />
-        {/* Neutral fades keep the headline on calm ground and blend the shader into the page. */}
-        <div aria-hidden className="absolute inset-0 -z-10 bg-gradient-to-r from-bg via-bg/80 to-bg/10 lg:via-bg/60" />
-        <div aria-hidden className="absolute inset-x-0 bottom-0 -z-10 h-24 bg-gradient-to-t from-bg to-transparent" />
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.05fr] lg:py-28">
-          <div className="dd-enter">
-            <h1 className="text-[40px] font-medium leading-[1.06] tracking-[-0.03em] sm:text-[56px]">Find, call and sign trucking carriers from one desk</h1>
-            <p className="mt-6 max-w-xl text-lg leading-8 text-fg-2">Carrier leads from the FMCSA census, a daily call queue set to each carrier’s local time, sequences, pipeline and paperwork. Built for truck dispatchers.</p>
+        <div aria-hidden className="pub-hero-bg absolute inset-0 -z-10" />
+        <div aria-hidden className="pub-dots absolute inset-0 -z-10 [mask-image:linear-gradient(to_bottom,black,transparent_75%)]" />
+        <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-14 sm:px-6 lg:grid-cols-[1fr_1.15fr] lg:pb-24 lg:pt-20">
+          <div className="dd-enter min-w-0">
+            <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/80 px-3 py-1 text-[13px] font-medium text-fg-2 backdrop-blur">
+              <span className="size-2 rounded-full bg-c-green" />Free plan, no card required
+            </span>
+            <h1 className="mt-5 text-[40px] font-semibold leading-[1.05] tracking-[-0.035em] text-fg sm:text-[58px]">
+              Find carriers, call them, and keep their <span className="text-brand-600 dark:text-brand-300">trucks moving</span>
+            </h1>
+            <p className="mt-6 max-w-xl text-lg leading-8 text-fg-2">
+              DispatchDesk is the sales CRM and dispatch desk for truck dispatchers. Generate leads from the FMCSA census, work a call queue with your own phone service, follow up on time, and plan every truck's next trip on a live map.
+            </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Button size="lg" to={user ? '/app' : '/register'}>{user ? 'Open your desk' : 'Start free'}</Button>
-              <Button size="lg" variant="secondary" to="/features">See how it works</Button>
+              <Button size="lg" variant="secondary" to="/pricing">See pricing</Button>
             </div>
-            <p className="mt-4 text-sm text-muted">Free plan, no card required</p>
-          </div>
-          <div className="dd-enter [animation-delay:80ms]"><QueuePreview /></div>
-        </div>
-      </section>
-
-      <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6 lg:py-24">
-        <div className="max-w-2xl">
-          <h2 className="text-[28px] font-medium tracking-[-0.01em]">From cold list to signed carrier</h2>
-          <p className="mt-2 text-fg-2">The workflow dispatchers already follow, without spreadsheets and sticky notes</p>
-        </div>
-        <ol className="mt-10 grid gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-5">
-          {FLOW.map((f, i) => (
-            <li key={f.title} className="bg-surface p-5">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <f.icon className="size-4 text-muted" strokeWidth={1.75} aria-hidden />
-                {f.title}
-                <span className="ml-auto font-mono text-xs text-muted">{i + 1}/5</span>
-              </div>
-              <p className="mt-3 text-sm leading-6 text-fg-2">{f.text}</p>
-            </li>
-          ))}
-        </ol>
-      </section>
-
-      <section className="border-y border-line">
-        <div className="mx-auto grid max-w-6xl gap-x-12 gap-y-10 px-4 py-20 sm:grid-cols-2 sm:px-6 lg:grid-cols-3 lg:py-24">
-          {FEATURES.map((f) => (
-            <div key={f.title} className="flex gap-3">
-              <f.icon className="mt-0.5 size-4 shrink-0 text-muted" strokeWidth={1.75} aria-hidden />
-              <div>
-                <h3 className="text-sm font-medium">{f.title}</h3>
-                <p className="mt-1 text-sm leading-6 text-fg-2">{f.text}</p>
-              </div>
+            <div className="mt-8">
+              <p className="text-xs font-medium text-muted">Calls go through the service you already use</p>
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {PROVIDERS.map((p) => <li key={p} className="rounded-full border border-line bg-surface/80 px-2.5 py-1 text-xs text-fg-2">{p}</li>)}
+              </ul>
             </div>
-          ))}
+          </div>
+          <div className="dd-enter min-w-0 [animation-delay:80ms]">
+            <HeroPreview />
+            <p className="mt-3 text-center text-xs text-muted">Example data. Carrier names are fictional.</p>
+          </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6 lg:py-24">
-        <div className="grid gap-12 lg:grid-cols-[1fr_1.2fr]">
-          <div>
-            <h2 className="text-[28px] font-medium tracking-[-0.01em]">New to dispatching? Start here</h2>
-            <p className="mt-2 text-fg-2">Nine steps from zero to your first paid load. Each one is covered in the training center.</p>
-            <Button variant="secondary" className="mt-6" to="/training">Explore training</Button>
-          </div>
-          <ol className="divide-y divide-line rounded-xl border border-line bg-surface">
-            {STEPS.map((s, i) => (
-              <li key={s} className="flex items-center gap-4 px-5 py-3 text-sm">
-                <span className="w-6 font-mono text-xs text-muted">{String(i + 1).padStart(2, '0')}</span>{s}
-              </li>
+      {/* Workflow */}
+      <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
+        <SectionHead eyebrow="The daily workflow" hue="blue" title="From a cold list to a signed carrier" sub="Find leads, add them to a sequence, call with Google Voice, log the outcome, and the next step is already scheduled." />
+        <div className="mt-10"><WorkflowStrip /></div>
+      </section>
+
+      {/* Features */}
+      <section className="border-y border-line bg-surface-2/40">
+        <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
+          <SectionHead eyebrow="Everything in one desk" hue="purple" title="Tools dispatchers use every day" sub="No spreadsheets, sticky notes or ten browser tabs." />
+          <div className="mt-10"><FeatureGrid /></div>
+        </div>
+      </section>
+
+      <Split id="sequences" eyebrow="Sequences and follow-ups" hue="purple"
+        title="Every touch scheduled, nothing forgotten"
+        text="Build a cadence once. DispatchDesk puts calls in your queue at the carrier's local time, sends emails from your own mailbox, and has texts ready to send from Google Voice."
+        points={['Call, email, text and task steps by day', 'Business hours and weekends respected', 'Follow-ups with priority, repeat, reminders and snooze', 'Opt-outs and do-not-call honored automatically']}
+        visual={<SequencePreview />} />
+
+      <section className="border-y border-line bg-surface-2/40">
+        <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
+          <SectionHead eyebrow="Market map" hue="teal" title="Know the market before you call" sub="States colored by time zone, active carriers per state from the FMCSA census, diesel by region from the EIA, and a fuel calculator for any route." />
+          <div className="mt-10"><MapShowcase /></div>
+        </div>
+      </section>
+
+      <Split id="fleet" eyebrow="Fleet map" hue="amber" flip
+        title="See every truck and plan its next trip"
+        text="Your carriers' trucks on a real street map, colored by status. Set where a truck is and when it is free, then plan the next load with road miles and costs."
+        points={['Road route with empty and loaded miles', 'Rate per mile all-in and loaded, fuel cost and profit', 'Weather and alerts at pickup and delivery', 'Find the closest available truck for a load']}
+        visual={<FleetPreview />} />
+
+      <Split id="extension" eyebrow="Chrome extension" hue="orange"
+        title="Your dialer and Google Voice, side by side"
+        text="One shortcut opens the workspace: the power dialer on one side and your phone service on the other. A side panel keeps the next carrier, the script and the outcome keys in reach."
+        points={['Calls load into your open Google Voice tab', 'Disposition, notes and follow-up without switching windows', 'Find USDOT, MC and phone numbers on any page', 'Reads a page only when you click the button']}
+        visual={<ExtensionPreview />} />
+
+      {/* Trust */}
+      <section className="border-y border-line bg-surface-2/40">
+        <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
+          <SectionHead eyebrow="Real data, clearly sourced" hue="green" title="Public data you can check" sub="Numbers in DispatchDesk come from public sources and link back to them. When a source is not connected, the app says so instead of guessing." />
+          <div className="mt-10"><SourcesStrip /></div>
+          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+            {[
+              [PhoneOff, 'red', 'No auto-dialing', 'Every call and text starts with your click.'],
+              [ShieldCheck, 'green', 'Private pipelines', 'Each dispatcher sees their own carriers unless a team shares them.'],
+              [Database, 'blue', 'Your data stays yours', 'Export your carriers any time. Credentials are stored encrypted.'],
+            ].map(([Icon, hue, t, d]) => (
+              <div key={t} className="flex gap-3 rounded-2xl border border-line bg-surface p-5">
+                <Chip icon={Icon} hue={hue} />
+                <div><h3 className="text-[15px] font-semibold text-fg">{t}</h3><p className="mt-1 text-sm leading-6 text-fg-2">{d}</p></div>
+              </div>
             ))}
-          </ol>
+          </div>
         </div>
       </section>
 
-      <section className="border-t border-line">
-        <div className="mx-auto grid max-w-6xl gap-10 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr] lg:items-center">
-          <div>
-            <h2 className="text-[28px] font-medium tracking-[-0.01em]">Ask a dispatch question</h2>
-            <p className="mt-2 text-fg-2">Cold calls, carrier onboarding, broker emails, rate per mile</p>
-          </div>
-          <AskBox />
+      {/* Pricing */}
+      <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
+        <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
+          <SectionHead eyebrow="Pricing" hue="teal" title="Start free, upgrade when you grow" />
+          <Link to="/pricing" className="text-sm font-medium text-brand-700 hover:underline dark:text-brand-300">Compare all plans</Link>
         </div>
+        <div className="mt-10"><PricingTeaser user={user} /></div>
       </section>
 
-      <section className="border-t border-line">
-        <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-4 py-14 sm:flex-row sm:items-center sm:px-6">
-          <div>
-            <h2 className="text-lg font-medium">Ready to build your carrier list?</h2>
-            <p className="mt-1 text-sm text-fg-2">Browse the <Link to="/marketplace" className="text-fg underline underline-offset-2">marketplace</Link> or join the <Link to="/community" className="text-fg underline underline-offset-2">community</Link> while you set up</p>
-          </div>
-          <Button size="lg" to={user ? '/app/discover' : '/register'}>{user ? 'Find carriers' : 'Create free account'}<ArrowRight className="size-4" /></Button>
-        </div>
+      {/* FAQ */}
+      <section className="mx-auto max-w-3xl px-4 pb-20 sm:px-6">
+        <SectionHead eyebrow="Questions" hue="pink" title="Common questions" center />
+        <div className="mt-10"><FaqList /></div>
       </section>
+
+      <CtaBand user={user} />
     </>
   );
 }

@@ -182,8 +182,47 @@ r.get('/subscriptions', requirePermission('admin.billing'), ah(async (req, res) 
   ]);
   res.json(pageResult(rows.map((s) => ({
     id: s.id, status: s.status, plan: s.plan.name, planKey: s.plan.key, seats: s.seats, user: s.user, team: s.team?.name ?? null,
-    stripeSubscriptionId: s.stripeSubscriptionId, currentPeriodEnd: s.currentPeriodEnd, cancelAtPeriodEnd: s.cancelAtPeriodEnd, createdAt: s.createdAt,
+    stripeSubscriptionId: s.stripeSubscriptionId, granted: !s.stripeSubscriptionId && !s.stripeCheckoutId, currentPeriodEnd: s.currentPeriodEnd, cancelAtPeriodEnd: s.cancelAtPeriodEnd, createdAt: s.createdAt,
   })), total, q));
+}));
+
+/**
+ * Grant a plan without payment (comp, trial, partner, or before Stripe is set up).
+ * Stored as a subscription with no Stripe IDs; it ends at `currentPeriodEnd` (null = no end) or when revoked.
+ */
+r.post('/subscriptions/grant', requirePermission('admin.billing'), ah(async (req, res) => {
+  const body = parse(z.object({
+    userId: z.string().min(1).max(40),
+    planKey: z.string().min(1).max(30),
+    months: z.coerce.number().int().min(1).max(120).nullable().optional(),
+    seats: z.coerce.number().int().min(1).max(1000).optional(),
+  }), req.body);
+  const [user, plan] = await Promise.all([
+    prisma.user.findUnique({ where: { id: body.userId } }),
+    prisma.plan.findUnique({ where: { key: body.planKey } }),
+  ]);
+  if (!user) throw notFound('User not found');
+  if (!plan || plan.key === 'free') throw badRequest('Pick a paid plan to grant');
+  const paying = await prisma.subscription.findFirst({ where: { userId: user.id, status: { in: ['active', 'trialing', 'past_due'] }, stripeSubscriptionId: { not: null } } });
+  if (paying) throw conflict('This user already pays through Stripe. Change their plan there instead.');
+  const end = body.months ? new Date(Date.now() + body.months * 30.44 * 86400000) : null;
+  const seats = Math.max(body.seats || 1, plan.perSeat ? plan.minSeats : 1);
+  const existing = await prisma.subscription.findFirst({ where: { userId: user.id, stripeSubscriptionId: null, status: { in: ['active', 'trialing'] } } });
+  const data = { planId: plan.id, status: 'active', seats, currentPeriodEnd: end, cancelAtPeriodEnd: !!end };
+  const sub = existing
+    ? await prisma.subscription.update({ where: { id: existing.id }, data })
+    : await prisma.subscription.create({ data: { ...data, userId: user.id } });
+  await audit(req, 'admin.plan_granted', { entityType: 'subscription', entityId: sub.id, details: { userId: user.id, plan: plan.key, months: body.months ?? null, seats } });
+  res.status(existing ? 200 : 201).json({ subscription: { id: sub.id, planKey: plan.key, status: sub.status, currentPeriodEnd: sub.currentPeriodEnd, seats } });
+}));
+
+r.post('/subscriptions/:id/revoke', requirePermission('admin.billing'), ah(async (req, res) => {
+  const sub = await prisma.subscription.findUnique({ where: { id: String(req.params.id) } });
+  if (!sub) throw notFound('Subscription not found');
+  if (sub.stripeSubscriptionId) throw badRequest('This plan is paid through Stripe. Cancel it in Stripe or from their billing page.');
+  await prisma.subscription.update({ where: { id: sub.id }, data: { status: 'canceled', currentPeriodEnd: new Date() } });
+  await audit(req, 'admin.plan_revoked', { entityType: 'subscription', entityId: sub.id });
+  res.json({ ok: true });
 }));
 
 r.get('/payments', requirePermission('admin.billing'), ah(async (req, res) => {
