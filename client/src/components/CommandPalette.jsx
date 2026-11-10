@@ -25,7 +25,7 @@ const ACTIONS = [
 ];
 
 const PAGES = [
-  ['Dashboard', '/app', LayoutDashboard], ['Lead generator', '/app/lead-generator', Crosshair], ['Market', '/app/market', Radar], ['Fleet map', '/app/fleet', Truck], ['Find carriers', '/app/discover', Radar], ['Carrier list', '/app/carriers', Truck],
+  ['Dashboard', '/app', LayoutDashboard], ['Lead generator', '/app/lead-generator', Crosshair], ['Market', '/app/market', Radar], ['Fleet map', '/app/fleet', Truck], ['Today', '/app/today', CalendarClock], ['Invoices', '/app/invoices', Calculator], ['Templates', '/app/templates', Mail], ['New authority', '/app/new-authority', Radar], ['Post trucks', '/app/truck-posts', Truck], ['Find carriers', '/app/discover', Radar], ['Carrier list', '/app/carriers', Truck],
   ['Import CSV', '/app/import', Upload], ['Pipeline', '/app/pipeline', KanbanSquare], ['Prospecting', '/app/prospecting', PhoneCall],
   ['Power dialer', '/app/dialer', PhoneOutgoing], ['Call scripts', '/app/call-scripts', ScrollText], ['Sequences', '/app/sequences', ListOrdered],
   ['Follow-ups', '/app/follow-ups', CalendarClock], ['Opportunities', '/app/opportunities', Handshake], ['Customers', '/app/customers', BadgeCheck],

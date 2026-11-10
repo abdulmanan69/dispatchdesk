@@ -40,81 +40,89 @@ model RolePermission {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  passwordHash    String
-  name            String
-  phone           String?
-  bio             String?
-  avatarPath      String?
-  roleId          Int
-  status          String    @default("active") // active | suspended
-  emailVerifiedAt DateTime?
-  theme           String    @default("system") // light | dark | system
-  timezone        String    @default("America/Chicago")
-  emailSignature  String?
-  notifyEmail     Boolean   @default(true)
-  notifyInApp     Boolean   @default(true)
-  notifyFollowUps Boolean   @default(true)
-  notifyCommunity Boolean   @default(true)
-  lastLoginAt     DateTime?
-  tourState       String    @default("{}") // JSON: onboarding tours completed
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  name              String
+  phone             String?
+  bio               String?
+  avatarPath        String?
+  roleId            Int
+  status            String    @default("active") // active | suspended
+  emailVerifiedAt   DateTime?
+  theme             String    @default("system") // light | dark | system
+  timezone          String    @default("America/Chicago")
+  emailSignature    String?
+  notifyEmail       Boolean   @default(true)
+  notifyInApp       Boolean   @default(true)
+  notifyFollowUps   Boolean   @default(true)
+  notifyCommunity   Boolean   @default(true)
+  lastLoginAt       DateTime?
+  tourState         String    @default("{}") // JSON: onboarding tours completed
+  calendarTokenHash String?   @unique // private iCalendar feed (sha256 of the token)
+  notifyPush        Boolean   @default(true)
+  notifyDigest      Boolean   @default(true) // one daily email digest instead of per-reminder emails
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  role                Role                  @relation(fields: [roleId], references: [id])
-  sessions            Session[]
-  tokens              AuthToken[]
-  teamMembership      TeamMember?
-  ownedTeams          Team[]                @relation("TeamOwner")
-  sentInvitations     Invitation[]          @relation("InvitedBy")
-  subscriptions       Subscription[]
-  payments            Payment[]
-  carriers            Carrier[]             @relation("CarrierOwner")
-  assignedCarriers    Carrier[]             @relation("CarrierAssignee")
-  carrierNotes        CarrierNote[]
-  tags                Tag[]
-  opportunities       Opportunity[]
-  customers           Customer[]
-  calls               Call[]
-  emailAccounts       EmailAccount[]
-  emails              Email[]
-  emailTemplates      EmailTemplate[]
-  emailSequences      EmailSequence[]
-  enrollments         SequenceEnrollment[]
-  followUps           FollowUp[]
-  activities          Activity[]
-  brokers             Broker[]
-  loads               Load[]
-  callSettings        CallSettings?
-  callAttempts        CallAttempt[]
-  callScripts         CallScript[]
-  apiTokens           ApiToken[]
-  leadGenerators      LeadGenerator[]
-  leadGenRuns         LeadGenRun[]
-  locationShares      LocationShare[]
-  documents           Document[]            @relation("DocumentOwner")
-  uploadedDocuments   Document[]            @relation("DocumentUploader")
-  trainingCourses     TrainingCourse[]
-  trainingProgress    TrainingProgress[]
-  trainingRequests    TrainingRequest[]
-  trainerThread       TrainerMessage[]      @relation("TrainerThread")
-  trainerAuthored     TrainerMessage[]      @relation("TrainerAuthor")
-  listings            MarketplaceListing[]
-  sentMarketMessages  MarketplaceMessage[]  @relation("MarketSender")
-  recvMarketMessages  MarketplaceMessage[]  @relation("MarketRecipient")
-  posts               CommunityPost[]
-  comments            CommunityComment[]
-  reports             ContentReport[]       @relation("Reporter")
-  resolvedReports     ContentReport[]       @relation("Resolver")
-  aiConversations     AIConversation[]
-  knowledgeDocuments  AIKnowledgeDocument[]
-  automations         Automation[]
-  notifications       Notification[]
-  auditLogs           AuditLog[]
-  suppressions        EmailSuppression[]
-  prospectLists       ProspectList[]
-  settingsUpdated     SystemSetting[]
+  role               Role                  @relation(fields: [roleId], references: [id])
+  sessions           Session[]
+  tokens             AuthToken[]
+  teamMembership     TeamMember?
+  ownedTeams         Team[]                @relation("TeamOwner")
+  sentInvitations    Invitation[]          @relation("InvitedBy")
+  subscriptions      Subscription[]
+  payments           Payment[]
+  carriers           Carrier[]             @relation("CarrierOwner")
+  assignedCarriers   Carrier[]             @relation("CarrierAssignee")
+  carrierNotes       CarrierNote[]
+  tags               Tag[]
+  opportunities      Opportunity[]
+  customers          Customer[]
+  calls              Call[]
+  emailAccounts      EmailAccount[]
+  emails             Email[]
+  emailTemplates     EmailTemplate[]
+  emailSequences     EmailSequence[]
+  enrollments        SequenceEnrollment[]
+  followUps          FollowUp[]
+  activities         Activity[]
+  brokers            Broker[]
+  loads              Load[]
+  callSettings       CallSettings?
+  callAttempts       CallAttempt[]
+  callScripts        CallScript[]
+  apiTokens          ApiToken[]
+  leadGenerators     LeadGenerator[]
+  leadGenRuns        LeadGenRun[]
+  locationShares     LocationShare[]
+  textTemplates      TextTemplate[]
+  pushSubscriptions  PushSubscription[]
+  invoices           Invoice[]
+  loadEvents         LoadEvent[]
+  loadShares         LoadShare[]
+  documents          Document[]            @relation("DocumentOwner")
+  uploadedDocuments  Document[]            @relation("DocumentUploader")
+  trainingCourses    TrainingCourse[]
+  trainingProgress   TrainingProgress[]
+  trainingRequests   TrainingRequest[]
+  trainerThread      TrainerMessage[]      @relation("TrainerThread")
+  trainerAuthored    TrainerMessage[]      @relation("TrainerAuthor")
+  listings           MarketplaceListing[]
+  sentMarketMessages MarketplaceMessage[]  @relation("MarketSender")
+  recvMarketMessages MarketplaceMessage[]  @relation("MarketRecipient")
+  posts              CommunityPost[]
+  comments           CommunityComment[]
+  reports            ContentReport[]       @relation("Reporter")
+  resolvedReports    ContentReport[]       @relation("Resolver")
+  aiConversations    AIConversation[]
+  knowledgeDocuments AIKnowledgeDocument[]
+  automations        Automation[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  suppressions       EmailSuppression[]
+  prospectLists      ProspectList[]
+  settingsUpdated    SystemSetting[]
 
   @@index([roleId])
   @@index([createdAt])
@@ -152,14 +160,14 @@ model AuthToken {
 // ---------------------------------------------------------------------------
 
 model Team {
-  id                 String       @id @default(cuid())
+  id                 String         @id @default(cuid())
   name               String
   ownerId            String
-  leaderboardEnabled Boolean      @default(true)
-  managersSeeAll     Boolean      @default(true)
-  createdAt          DateTime     @default(now())
-  updatedAt          DateTime     @updatedAt
-  owner              User         @relation("TeamOwner", fields: [ownerId], references: [id])
+  leaderboardEnabled Boolean        @default(true)
+  managersSeeAll     Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  owner              User           @relation("TeamOwner", fields: [ownerId], references: [id])
   members            TeamMember[]
   invitations        Invitation[]
   subscriptions      Subscription[]
@@ -169,15 +177,15 @@ model Team {
 }
 
 model TeamMember {
-  id                String   @id @default(cuid())
-  teamId            String
-  userId            String   @unique // one team per user
-  role              String   @default("dispatcher") // owner | manager | dispatcher
-  canViewTeamData   Boolean  @default(false)
-  canManageMembers  Boolean  @default(false)
-  joinedAt          DateTime @default(now())
-  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  teamId           String
+  userId           String   @unique // one team per user
+  role             String   @default("dispatcher") // owner | manager | dispatcher
+  canViewTeamData  Boolean  @default(false)
+  canManageMembers Boolean  @default(false)
+  joinedAt         DateTime @default(now())
+  team             Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([teamId])
 }
@@ -205,35 +213,35 @@ model Invitation {
 // ---------------------------------------------------------------------------
 
 model Plan {
-  id                Int            @id @default(autoincrement())
-  key               String         @unique // free | pro | annual | teams | company
-  name              String
-  description       String?
-  priceCents        Int            @default(0)
-  basePriceCents    Int            @default(0) // flat fee on top of per-seat (company)
-  interval          String         @default("month") // month | year
-  perSeat           Boolean        @default(false)
-  minSeats          Int            @default(1)
-  trialDays         Int            @default(0)
-  stripePriceId     String?
-  stripeBasePriceId String?
-  maxCarriers       Int            @default(500)
-  dailyEmailLimit   Int            @default(20)
-  monthlyAiMessages Int            @default(30)
-  maxSequences      Int            @default(1)
-  maxAutomations    Int            @default(0)
-  maxDiscoveryPerDay Int           @default(100)
-  monthlyLeadGenLimit Int          @default(50) // leads the lead generator may create per month
-  maxLeadGenerators  Int           @default(1)
-  leadGenAutoRun     Boolean       @default(false) // scheduled (daily/weekly) generator runs
-  advancedReports   Boolean        @default(false)
-  trainingIncluded  Boolean        @default(false)
-  teamFeatures      Boolean        @default(false)
-  active            Boolean        @default(true)
-  sortOrder         Int            @default(0)
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  subscriptions     Subscription[]
+  id                  Int            @id @default(autoincrement())
+  key                 String         @unique // free | pro | annual | teams | company
+  name                String
+  description         String?
+  priceCents          Int            @default(0)
+  basePriceCents      Int            @default(0) // flat fee on top of per-seat (company)
+  interval            String         @default("month") // month | year
+  perSeat             Boolean        @default(false)
+  minSeats            Int            @default(1)
+  trialDays           Int            @default(0)
+  stripePriceId       String?
+  stripeBasePriceId   String?
+  maxCarriers         Int            @default(500)
+  dailyEmailLimit     Int            @default(20)
+  monthlyAiMessages   Int            @default(30)
+  maxSequences        Int            @default(1)
+  maxAutomations      Int            @default(0)
+  maxDiscoveryPerDay  Int            @default(100)
+  monthlyLeadGenLimit Int            @default(50) // leads the lead generator may create per month
+  maxLeadGenerators   Int            @default(1)
+  leadGenAutoRun      Boolean        @default(false) // scheduled (daily/weekly) generator runs
+  advancedReports     Boolean        @default(false)
+  trainingIncluded    Boolean        @default(false)
+  teamFeatures        Boolean        @default(false)
+  active              Boolean        @default(true)
+  sortOrder           Int            @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  subscriptions       Subscription[]
 }
 
 model Subscription {
@@ -303,34 +311,34 @@ model PipelineStage {
 }
 
 model Carrier {
-  id               String    @id @default(cuid())
-  ownerId          String
-  assignedToId     String?
-  stageId          Int
-  companyName      String
-  dbaName          String?
-  dotNumber        String?
-  mcNumber         String?
-  phone            String?
-  email            String?
-  address          String?
-  city             String?
-  state            String?
-  zip              String?
-  equipment        String? // comma separated: dry_van, reefer, flatbed, step_deck, power_only, hotshot, box_truck, tanker, car_hauler, other
-  fleetSize        Int?
-  drivers          Int?
-  authorityStatus  String? // active | inactive | pending | unknown
-  authorityDate    DateTime?
-  operatingStatus  String?
-  classification   String?
-  carrierOperation String?
-  source           String    @default("manual") // manual | csv | fmcsa_census | fmcsa_qc
-  sourceRef        String?
-  verifiedAt       DateTime?
-  timezone         String?
-  doNotCall        Boolean   @default(false)
-  doNotEmail       Boolean   @default(false)
+  id                String    @id @default(cuid())
+  ownerId           String
+  assignedToId      String?
+  stageId           Int
+  companyName       String
+  dbaName           String?
+  dotNumber         String?
+  mcNumber          String?
+  phone             String?
+  email             String?
+  address           String?
+  city              String?
+  state             String?
+  zip               String?
+  equipment         String? // comma separated: dry_van, reefer, flatbed, step_deck, power_only, hotshot, box_truck, tanker, car_hauler, other
+  fleetSize         Int?
+  drivers           Int?
+  authorityStatus   String? // active | inactive | pending | unknown
+  authorityDate     DateTime?
+  operatingStatus   String?
+  classification    String?
+  carrierOperation  String?
+  source            String    @default("manual") // manual | csv | fmcsa_census | fmcsa_qc
+  sourceRef         String?
+  verifiedAt        DateTime?
+  timezone          String?
+  doNotCall         Boolean   @default(false)
+  doNotEmail        Boolean   @default(false)
   truckStatus       String    @default("unknown") // unknown | available | loaded | off_duty | maintenance
   locationCity      String?
   locationState     String?
@@ -338,31 +346,36 @@ model Carrier {
   locationLng       Float?
   locationUpdatedAt DateTime?
   availableAt       DateTime?
-  locationSource    String?   // manual | driver_link | eld
-  priority         Int       @default(0) // 0 normal, 1 high, 2 hot
-  lastContactedAt  DateTime?
-  nextFollowUpAt   DateTime?
-  stageChangedAt   DateTime  @default(now())
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  locationSource    String? // manual | driver_link | eld
+  isFleet           Boolean   @default(false) // customer, or has a truck location/trip: shown on the fleet map
+  fmcsaSnapshot     String? // JSON: last FMCSA authority/insurance/contact snapshot (watchlist)
+  fmcsaCheckedAt    DateTime?
+  priority          Int       @default(0) // 0 normal, 1 high, 2 hot
+  lastContactedAt   DateTime?
+  nextFollowUpAt    DateTime?
+  stageChangedAt    DateTime  @default(now())
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  owner         User                 @relation("CarrierOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  assignedTo    User?                @relation("CarrierAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  stage         PipelineStage        @relation(fields: [stageId], references: [id])
-  contacts      CarrierContact[]
-  notes         CarrierNote[]
-  tags          CarrierTag[]
-  opportunity   Opportunity?
-  customer      Customer?
-  calls         Call[]
-  callAttempts  CallAttempt[]
-  emails        Email[]
-  enrollments   SequenceEnrollment[]
-  followUps     FollowUp[]
-  activities    Activity[]
-  loads         Load[]
-  documents     Document[]
-  listItems     ProspectListItem[]
+  owner          User                 @relation("CarrierOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  assignedTo     User?                @relation("CarrierAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  stage          PipelineStage        @relation(fields: [stageId], references: [id])
+  contacts       CarrierContact[]
+  notes          CarrierNote[]
+  tags           CarrierTag[]
+  opportunity    Opportunity?
+  customer       Customer?
+  calls          Call[]
+  callAttempts   CallAttempt[]
+  emails         Email[]
+  enrollments    SequenceEnrollment[]
+  followUps      FollowUp[]
+  activities     Activity[]
+  loads          Load[]
+  documents      Document[]
+  listItems      ProspectListItem[]
+  locationShares LocationShare[]
+  invoices       Invoice[]
 
   @@unique([ownerId, dotNumber])
   @@unique([ownerId, mcNumber])
@@ -371,7 +384,8 @@ model Carrier {
   @@index([ownerId, phone])
   @@index([assignedToId])
   @@index([state])
-  locationShares LocationShare[]
+  @@index([ownerId, createdAt])
+  @@index([ownerId, isFleet])
 }
 
 model CarrierContact {
@@ -401,6 +415,7 @@ model CarrierNote {
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
   @@index([carrierId, createdAt])
+  @@index([authorId])
 }
 
 model Tag {
@@ -480,6 +495,18 @@ model Customer {
   minRatePerMile     Float?
   maxDeadheadMiles   Int?
   homeBase           String?
+  maxWeightLbs       Int?
+  trailerLengthFt    Int?
+  hazmat             Boolean        @default(false)
+  twic               Boolean        @default(false)
+  teamDrivers        Boolean        @default(false)
+  avoidStates        String? // comma-separated state codes
+  homeTimeDays       String? // e.g. 'Sat,Sun' (days the truck is home)
+  costPerMileCents   Int?
+  minHaulMiles       Int?
+  maxHaulMiles       Int?
+  portalTokenHash    String?        @unique // carrier statement/portal link (sha256)
+  portalExpiresAt    DateTime?
   notes              String?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
@@ -503,16 +530,16 @@ model CustomerLane {
 }
 
 model Call {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
   carrierId   String
   userId      String
   outcome     String // no_answer | busy | voicemail | interested | not_interested | call_back | follow_up | converted
   notes       String?
   durationSec Int?
-  calledAt    DateTime @default(now())
+  calledAt    DateTime      @default(now())
   provider    String? // provider used to place the call (tel, google_voice, twilio, ...)
-  carrier     Carrier  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  carrier     Carrier       @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   attempts    CallAttempt[]
 
   @@index([userId, calledAt])
@@ -523,27 +550,31 @@ model Call {
 // Telephony, scripts and API tokens
 // ---------------------------------------------------------------------------
 
-/** Per-user click-to-call configuration. Twilio credentials are AES-GCM encrypted. */
+/**
+ * Per-user click-to-call configuration. Twilio credentials are AES-GCM encrypted.
+ */
 model CallSettings {
-  id                   String   @id @default(cuid())
-  userId               String   @unique
-  provider             String   @default("tel") // tel | google_voice | teams | zoom_phone | ringcentral | dialpad | eight_by_eight | callto | sip | custom | twilio
-  urlTemplate          String? // custom provider: e.g. https://example.com/dial?n={number}
-  myNumber             String? // the dispatcher's own phone (Twilio rings this first)
-  callerId             String? // Twilio verified/owned number shown to the carrier
-  twilioAccountSid     String?
-  twilioAuthTokenEnc   String?
-  autoOpenLog          Boolean  @default(true) // open the log-call form as soon as a call starts
-  autoAdvance          Boolean  @default(true) // power dialer moves to the next carrier after logging
-  enforceCallingHours  Boolean  @default(true) // block dialing outside 8:00–19:00 carrier local time
-  autoLogUnanswered    Boolean  @default(true) // bridge calls: auto-log no-answer/busy outcomes
-  defaultScriptId      String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  provider            String   @default("tel") // tel | google_voice | teams | zoom_phone | ringcentral | dialpad | eight_by_eight | callto | sip | custom | twilio
+  urlTemplate         String? // custom provider: e.g. https://example.com/dial?n={number}
+  myNumber            String? // the dispatcher's own phone (Twilio rings this first)
+  callerId            String? // Twilio verified/owned number shown to the carrier
+  twilioAccountSid    String?
+  twilioAuthTokenEnc  String?
+  autoOpenLog         Boolean  @default(true) // open the log-call form as soon as a call starts
+  autoAdvance         Boolean  @default(true) // power dialer moves to the next carrier after logging
+  enforceCallingHours Boolean  @default(true) // block dialing outside 8:00–19:00 carrier local time
+  autoLogUnanswered   Boolean  @default(true) // bridge calls: auto-log no-answer/busy outcomes
+  defaultScriptId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-/** One dial action. Link providers stop at "dialed"; bridge providers (Twilio) report real status by webhook. */
+/**
+ * One dial action. Link providers stop at "dialed"; bridge providers (Twilio) report real status by webhook.
+ */
 model CallAttempt {
   id             String    @id @default(cuid())
   userId         String
@@ -565,6 +596,7 @@ model CallAttempt {
 
   @@index([userId, createdAt])
   @@index([carrierId])
+  @@index([callId])
 }
 
 model CallScript {
@@ -580,7 +612,9 @@ model CallScript {
   @@index([ownerId])
 }
 
-/** Personal access token for the browser extension / integrations. Only the sha256 is stored. */
+/**
+ * Personal access token for the browser extension / integrations. Only the sha256 is stored.
+ */
 model ApiToken {
   id         String    @id @default(cuid())
   userId     String
@@ -597,28 +631,29 @@ model ApiToken {
 }
 
 model FollowUp {
-  id          String    @id @default(cuid())
-  carrierId   String
-  userId      String
-  dueAt       DateTime
-  type        String    @default("call") // call | email | text | task | meeting
-  title       String?
-  note        String?
-  priority    Int       @default(0) // 0 normal | 1 high | 2 urgent
-  recurrence  String    @default("none") // none | daily | weekdays | weekly | biweekly | monthly
-  remindMinutesBefore Int @default(0)
-  status      String    @default("pending") // pending | done | canceled
-  outcome     String? // what happened, recorded on completion
-  snoozeCount Int       @default(0)
-  completedAt DateTime?
-  notifiedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  carrier     Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(cuid())
+  carrierId           String
+  userId              String
+  dueAt               DateTime
+  type                String    @default("call") // call | email | text | task | meeting
+  title               String?
+  note                String?
+  priority            Int       @default(0) // 0 normal | 1 high | 2 urgent
+  recurrence          String    @default("none") // none | daily | weekdays | weekly | biweekly | monthly
+  remindMinutesBefore Int       @default(0)
+  status              String    @default("pending") // pending | done | canceled
+  outcome             String? // what happened, recorded on completion
+  snoozeCount         Int       @default(0)
+  completedAt         DateTime?
+  notifiedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  carrier             Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, status, dueAt])
   @@index([carrierId])
+  @@index([status, notifiedAt, dueAt])
 }
 
 model Activity {
@@ -664,6 +699,15 @@ model EmailAccount {
   dailyLimit      Int       @default(50)
   cooldownSeconds Int       @default(30)
   lastSentAt      DateTime?
+  sentDay         String? // YYYY-MM-DD the counter below belongs to
+  sentToday       Int       @default(0)
+  imapEnabled     Boolean   @default(false)
+  imapHost        String?
+  imapPort        Int?
+  imapSecure      Boolean   @default(true)
+  imapLastUid     Int?
+  imapCheckedAt   DateTime?
+  imapError       String?
   isDefault       Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -674,19 +718,23 @@ model EmailAccount {
 }
 
 model EmailTemplate {
-  id        String         @id @default(cuid())
-  ownerId   String
-  name      String
-  subject   String
-  body      String
-  category  String         @default("carrier") // carrier | broker | follow_up | other
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  steps     SequenceStep[]
-  emails    Email[]
+  id         String         @id @default(cuid())
+  ownerId    String
+  name       String
+  subject    String
+  body       String
+  category   String         @default("carrier") // carrier | broker | follow_up | other
+  useCount   Int            @default(0)
+  lastUsedAt DateTime?
+  starterKey String? // set when installed from a starter pack (prevents duplicates)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  owner      User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  steps      SequenceStep[]
+  emails     Email[]
 
   @@index([ownerId])
+  @@index([ownerId, starterKey])
 }
 
 model Email {
@@ -707,6 +755,11 @@ model Email {
   scheduledAt       DateTime?
   nextAttemptAt     DateTime?
   sentAt            DateTime?
+  messageId         String? // Message-ID header we generated (reply threading)
+  repliedAt         DateTime?
+  bouncedAt         DateTime?
+  bounceReason      String?
+  attachments       String? // JSON [{documentId, name, size}] sent with this email
   aiGenerated       Boolean             @default(false)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
@@ -717,9 +770,15 @@ model Email {
   template          EmailTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
   enrollment        SequenceEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
 
-  @@index([userId, status])
+  @@index([userId, status, sentAt])
   @@index([status, scheduledAt])
   @@index([carrierId])
+  @@index([enrollmentId, createdAt])
+  @@index([emailAccountId, status, sentAt])
+  @@index([templateId])
+  @@index([brokerId])
+  @@index([userId, updatedAt])
+  @@index([messageId])
 }
 
 model EmailSuppression {
@@ -734,21 +793,21 @@ model EmailSuppression {
 }
 
 model EmailSequence {
-  id                  String               @id @default(cuid())
-  ownerId             String
-  name                String
-  description         String?
-  active              Boolean              @default(true)
-  respectBusinessHours Boolean             @default(true)
-  windowStartHour     Int                  @default(9)
-  windowEndHour       Int                  @default(17)
-  skipWeekends        Boolean              @default(true)
-  maxEmailsPerDay     Int                  @default(50)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  owner               User                 @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  steps               SequenceStep[]
-  enrollments         SequenceEnrollment[]
+  id                   String               @id @default(cuid())
+  ownerId              String
+  name                 String
+  description          String?
+  active               Boolean              @default(true)
+  respectBusinessHours Boolean              @default(true)
+  windowStartHour      Int                  @default(9)
+  windowEndHour        Int                  @default(17)
+  skipWeekends         Boolean              @default(true)
+  maxEmailsPerDay      Int                  @default(50)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  owner                User                 @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  steps                SequenceStep[]
+  enrollments          SequenceEnrollment[]
 
   @@index([ownerId])
 }
@@ -787,6 +846,8 @@ model SequenceEnrollment {
 
   @@unique([sequenceId, carrierId])
   @@index([userId, status, nextStepAt])
+  @@index([carrierId, status])
+  @@index([status, nextStepAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -794,34 +855,39 @@ model SequenceEnrollment {
 // ---------------------------------------------------------------------------
 
 model Broker {
-  id           String   @id @default(cuid())
-  ownerId      String
-  companyName  String
-  contactName  String?
-  email        String?
-  phone        String?
-  address      String?
-  city         String?
-  state        String?
-  zip          String?
-  mcNumber     String?
-  dotNumber    String?
-  paymentTerms String? // e.g. Net 30, Quick pay 2%
-  daysToPay    Int?
-  creditRating String?
+  id               String    @id @default(cuid())
+  ownerId          String
+  companyName      String
+  contactName      String?
+  email            String?
+  phone            String?
+  address          String?
+  city             String?
+  state            String?
+  zip              String?
+  mcNumber         String?
+  dotNumber        String?
+  paymentTerms     String? // e.g. Net 30, Quick pay 2%
+  daysToPay        Int?
+  creditRating     String?
   creditLimitCents Int?
-  notes        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  loads        Load[]
-  emails       Email[]
+  fmcsaSnapshot    String? // JSON: authority, bond/insurance on file, contact info, added date
+  fmcsaCheckedAt   DateTime?
+  flags            String? // JSON array of red flags with reasons and sources
+  watch            Boolean   @default(false)
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  owner            User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  loads            Load[]
+  emails           Email[]
+  invoices         Invoice[]
 
   @@index([ownerId, companyName])
 }
 
 model Load {
-  id                  String    @id @default(cuid())
+  id                  String      @id @default(cuid())
   ownerId             String
   brokerId            String?
   carrierId           String?
@@ -836,31 +902,57 @@ model Load {
   destLng             Float?
   pickupDate          DateTime?
   deliveryDate        DateTime?
+  pickupWindowStart   DateTime?
+  pickupWindowEnd     DateTime?
+  deliveryWindowStart DateTime?
+  deliveryWindowEnd   DateTime?
+  pickupTz            String?
+  deliveryTz          String?
+  pickupFacility      String?
+  pickupAddress       String?
+  deliveryFacility    String?
+  deliveryAddress     String?
+  freeTimeHours       Float       @default(2)
+  tonuCents           Int         @default(0)
+  fitWarnings         String? // JSON warnings from the carrier-rules check at save time
+  fitAckAt            DateTime?
+  fitAckById          String?
+  routeGeometry       String? // encoded polyline of the road route (pickup -> delivery)
+  routeMiles          Float?
+  routeMinutes        Int?
+  routeSource         String? // osrm | estimate
+  routeComputedAt     DateTime?
+  lastCheckCallAt     DateTime?
   equipment           String?
   commodity           String?
   weightLbs           Int?
   loadedMiles         Int
-  deadheadMiles       Int       @default(0)
+  deadheadMiles       Int         @default(0)
   rateCents           Int
-  detentionHours      Float     @default(0)
-  detentionRateCents  Int       @default(0)
+  detentionHours      Float       @default(0)
+  detentionRateCents  Int         @default(0)
   fuelPricePerGallon  Float?
   mpg                 Float?
-  otherCostsCents     Int       @default(0)
+  otherCostsCents     Int         @default(0)
   dispatchFeePercent  Float?
-  status              String    @default("planned") // planned | booked | in_transit | delivered | invoiced | paid | canceled
+  status              String      @default("planned") // planned | booked | in_transit | delivered | invoiced | paid | canceled
   notes               String?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-  owner               User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  broker              Broker?   @relation(fields: [brokerId], references: [id], onDelete: SetNull)
-  carrier             Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  owner               User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  broker              Broker?     @relation(fields: [brokerId], references: [id], onDelete: SetNull)
+  carrier             Carrier?    @relation(fields: [carrierId], references: [id], onDelete: SetNull)
   documents           Document[]
+  events              LoadEvent[]
+  shares              LoadShare[]
+  invoices            Invoice[]
 
   @@index([ownerId, status])
   @@index([brokerId])
   @@index([carrierId])
   @@index([ownerId, originState, destState])
+  @@index([ownerId, pickupDate])
+  @@index([ownerId, deliveryDate])
 }
 
 model Document {
@@ -875,6 +967,7 @@ model Document {
   mimeType     String
   sizeBytes    Int
   expiresAt    DateTime?
+  source       String? // upload | driver_link | portal | email
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   owner        User      @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Cascade)
@@ -885,6 +978,8 @@ model Document {
   @@index([ownerId])
   @@index([carrierId])
   @@index([loadId])
+  @@index([uploadedById])
+  @@index([expiresAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -952,17 +1047,18 @@ model TrainingRequest {
 }
 
 model TrainerMessage {
-  id          String    @id @default(cuid())
+  id           String    @id @default(cuid())
   threadUserId String // the student whose thread this is
-  authorId    String
-  fromTrainer Boolean   @default(false)
-  body        String
-  readAt      DateTime?
-  createdAt   DateTime  @default(now())
-  threadUser  User      @relation("TrainerThread", fields: [threadUserId], references: [id], onDelete: Cascade)
-  author      User      @relation("TrainerAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  authorId     String
+  fromTrainer  Boolean   @default(false)
+  body         String
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+  threadUser   User      @relation("TrainerThread", fields: [threadUserId], references: [id], onDelete: Cascade)
+  author       User      @relation("TrainerAuthor", fields: [authorId], references: [id], onDelete: Cascade)
 
   @@index([threadUserId, createdAt])
+  @@index([authorId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,6 +1102,7 @@ model MarketplaceMessage {
 
   @@index([recipientId, createdAt])
   @@index([listingId])
+  @@index([senderId, createdAt])
 }
 
 model CommunityPost {
@@ -1024,6 +1121,7 @@ model CommunityPost {
 
   @@index([status, category, createdAt])
   @@index([authorId])
+  @@index([status, pinned, createdAt])
 }
 
 model CommunityComment {
@@ -1042,6 +1140,8 @@ model CommunityComment {
   reports   ContentReport[]
 
   @@index([postId, createdAt])
+  @@index([authorId])
+  @@index([parentId])
 }
 
 model ContentReport {
@@ -1063,6 +1163,10 @@ model ContentReport {
   comment      CommunityComment?   @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([listingId])
+  @@index([postId])
+  @@index([commentId])
+  @@index([reporterId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1264,7 @@ model Notification {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
 }
 
 model AuditLog {
@@ -1187,7 +1292,9 @@ model SystemSetting {
   updatedBy   User?    @relation(fields: [updatedById], references: [id], onDelete: SetNull)
 }
 
-/** Saved lead-generation profile: FMCSA Census criteria that produce fresh, de-duplicated leads on demand or on a schedule. */
+/**
+ * Saved lead-generation profile: FMCSA Census criteria that produce fresh, de-duplicated leads on demand or on a schedule.
+ */
 model LeadGenerator {
   id         String       @id @default(cuid())
   ownerId    String
@@ -1213,83 +1320,205 @@ model LeadGenerator {
 }
 
 model LeadGenRun {
-  id          String        @id @default(cuid())
+  id          String         @id @default(cuid())
   generatorId String?
   ownerId     String
-  trigger     String        @default("manual") // manual | scheduled
-  status      String        @default("ok") // ok | limited | exhausted | error
-  scanned     Int           @default(0)
-  created     Int           @default(0)
-  skipped     Int           @default(0)
-  belowScore  Int           @default(0)
-  carrierIds  String        @default("[]") // JSON array of created carrier ids
+  trigger     String         @default("manual") // manual | scheduled
+  status      String         @default("ok") // ok | limited | exhausted | error
+  scanned     Int            @default(0)
+  created     Int            @default(0)
+  skipped     Int            @default(0)
+  belowScore  Int            @default(0)
+  carrierIds  String         @default("[]") // JSON array of created carrier ids
   message     String?
-  createdAt   DateTime      @default(now())
+  createdAt   DateTime       @default(now())
   generator   LeadGenerator? @relation(fields: [generatorId], references: [id], onDelete: SetNull)
-  owner       User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner       User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([ownerId, createdAt])
   @@index([generatorId, createdAt])
 }
 
-/** Consent-based live location: a driver opens a secret link on their phone and shares GPS while the page is open. */
+/**
+ * Consent-based live location: a driver opens a secret link on their phone and shares GPS while the page is open.
+ */
 model LocationShare {
-  id          String          @id @default(cuid())
-  carrierId   String
-  ownerId     String
-  tokenHash   String          @unique // sha256 of the link token; the token itself is never stored
-  driverName  String?
-  driverPhone String?
-  loadId      String?         // trip shown to the driver
-  status      String          @default("pending") // pending | sharing | paused | stopped | expired | locked
-  consentAt   DateTime?
-  expiresAt   DateTime        // before the first device claims the link this is the claim deadline; then claim time + durationHours
-  durationHours Int           @default(24)
-  claimMinutes  Int           @default(120) // the link must be opened within this window or it expires
+  id             String         @id @default(cuid())
+  carrierId      String
+  ownerId        String
+  tokenHash      String         @unique // sha256 of the link token; the token itself is never stored
+  driverName     String?
+  driverPhone    String?
+  loadId         String? // trip shown to the driver
+  status         String         @default("pending") // pending | sharing | paused | stopped | expired | locked
+  consentAt      DateTime?
+  expiresAt      DateTime // before the first device claims the link this is the claim deadline; then claim time + durationHours
+  durationHours  Int            @default(24)
+  claimMinutes   Int            @default(120) // the link must be opened within this window or it expires
   // Anti-forwarding: the link is bound to the first phone that claims it (only a hash of the device secret is kept).
-  deviceHash    String?
-  deviceLabel   String?       // e.g. "iPhone · Safari"
-  deviceKind    String?       // mobile | desktop | unknown
-  deviceBoundAt DateTime?
-  firstBoundAt  DateTime?
-  firstSeenIp   String?       // coarse only (/24 or /48), never the full address
-  pinHash       String?       // HMAC of the 6-digit PIN keyed with the app secret; null = no PIN on this link
-  pinAttempts   Int           @default(0)
-  pinVerifiedAt DateTime?
-  flags         String        @default("[]") // JSON [{ type, at, detail }], newest first, max 50
-  lastPingFlags String?       // comma-separated flags of the latest fix
-  lastAlertAt   DateTime?     // throttles security notifications (other device, locked) to the dispatcher
-  lastGpsAlertAt DateTime?    // separate throttle for GPS plausibility notifications
-  trustedLat    Float?        // last fix that passed the plausibility checks
-  trustedLng    Float?
-  trustedAt     DateTime?
-  lastLat     Float?
-  lastLng     Float?
-  lastAccuracy Float?
-  lastSpeed   Float?
-  lastHeading Float?
-  lastAt      DateTime?
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  carrier     Carrier         @relation(fields: [carrierId], references: [id], onDelete: Cascade)
-  owner       User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  pings       LocationPing[]
+  deviceHash     String?
+  deviceLabel    String? // e.g. "iPhone · Safari"
+  deviceKind     String? // mobile | desktop | unknown
+  deviceBoundAt  DateTime?
+  firstBoundAt   DateTime?
+  firstSeenIp    String? // coarse only (/24 or /48), never the full address
+  pinHash        String? // HMAC of the 6-digit PIN keyed with the app secret; null = no PIN on this link
+  pinAttempts    Int            @default(0)
+  pinVerifiedAt  DateTime?
+  flags          String         @default("[]") // JSON [{ type, at, detail }], newest first, max 50
+  lastPingFlags  String? // comma-separated flags of the latest fix
+  lastAlertAt    DateTime? // throttles security notifications (other device, locked) to the dispatcher
+  lastGpsAlertAt DateTime? // separate throttle for GPS plausibility notifications
+  trustedLat     Float? // last fix that passed the plausibility checks
+  trustedLng     Float?
+  trustedAt      DateTime?
+  lastLat        Float?
+  lastLng        Float?
+  lastAccuracy   Float?
+  lastSpeed      Float?
+  lastHeading    Float?
+  lastAt         DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  carrier        Carrier        @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner          User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  pings          LocationPing[]
 
   @@index([carrierId, status])
   @@index([ownerId])
 }
 
 model LocationPing {
-  id        String        @id @default(cuid())
-  shareId   String
-  lat       Float
-  lng       Float
-  accuracy  Float?
-  speed     Float?
-  heading   Float?
-  flags     String?       // comma-separated trust flags (impossible_jump, low_accuracy, desktop, stale_clock, far_from_trip)
-  at        DateTime      @default(now())
-  share     LocationShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  id       String        @id @default(cuid())
+  shareId  String
+  lat      Float
+  lng      Float
+  accuracy Float?
+  speed    Float?
+  heading  Float?
+  flags    String? // comma-separated trust flags (impossible_jump, low_accuracy, desktop, stale_clock, far_from_trip)
+  at       DateTime      @default(now())
+  share    LocationShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
 
   @@index([shareId, at])
+  @@index([at])
+}
+
+/**
+ * Text-message (SMS / Google Voice) templates. Texts are never sent automatically: they are copied and opened by the user.
+ */
+model TextTemplate {
+  id         String    @id @default(cuid())
+  ownerId    String
+  name       String
+  body       String
+  category   String    @default("carrier") // carrier | broker | driver | follow_up | other
+  starterKey String?
+  useCount   Int       @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  owner      User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, category])
+  @@index([ownerId, starterKey])
+}
+
+/**
+ * Web Push subscription (one per browser/device).
+ */
+model PushSubscription {
+  id         String    @id @default(cuid())
+  userId     String
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  failures   Int       @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/**
+ * Timeline of a load: check-ins, check calls, detention start/stop, documents, status changes.
+ */
+model LoadEvent {
+  id        String   @id @default(cuid())
+  loadId    String
+  ownerId   String
+  type      String // arrived_pickup | loaded | departed_pickup | arrived_delivery | delivered | issue | check_call | detention_start | detention_stop | document | status | note
+  at        DateTime @default(now())
+  lat       Float?
+  lng       Float?
+  note      String?
+  source    String   @default("dispatcher") // dispatcher | driver_link | broker_link | system
+  data      String? // JSON extras (document id, old/new status, etc.)
+  createdAt DateTime @default(now())
+  load      Load     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([loadId, at])
+  @@index([ownerId, at])
+}
+
+/**
+ * Read-only tracking link for the broker/shipper of one load (no driver identity, no CRM data).
+ */
+model LoadShare {
+  id           String    @id @default(cuid())
+  loadId       String
+  ownerId      String
+  tokenHash    String    @unique
+  label        String? // e.g. broker name
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  views        Int       @default(0)
+  lastViewedAt DateTime?
+  createdAt    DateTime  @default(now())
+  load         Load      @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  owner        User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([loadId])
+  @@index([ownerId])
+}
+
+/**
+ * Invoices: freight invoices to brokers (on behalf of the carrier) and dispatch-fee invoices to carriers.
+ */
+model Invoice {
+  id             String    @id @default(cuid())
+  ownerId        String
+  number         Int // per-owner sequence
+  kind           String    @default("freight") // freight | dispatch_fee
+  status         String    @default("draft") // draft | sent | partial | paid | void
+  loadId         String?
+  carrierId      String?
+  brokerId       String?
+  billToName     String
+  billToEmail    String?
+  lines          String // JSON [{description, quantity, unitCents, amountCents}]
+  amountCents    Int
+  paidCents      Int       @default(0)
+  issuedAt       DateTime?
+  dueAt          DateTime?
+  sentAt         DateTime?
+  paidAt         DateTime?
+  notes          String?
+  reminderCount  Int       @default(0)
+  lastReminderAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  owner          User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  load           Load?     @relation(fields: [loadId], references: [id], onDelete: SetNull)
+  carrier        Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  broker         Broker?   @relation(fields: [brokerId], references: [id], onDelete: SetNull)
+
+  @@unique([ownerId, number])
+  @@index([ownerId, status, dueAt])
+  @@index([loadId])
+  @@index([carrierId])
+  @@index([brokerId])
 }

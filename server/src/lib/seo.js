@@ -25,6 +25,8 @@ const PAGES = [
   { match: /^\/terms\/?$/, title: `Terms of service · ${SITE}`, description: 'The terms for using DispatchDesk.', sitemap: { path: '/terms', priority: '0.2' } },
   { match: /^\/privacy\/?$/, title: `Privacy policy · ${SITE}`, description: 'How DispatchDesk handles your data.', sitemap: { path: '/privacy', priority: '0.2' } },
   { match: /^\/track\/.+/, title: `Trip check-in link · ${SITE}`, description: 'From your dispatcher. Open this on the phone in your truck to share your location and check in at pickup and delivery. Works on one phone, and you can stop anytime.', image: IMG.track, noindex: true, alt: 'Trip check-in link: share your location from the phone in your truck' },
+  { match: /^\/t\/.+/, title: `Load tracking · ${SITE}`, description: 'Live status and estimated arrival for one load, shared by the dispatcher.', image: IMG.track, noindex: true, alt: 'Load tracking link' },
+  { match: /^\/portal\/.+/, title: `Carrier portal · ${SITE}`, description: 'Statements and documents from your dispatcher.', noindex: true },
   { match: /^\/invite\/.+/, title: `You are invited to a dispatch team · ${SITE}`, description: 'Join your team on DispatchDesk: shared pipeline, call queue, team board and leaderboard.', image: IMG.invite, noindex: true, alt: 'Invitation to a DispatchDesk team' },
   { match: /^\/(forgot-password|reset-password|verify-email|unsubscribe)\/?/, title: SITE, description: DEFAULT_DESC, noindex: true },
   { match: /^\/app(\/|$)/, title: SITE, description: DEFAULT_DESC, noindex: true },
@@ -69,7 +71,7 @@ export function headTags(pathname) {
     `<meta property="og:title" content="${escAttr(m.title)}" />`,
     `<meta property="og:description" content="${escAttr(m.description)}" />`,
     // Driver/invite links carry a secret token: never echo it into previews; point og:url at the site instead.
-    `<meta property="og:url" content="${escAttr(m.noindex && /^\/(track|invite)\//.test(pathname) ? `${config.appUrl}/` : url)}" />`,
+    `<meta property="og:url" content="${escAttr(m.noindex && /^\/(track|invite|t|portal)\//.test(pathname) ? `${config.appUrl}/` : url)}" />`,
     `<meta property="og:image" content="${escAttr(img)}" />`,
     '<meta property="og:image:type" content="image/png" />',
     '<meta property="og:image:width" content="1200" />',
@@ -89,7 +91,7 @@ const SEO_BLOCK = /<!--seo-->[\s\S]*?<!--\/seo-->/;
 /** Render index.html for a path (cached per path pattern result; the HTML is small). */
 const cache = new Map();
 export function renderIndex(template, pathname) {
-  const key = pathname.startsWith('/track/') ? '/track/*' : pathname.startsWith('/invite/') ? '/invite/*' : pathname.startsWith('/app') ? '/app/*' : pathname;
+  const key = pathname.startsWith('/track/') ? '/track/*' : pathname.startsWith('/t/') ? '/t/*' : pathname.startsWith('/portal/') ? '/portal/*' : pathname.startsWith('/invite/') ? '/invite/*' : pathname.startsWith('/app') ? '/app/*' : pathname;
   const hit = cache.get(key);
   if (hit) return hit;
   const { html, status } = headTags(key.endsWith('/*') ? key.replace('*', 'x') : pathname);
@@ -107,6 +109,8 @@ export function robotsTxt() {
     'Disallow: /api',
     'Disallow: /track',
     'Disallow: /invite',
+    'Disallow: /t/',
+    'Disallow: /portal',
     'Disallow: /reset-password',
     'Disallow: /verify-email',
     'Disallow: /unsubscribe',

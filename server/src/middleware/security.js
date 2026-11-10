@@ -9,7 +9,7 @@ export const CSRF_COOKIE = 'dd_csrf';
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Endpoints authenticated by other means (signatures) are exempt.
 // Twilio callbacks are authenticated by X-Twilio-Signature instead.
-const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//, /^\/api\/public\/track\//]; // track: the secret link token is the credential
+const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//, /^\/api\/public\/track\//, /^\/api\/public\/load-track\//, /^\/api\/public\/portal\//, /^\/api\/public\/calendar\//]; // track: the secret link token is the credential
 
 /**
  * Double-submit CSRF protection: a random token is set in a readable cookie and

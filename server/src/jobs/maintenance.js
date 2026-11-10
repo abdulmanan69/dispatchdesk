@@ -114,6 +114,18 @@ export const JOBS = [
   },
 ];
 
+// Feature modules add jobs by dropping a file into ./extra (export const jobs = [...]); loaded once at startup.
+const EXTRA_DIR = new URL('./extra/', import.meta.url);
+try {
+  const fs = await import('node:fs');
+  for (const f of fs.readdirSync(EXTRA_DIR).filter((n) => n.endsWith('.js')).sort()) {
+    const mod = await import(new URL(f, EXTRA_DIR).href);
+    for (const j of mod.jobs || []) if (!JOBS.some((x) => x.name === j.name)) JOBS.push(j);
+  }
+} catch (err) {
+  console.error(`[maintenance] could not load extra jobs: ${err.message}`);
+}
+
 const stateKey = (name) => `job.${name}`;
 
 async function readState(name) {

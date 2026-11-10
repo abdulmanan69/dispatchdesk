@@ -33,6 +33,8 @@ function RouteError() {
 export const router = createBrowserRouter([
   // Driver live-location link: public, no app chrome, opened on the driver's phone.
   { path: '/track/:token', errorElement: <RouteError />, element: L(() => import('./pages/track/DriverTrack.jsx')) },
+  { path: '/t/:token', errorElement: <RouteError />, element: L(() => import('./pages/track/LoadTrack.jsx')) },
+  { path: '/portal/:token', errorElement: <RouteError />, element: L(() => import('./pages/portal/CarrierPortal.jsx')) },
   {
     element: <PublicLayout />,
     errorElement: <RouteError />,
@@ -68,6 +70,11 @@ export const router = createBrowserRouter([
       { path: 'discover', element: L(() => import('./pages/carriers/Discover.jsx')) },
       { path: 'market', element: L(() => import('./pages/market/Market.jsx')) },
       { path: 'fleet', element: L(() => import('./pages/fleet/Fleet.jsx')) },
+      { path: 'today', element: L(() => import('./pages/today/Today.jsx')) },
+      { path: 'templates', element: L(() => import('./pages/templates/Templates.jsx')) },
+      { path: 'invoices', element: L(() => import('./pages/invoices/Invoices.jsx')) },
+      { path: 'new-authority', element: L(() => import('./pages/leads/NewAuthority.jsx')) },
+      { path: 'truck-posts', element: L(() => import('./pages/leads/TruckPosts.jsx')) },
       { path: 'lead-generator', element: L(() => import('./pages/carriers/LeadGenerator.jsx')) },
       { path: 'carriers', element: L(() => import('./pages/carriers/CarrierList.jsx')) },
       { path: 'carriers/:id', element: L(() => import('./pages/carriers/CarrierDetail.jsx')) },

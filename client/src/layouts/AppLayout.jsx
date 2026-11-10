@@ -5,6 +5,7 @@ import {
   LayoutDashboard, Radar, Truck, Upload, KanbanSquare, PhoneCall, ListOrdered, CalendarClock, Handshake, BadgeCheck,
   Building2, Package, Calculator, Mail, Workflow, Bot, GraduationCap, Store, MessagesSquare, Users, CreditCard, Settings,
   Shield, Bell, Search, Menu, X, Sun, Moon, LogOut, ChevronDown, Monitor, PanelLeftClose, PanelLeftOpen, PhoneOutgoing, ScrollText, Wrench, Puzzle, Crosshair, Map as MapIcon, MapPinned,
+  Sun as SunIcon, Receipt, FileStack, BadgePlus, Megaphone,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { applyTheme, storedTheme } from '../context/theme.js';
@@ -23,6 +24,7 @@ const NAV = [
     { to: '/app/discover', label: 'Find carriers', icon: Radar },
     { to: '/app/carriers', label: 'Carrier list', icon: Truck },
     { to: '/app/market', label: 'Market', icon: MapIcon },
+    { to: '/app/new-authority', label: 'New authority', icon: BadgePlus },
     { to: '/app/import', label: 'Import CSV', icon: Upload },
   ] },
   { hue: 'green', group: 'Sales', items: [
@@ -36,14 +38,18 @@ const NAV = [
     { to: '/app/customers', label: 'Customers', icon: BadgeCheck },
   ] },
   { hue: 'amber', group: 'Dispatch', items: [
+    { to: '/app/today', label: 'Today', icon: SunIcon },
     { to: '/app/brokers', label: 'Brokers', icon: Building2 },
     { to: '/app/fleet', label: 'Fleet map', icon: MapPinned },
     { to: '/app/loads', label: 'Loads', icon: Package, end: true },
+    { to: '/app/invoices', label: 'Invoices', icon: Receipt },
+    { to: '/app/truck-posts', label: 'Post trucks', icon: Megaphone },
     { to: '/app/loads/calculator', label: 'Rate calculator', icon: Calculator },
     { to: '/app/tools', label: 'Dispatch tools', icon: Wrench },
   ] },
   { hue: 'purple', group: 'Outreach', items: [
     { to: '/app/email', label: 'Email', icon: Mail },
+    { to: '/app/templates', label: 'Templates', icon: FileStack },
     { to: '/app/automations', label: 'Automations', icon: Workflow },
     { to: '/app/ai', label: 'AI dispatcher', icon: Bot },
   ] },

@@ -50,6 +50,16 @@ import callScriptRoutes from './routes/callScripts.js';
 import tokenRoutes from './routes/tokens.js';
 import tourRoutes from './routes/tours.js';
 import extensionRoutes from './routes/extension.js';
+import templateRoutes from './routes/templates.js';
+import invoiceRoutes from './routes/invoices.js';
+import portalRoutes from './routes/portal.js';
+import loadTrackRoutes from './routes/loadTrack.js';
+import pushRoutes from './routes/push.js';
+import calendarRoutes from './routes/calendar.js';
+import calendarFeedRoutes from './routes/calendarFeed.js';
+import todayRoutes from './routes/today.js';
+import authorityKitRoutes from './routes/authorityKit.js';
+import truckPostRoutes from './routes/truckPosts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = process.env.CLIENT_DIST || path.resolve(__dirname, '../../client/dist');
@@ -107,6 +117,9 @@ export function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/profile', profileRoutes);
   app.use('/api/public/track', trackRoutes); // driver live-location links (token in URL, no session)
+  app.use('/api/public/load-track', loadTrackRoutes); // broker/shipper tracking links (token in URL, no session)
+  app.use('/api/public/portal', portalRoutes); // carrier portal links (token in URL, no session)
+  app.use('/api/public/calendar', calendarFeedRoutes); // private iCalendar feeds (token in URL, no session)
   app.use('/api/public', publicRoutes);
   app.use('/api/billing', billingRoutes); // /plans is public, the rest checks auth itself
   app.use('/api/training', trainingRoutes); // catalogue + request form are public
@@ -144,6 +157,13 @@ export function createApp() {
   app.use('/api/tokens', requireAuth, tokenRoutes);
   app.use('/api/tours', requireAuth, tourRoutes);
   app.use('/api/extension', requireAuth, extensionRoutes);
+  app.use('/api/templates', requireAuth, templateRoutes);
+  app.use('/api/invoices', requireAuth, invoiceRoutes);
+  app.use('/api/push', requireAuth, pushRoutes);
+  app.use('/api/calendar', requireAuth, calendarRoutes);
+  app.use('/api/today', requireAuth, todayRoutes);
+  app.use('/api/authority-kit', requireAuth, authorityKitRoutes);
+  app.use('/api/truck-posts', requireAuth, truckPostRoutes);
 
   app.use('/api', notFoundApi);
 
