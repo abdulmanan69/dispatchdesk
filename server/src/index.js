@@ -1,10 +1,11 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
-import { prisma } from './db.js';
+import { prisma, tuneDatabase } from './db.js';
 import { bootstrap } from './bootstrap.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 
 async function main() {
+  await tuneDatabase();
   await bootstrap();
   const app = createApp();
   const server = app.listen(config.port, () => {

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { prisma } from '../db.js';
 import { ah, notFound } from '../lib/errors.js';
 import { parse, z, reqStr, optStr } from '../lib/validate.js';
-import { requireAuth, publicUser } from '../middleware/auth.js';
+import { requireAuth, publicUser, invalidateUserSessions } from '../middleware/auth.js';
 import { uploader, verifyFileSignature, removeFile, filePath } from '../middleware/upload.js';
 import { audit } from '../lib/audit.js';
 
@@ -26,6 +26,7 @@ r.patch('/', requireAuth, ah(async (req, res) => {
     notifyCommunity: z.boolean().optional(),
   }), req.body);
   const data = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+  invalidateUserSessions(req.user.id);
   const user = await prisma.user.update({
     where: { id: req.user.id }, data,
     include: { role: true, teamMembership: { include: { team: true } } },
@@ -37,6 +38,7 @@ r.post('/avatar', requireAuth, avatarUpload.single('file'), ah(async (req, res) 
   if (!req.file) throw notFound('No file uploaded');
   verifyFileSignature(req.file);
   if (req.user.avatarPath) removeFile('avatars', req.user.avatarPath);
+  invalidateUserSessions(req.user.id);
   const user = await prisma.user.update({
     where: { id: req.user.id }, data: { avatarPath: req.file.filename },
     include: { role: true, teamMembership: { include: { team: true } } },
@@ -48,6 +50,7 @@ r.post('/avatar', requireAuth, avatarUpload.single('file'), ah(async (req, res) 
 r.delete('/avatar', requireAuth, ah(async (req, res) => {
   if (req.user.avatarPath) removeFile('avatars', req.user.avatarPath);
   await prisma.user.update({ where: { id: req.user.id }, data: { avatarPath: null } });
+  invalidateUserSessions(req.user.id);
   res.json({ ok: true });
 }));
 

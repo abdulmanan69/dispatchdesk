@@ -6,6 +6,7 @@ import { ListOrdered, CalendarClock, BadgeCheck, Phone, UserPlus, Handshake } fr
 import { api } from '../../lib/api.js';
 import { num, pct, relative, dateTime, date, label } from '../../lib/format.js';
 import { Card, PageHeader, Select, StatCard, Loading, ErrorState, EmptyState, Button, cx } from '../../components/ui.jsx';
+import GettingStarted from '../../components/tour/GettingStarted.jsx';
 import { ChartBox, ThemedTooltip, useChartTheme, axisProps, shortDate, PALETTE, Legend, SERIES } from '../../components/dashboard/charts.jsx';
 
 const POSITIVE = new Set(['interested', 'converted', 'call_back', 'follow_up']);
@@ -57,6 +58,7 @@ function Body({ d, t }) {
 
   return (
     <div className="space-y-6">
+      <GettingStarted />
       {empty && (
         <Card>
           <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">

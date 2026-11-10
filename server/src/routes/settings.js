@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { ah, badRequest, conflict } from '../lib/errors.js';
 import { parse, z } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
-import { destroySession } from '../middleware/auth.js';
+import { destroySession, invalidateUserSessions } from '../middleware/auth.js';
 
 const r = Router();
 
@@ -100,6 +100,7 @@ r.delete('/account', ah(async (req, res) => {
   await audit(req, 'account.deleted', { entityType: 'user', entityId: req.user.id, details: { email: req.user.email } });
   await prisma.systemSetting.deleteMany({ where: { key: { startsWith: `user.${req.user.id}.` } } }); // per-user settings (e.g. spot rates)
   await prisma.user.delete({ where: { id: req.user.id } });
+  invalidateUserSessions(req.user.id);
   await destroySession(req, res);
   res.json({ ok: true });
 }));

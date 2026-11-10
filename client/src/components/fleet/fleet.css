@@ -1,0 +1,49 @@
+/* Fleet map truck pins (HTML markers on top of the MapLibre canvas). */
+.fleet-pin { width: 36px; height: 36px; cursor: pointer; } /* MapLibre makes the marker position: absolute; do not override it */
+.fleet-pin__body {
+  position: absolute; inset: 0; display: grid; place-items: center; border-radius: 9999px;
+  background: var(--pin-color); color: #fff; font: 600 11px/1 "IBM Plex Sans", system-ui, sans-serif; letter-spacing: .02em;
+  border: 2.5px solid #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .28), 0 0 0 1px rgba(0, 0, 0, .06);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.dark .fleet-pin__body { border-color: #18181b; box-shadow: 0 2px 8px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .08); }
+.fleet-pin:hover .fleet-pin__body { transform: scale(1.08); }
+.fleet-pin--selected .fleet-pin__body { transform: scale(1.14); box-shadow: 0 0 0 4px color-mix(in oklab, var(--pin-color) 35%, transparent), 0 4px 12px rgba(0, 0, 0, .3); }
+.fleet-pin--stale .fleet-pin__body { filter: grayscale(.85) brightness(1.05); opacity: .8; border-style: dashed; }
+
+/* Live (driver link) halo */
+.fleet-pin__halo { position: absolute; inset: -10px; border-radius: 9999px; background: var(--pin-color); opacity: 0; pointer-events: none; }
+.fleet-pin--live .fleet-pin__halo { animation: fleet-pulse 2s ease-out infinite; }
+@keyframes fleet-pulse { 0% { transform: scale(.5); opacity: .45; } 100% { transform: scale(1.35); opacity: 0; } }
+
+/* Heading arrow when moving */
+.fleet-pin__arrow {
+  position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin: -27px 0 0 -6px;
+  border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 9px solid var(--pin-color);
+  transform-origin: 6px 27px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .35));
+}
+
+/* Small label under the pin */
+.fleet-pin__tag {
+  position: absolute; left: 50%; top: 40px; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 2px 7px; border-radius: 9999px; font: 500 10.5px/1.4 "IBM Plex Sans", system-ui, sans-serif;
+  background: rgba(255, 255, 255, .95); color: #18181b; box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
+}
+.dark .fleet-pin__tag { background: rgba(24, 24, 27, .95); color: #fafafa; box-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.fleet-pin__tag--live { color: #15803d; }
+.dark .fleet-pin__tag--live { color: #4ade80; }
+.fleet-pin__tag--stale { color: #71717a; }
+.fleet-pin__dot { display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 9999px; background: currentColor; vertical-align: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fleet-pin--live .fleet-pin__halo { animation: none; opacity: .18; transform: scale(1); }
+}
+
+/* MapLibre controls: match the app surface */
+.fleet-map .maplibregl-ctrl-group { border-radius: 10px; overflow: hidden; box-shadow: 0 1px 4px rgba(0, 0, 0, .15); }
+.dark .fleet-map .maplibregl-ctrl-group { background: #18181b; }
+.dark .fleet-map .maplibregl-ctrl-group button + button { border-top-color: #27272a; }
+.dark .fleet-map .maplibregl-ctrl-icon { filter: invert(1) brightness(.9); }
+.dark .fleet-map .maplibregl-ctrl-attrib { background: rgba(24, 24, 27, .8); color: #a1a1aa; }
+.dark .fleet-map .maplibregl-ctrl-attrib a { color: #d4d4d8; }
+.dark .fleet-map .maplibregl-ctrl-scale { background: rgba(24, 24, 27, .8); color: #d4d4d8; border-color: #52525b; }

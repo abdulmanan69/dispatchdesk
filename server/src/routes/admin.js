@@ -6,7 +6,7 @@ import { prisma } from '../db.js';
 import { ah, badRequest, forbidden, notFound, conflict } from '../lib/errors.js';
 import { parse, z, pageQuery, paginate, pageResult, optStr, optInt, clean } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
-import { requirePermission } from '../middleware/auth.js';
+import { requirePermission, invalidateUserSessions } from '../middleware/auth.js';
 import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
@@ -128,6 +128,7 @@ r.patch('/users/:id', requirePermission('admin.users'), ah(async (req, res) => {
   if (body.status) data.status = body.status;
   if (body.emailVerified !== undefined) data.emailVerifiedAt = body.emailVerified ? (target.emailVerifiedAt || new Date()) : null;
   const user = await prisma.user.update({ where: { id: target.id }, data, include: { role: true } });
+  invalidateUserSessions(target.id);
   if (body.status === 'suspended') await prisma.session.deleteMany({ where: { userId: target.id } });
   await audit(req, 'admin.user_updated', { entityType: 'user', entityId: target.id, details: body });
   res.json({ user: { id: user.id, role: user.role.key, status: user.status, emailVerified: !!user.emailVerifiedAt } });
@@ -144,6 +145,7 @@ r.post('/users/:id/temp-password', requirePermission('admin.users'), ah(async (r
   const password = `Tmp-${randomBytes(9).toString('base64url')}7`;
   await prisma.user.update({ where: { id: target.id }, data: { passwordHash: await bcrypt.hash(password, 12) } });
   await prisma.session.deleteMany({ where: { userId: target.id } });
+  invalidateUserSessions(target.id);
   await audit(req, 'admin.user_temp_password', { entityType: 'user', entityId: target.id });
   res.json({ password, note: 'Share this once with the user. Ask them to change it in Settings → Security after signing in.' });
 }));
@@ -164,6 +166,7 @@ r.delete('/users/:id', requirePermission('admin.users'), ah(async (req, res) => 
   await deleteUserFiles(target.id);
   await prisma.systemSetting.deleteMany({ where: { key: { startsWith: `user.${target.id}.` } } }); // per-user settings (e.g. spot rates)
   await prisma.user.delete({ where: { id: target.id } });
+  invalidateUserSessions(target.id);
   await audit(req, 'admin.user_deleted', { entityType: 'user', entityId: target.id, details: { email: target.email } });
   res.json({ ok: true });
 }));

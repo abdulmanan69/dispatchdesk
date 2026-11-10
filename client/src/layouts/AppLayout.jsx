@@ -14,6 +14,7 @@ import { Avatar, Loading, cx } from '../components/ui.jsx';
 import { Logo } from '../components/Logo.jsx';
 import CommandPalette, { CommandHint } from '../components/CommandPalette.jsx';
 import FloatingDock from '../components/market/FloatingDock.jsx';
+import TourHost from '../components/tour/TourHost.jsx';
 
 const NAV = [
   { hue: 'teal', group: null, items: [{ to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
@@ -95,7 +96,7 @@ function Sidebar({ onNavigate, collapsed }) {
         return (
           <div key={i} className={i === 0 ? 'mt-1' : collapsed ? 'mt-2 border-t border-line pt-2' : 'mt-5'}>
             {section.group && !collapsed && (
-              <div className="mb-1 flex h-6 items-center gap-2 px-2.5 text-[11.5px] font-medium uppercase tracking-[0.06em] text-muted">
+              <div data-tour={`nav-group-${section.group.toLowerCase()}`} className="mb-1 flex h-6 items-center gap-2 px-2.5 text-[11.5px] font-medium uppercase tracking-[0.06em] text-muted">
                 <span className="flex w-6 justify-center" aria-hidden><span className={cx('size-1.5 rounded-full', hue.dot)} /></span>
                 {section.group}
               </div>
@@ -105,7 +106,7 @@ function Sidebar({ onNavigate, collapsed }) {
                 const n = it.count ? counts[it.count] : null;
                 const urgent = it.count === 'followUps' && counts.followUpsUrgent;
                 return (
-                  <NavLink key={it.to} to={it.to} end={it.end} onClick={onNavigate} title={collapsed ? it.label : undefined}
+                  <NavLink key={it.to} to={it.to} end={it.end} onClick={onNavigate} title={collapsed ? it.label : undefined} data-tour={`nav-${it.to.split('/').pop()}`}
                     className={({ isActive }) => cx('relative flex h-9 items-center gap-2 rounded-lg text-sm transition-ui', collapsed ? 'justify-center px-0' : 'px-2.5',
                       isActive ? cx(hue.active, 'font-medium text-fg') : 'text-fg-2 hover:bg-surface-2 hover:text-fg')}>
                     {({ isActive }) => (
@@ -148,7 +149,7 @@ function SidebarFooter({ collapsed }) {
   if (collapsed) return null;
   return (
     <div className="border-t border-line px-3 py-3">
-      <div className="grid grid-cols-4 gap-1.5" aria-label="US time zones">
+      <div className="grid grid-cols-4 gap-1.5" aria-label="US time zones" data-tour="clocks">
         {ZONES.map(([abbr, tz, hueKey]) => {
           const hue = GROUP_HUE[hueKey];
           const h = Number(now.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false }));
@@ -262,6 +263,7 @@ function UserMenu() {
           </div>
           <Link role="menuitem" to="/app/settings" onClick={() => setOpen(false)} className="block px-3.5 py-2 text-sm hover:bg-surface-2">Settings</Link>
           <Link role="menuitem" to="/app/billing" onClick={() => setOpen(false)} className="block px-3.5 py-2 text-sm hover:bg-surface-2">Billing</Link>
+          <button role="menuitem" type="button" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('dd:tour', { detail: { id: 'auto' } })); }} className="block w-full px-3.5 py-2 text-left text-sm hover:bg-surface-2">Take the tour</button>
           <Link role="menuitem" to="/" onClick={() => setOpen(false)} className="block px-3.5 py-2 text-sm hover:bg-surface-2">Public site</Link>
           <button role="menuitem" type="button" onClick={async () => { await logout(); navigate('/login'); }} className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-sm text-red-600 hover:bg-surface-2">
             <LogOut className="size-4" /> Log out
@@ -337,21 +339,22 @@ export default function AppLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-3 sm:px-4">
           <button type="button" className="rounded-md p-2 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
-          <form onSubmit={search} className="relative max-w-md flex-1" role="search">
+          <form onSubmit={search} className="relative max-w-md flex-1" role="search" data-tour="search">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search carriers, MC or DOT" aria-label="Search carriers by name, MC, DOT or phone"
               className="h-9 w-full rounded-lg border border-line bg-bg pl-8 pr-12 text-sm placeholder:text-muted transition-ui focus:border-brand-500 focus:outline-none" />
             <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-line-strong px-1.5 font-mono text-[11px] text-muted sm:block">Enter</kbd>
           </form>
           <div className="ml-auto flex items-center gap-1">
-            <span className="mr-1 hidden md:inline-flex"><CommandHint /></span>
+            <span className="mr-1 hidden md:inline-flex" data-tour="palette"><CommandHint /></span>
             <ThemeToggle />
-            <Notifications />
-            <UserMenu />
+            <span className="inline-flex" data-tour="notifications"><Notifications /></span>
+            <span className="inline-flex" data-tour="user-menu"><UserMenu /></span>
           </div>
         </header>
         <CommandPalette />
         <FloatingDock />
+        <TourHost />
         <VerifyBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div key={location.pathname} className="dd-enter mx-auto max-w-[1440px] px-4 py-6 sm:px-8 sm:py-8">

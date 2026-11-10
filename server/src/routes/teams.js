@@ -7,11 +7,13 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { logActivity, notify } from '../lib/activity.js';
 import { canViewTeam } from '../lib/access.js';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, invalidateUserSessions } from '../middleware/auth.js';
 import { sendSystemMail } from '../services/email/system.js';
 import { getSetting } from '../lib/settings.js';
 
 const r = Router();
+// Membership/role changes alter what users can see: drop cached sessions after any team write.
+r.use((req, res, next) => { if (req.method !== 'GET') res.on('finish', () => invalidateUserSessions()); next(); });
 const DAY = 86400000;
 
 const memberInclude = { user: { select: { id: true, name: true, email: true, avatarPath: true, updatedAt: true, lastLoginAt: true, role: { select: { key: true, name: true } } } } };

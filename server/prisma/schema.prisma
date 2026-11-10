@@ -58,6 +58,7 @@ model User {
   notifyFollowUps Boolean   @default(true)
   notifyCommunity Boolean   @default(true)
   lastLoginAt     DateTime?
+  tourState       String    @default("{}") // JSON: onboarding tours completed
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -91,6 +92,7 @@ model User {
   apiTokens           ApiToken[]
   leadGenerators      LeadGenerator[]
   leadGenRuns         LeadGenRun[]
+  locationShares      LocationShare[]
   documents           Document[]            @relation("DocumentOwner")
   uploadedDocuments   Document[]            @relation("DocumentUploader")
   trainingCourses     TrainingCourse[]
@@ -336,6 +338,7 @@ model Carrier {
   locationLng       Float?
   locationUpdatedAt DateTime?
   availableAt       DateTime?
+  locationSource    String?   // manual | driver_link | eld
   priority         Int       @default(0) // 0 normal, 1 high, 2 hot
   lastContactedAt  DateTime?
   nextFollowUpAt   DateTime?
@@ -368,6 +371,7 @@ model Carrier {
   @@index([ownerId, phone])
   @@index([assignedToId])
   @@index([state])
+  locationShares LocationShare[]
 }
 
 model CarrierContact {
@@ -1226,4 +1230,46 @@ model LeadGenRun {
 
   @@index([ownerId, createdAt])
   @@index([generatorId, createdAt])
+}
+
+/** Consent-based live location: a driver opens a secret link on their phone and shares GPS while the page is open. */
+model LocationShare {
+  id          String          @id @default(cuid())
+  carrierId   String
+  ownerId     String
+  tokenHash   String          @unique // sha256 of the link token; the token itself is never stored
+  driverName  String?
+  driverPhone String?
+  loadId      String?         // trip shown to the driver
+  status      String          @default("pending") // pending | sharing | paused | stopped | expired
+  consentAt   DateTime?
+  expiresAt   DateTime
+  lastLat     Float?
+  lastLng     Float?
+  lastAccuracy Float?
+  lastSpeed   Float?
+  lastHeading Float?
+  lastAt      DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  carrier     Carrier         @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner       User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  pings       LocationPing[]
+
+  @@index([carrierId, status])
+  @@index([ownerId])
+}
+
+model LocationPing {
+  id        String        @id @default(cuid())
+  shareId   String
+  lat       Float
+  lng       Float
+  accuracy  Float?
+  speed     Float?
+  heading   Float?
+  at        DateTime      @default(now())
+  share     LocationShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  @@index([shareId, at])
 }

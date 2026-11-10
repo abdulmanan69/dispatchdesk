@@ -5,6 +5,20 @@ import { unauthorized, forbidden } from '../lib/errors.js';
 
 export const SESSION_COOKIE = 'dd_session';
 
+// Short-lived cache of session → user/permissions so each request does not re-join user, role and permissions.
+// Entries live 10 s and are dropped immediately when a user is signed out, suspended, deleted or changes role/password.
+const SESSION_TTL_MS = 10_000;
+const sessionCache = new Map(); // sessionId -> { at, session }
+export function invalidateUserSessions(userId) {
+  for (const [k, v] of sessionCache) if (!userId || v.session.userId === userId) sessionCache.delete(k);
+}
+function cachedSession(id) {
+  const hit = sessionCache.get(id);
+  if (hit && Date.now() - hit.at < SESSION_TTL_MS) return hit.session;
+  if (hit) sessionCache.delete(id);
+  return null;
+}
+
 const userInclude = {
   role: { include: { permissions: { include: { permission: true } } } },
   teamMembership: { include: { team: true } },
@@ -26,6 +40,7 @@ export async function createSession(res, req, userId) {
 
 export async function destroySession(req, res) {
   const token = req.cookies?.[SESSION_COOKIE];
+  if (token) sessionCache.delete(sha256(token));
   if (token) await prisma.session.deleteMany({ where: { id: sha256(token) } });
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
@@ -56,7 +71,15 @@ export async function loadSession(req, res, next) {
     if (auth.startsWith('Bearer ddk_')) return await loadApiToken(req, res, next, auth.slice(7).trim());
     const token = req.cookies?.[SESSION_COOKIE];
     if (!token) return next();
-    const session = await prisma.session.findUnique({ where: { id: sha256(token) }, include: { user: { include: userInclude } } });
+    const sid = sha256(token);
+    let session = cachedSession(sid);
+    if (!session) {
+      session = await prisma.session.findUnique({ where: { id: sid }, include: { user: { include: userInclude } } });
+      if (session) {
+        if (sessionCache.size > 20000) sessionCache.clear();
+        sessionCache.set(sid, { at: Date.now(), session });
+      }
+    }
     if (!session || session.expiresAt < new Date()) {
       if (session) await prisma.session.delete({ where: { id: session.id } }).catch(() => {});
       res.clearCookie(SESSION_COOKIE, { path: '/' });
@@ -70,6 +93,7 @@ export async function loadSession(req, res, next) {
     if (Date.now() - session.lastSeenAt.getTime() > 5 * 60000) {
       const expiresAt = new Date(Date.now() + config.sessionDays * 86400000);
       await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date(), expiresAt } });
+      session.lastSeenAt = new Date();
       res.cookie(SESSION_COOKIE, token, cookieOptions(config.sessionDays * 86400000));
     }
     req.sessionId = session.id;

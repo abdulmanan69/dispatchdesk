@@ -20,7 +20,7 @@ export const TRIP_STATUS = {
 export const NEXT_TRIP_STATUS = { planned: 'booked', booked: 'in_transit', in_transit: 'delivered' };
 
 export const MAP_STYLES = {
-  light: 'https://tiles.openfreemap.org/styles/liberty',
+  light: 'https://tiles.openfreemap.org/styles/positron',
   dark: 'https://tiles.openfreemap.org/styles/dark',
 };
 
@@ -67,3 +67,31 @@ export async function diesel(state) {
 
 export const placeLabel = (p) => (p ? [p.city, p.state].filter(Boolean).join(', ') || (p.lat != null ? `${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}` : '') : '');
 export const initials = (name = '') => name.replace(/\b(LLC|INC|CORP|CO|LTD|TRUCKING|TRANSPORT(ATION)?|LOGISTICS)\b\.?/gi, '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+
+/** "3 min ago" style relative time for live positions. */
+export function sinceText(d, now = Date.now()) {
+  if (!d) return '';
+  const s = Math.max(0, Math.round((now - new Date(d).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
+/** Short tag shown under a truck pin: live GPS, stale GPS, or nothing for dispatcher-set positions. */
+export function liveTag(t, now = Date.now()) {
+  const l = t.live || {};
+  if (l.source !== 'driver_link' || !l.lastAt) return null;
+  if (l.stale) return { tone: 'stale', text: `Last seen ${sinceText(l.lastAt, now)}` };
+  return { tone: 'live', text: `Live · ${sinceText(l.lastAt, now)}${l.speedMph ? ` · ${l.speedMph} mph` : ''}` };
+}
+
+export const SHARE_DURATIONS = [{ value: 8, label: '8 hours' }, { value: 24, label: '24 hours' }, { value: 72, label: '3 days' }, { value: 168, label: '7 days' }];
+export const SHARE_STATUS = {
+  pending: { label: 'Not opened yet', color: 'amber' },
+  sharing: { label: 'Sharing', color: 'green' },
+  paused: { label: 'Paused by driver', color: 'gray' },
+  stopped: { label: 'Stopped', color: 'gray' },
+  expired: { label: 'Expired', color: 'gray' },
+};

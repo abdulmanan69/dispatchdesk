@@ -45,10 +45,25 @@ function rangeStart(tz, days, now = new Date()) {
   return new Date(startToday.getTime() - (days - 1) * DAY);
 }
 
+// Dashboard numbers are summaries: a 30 s per-user cache keeps busy accounts and page reloads cheap.
+const DASH_TTL = 30_000;
+const dashCache = new Map();
+
 r.get('/', ah(async (req, res) => {
   const q = parse(z.object({ range: z.enum(['7', '30', '90']).default('30'), scope: z.enum(['mine', 'team']).default('mine') }), req.query);
   const days = Number(q.range);
   const scope = q.scope === 'team' && canViewTeam(req.user) ? 'team' : 'mine';
+  const cacheKey = `${req.user.id}:${days}:${scope}`;
+  const hit = dashCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < DASH_TTL && req.get('cache-control') !== 'no-cache') return res.json(hit.body);
+  const send = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode === 200) {
+      if (dashCache.size > 5000) dashCache.clear();
+      dashCache.set(cacheKey, { at: Date.now(), body });
+    }
+    return send(body);
+  };
   const ids = await readableOwnerIds(req.user, scope);
   const tz = req.user.timezone || 'America/Chicago';
   const now = new Date();

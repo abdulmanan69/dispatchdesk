@@ -31,6 +31,8 @@ function RouteError() {
 }
 
 export const router = createBrowserRouter([
+  // Driver live-location link: public, no app chrome, opened on the driver's phone.
+  { path: '/track/:token', errorElement: <RouteError />, element: L(() => import('./pages/track/DriverTrack.jsx')) },
   {
     element: <PublicLayout />,
     errorElement: <RouteError />,

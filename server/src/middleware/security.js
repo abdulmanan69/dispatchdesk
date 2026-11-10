@@ -7,7 +7,7 @@ export const CSRF_COOKIE = 'dd_csrf';
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Endpoints authenticated by other means (signatures) are exempt.
 // Twilio callbacks are authenticated by X-Twilio-Signature instead.
-const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//];
+const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//, /^\/api\/public\/track\//]; // track: the secret link token is the credential
 
 /**
  * Double-submit CSRF protection: a random token is set in a readable cookie and
@@ -39,4 +39,5 @@ const make = (windowMs, limit, message) =>
 export const apiLimiter = make(60_000, 600, 'Too many requests. Slow down and try again in a minute.');
 export const authLimiter = make(15 * 60_000, 30, 'Too many authentication attempts. Try again in 15 minutes.');
 export const aiLimiter = make(60_000, 30, 'Too many AI requests. Try again in a minute.');
+export const trackLimiter = make(60_000, 30, 'Too many location updates. Try again in a minute.');
 export const publicFormLimiter = make(60 * 60_000, 20, 'Too many submissions. Try again later.');

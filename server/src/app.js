@@ -1,5 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -43,8 +44,10 @@ import settingsRoutes from './routes/settings.js';
 import notificationRoutes from './routes/notifications.js';
 import publicRoutes from './routes/public.js';
 import telephonyRoutes from './routes/telephony.js';
+import trackRoutes from './routes/track.js';
 import callScriptRoutes from './routes/callScripts.js';
 import tokenRoutes from './routes/tokens.js';
+import tourRoutes from './routes/tours.js';
 import extensionRoutes from './routes/extension.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,6 +82,8 @@ export function createApp() {
   // Stripe needs the raw body to verify webhook signatures: mount before the JSON parser.
   app.post('/api/billing/webhook', express.raw({ type: 'application/json', limit: '1mb' }), webhookHandler);
 
+  // gzip JSON and static assets (skips already-compressed types and server-sent streams).
+  app.use(compression({ filter: (req, res) => !String(res.getHeader('Content-Type') || '').includes('text/event-stream') && compression.filter(req, res) }));
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false, limit: '256kb' }));
   app.use(cookieParser());
@@ -97,6 +102,7 @@ export function createApp() {
 
   app.use('/api/auth', authRoutes);
   app.use('/api/profile', profileRoutes);
+  app.use('/api/public/track', trackRoutes); // driver live-location links (token in URL, no session)
   app.use('/api/public', publicRoutes);
   app.use('/api/billing', billingRoutes); // /plans is public, the rest checks auth itself
   app.use('/api/training', trainingRoutes); // catalogue + request form are public
@@ -132,6 +138,7 @@ export function createApp() {
   app.use('/api/telephony', telephonyRoutes); // Twilio callbacks are signature-verified; other routes require auth themselves
   app.use('/api/call-scripts', requireAuth, callScriptRoutes);
   app.use('/api/tokens', requireAuth, tokenRoutes);
+  app.use('/api/tours', requireAuth, tourRoutes);
   app.use('/api/extension', requireAuth, extensionRoutes);
 
   app.use('/api', notFoundApi);

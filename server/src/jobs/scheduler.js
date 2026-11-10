@@ -6,6 +6,7 @@ import { advanceEnrollment } from '../services/sequenceEngine.js';
 import { ingestDocument } from '../services/ai/rag.js';
 import { sendSystemMail } from '../services/email/system.js';
 import { runDueGenerators } from '../services/leadgen.js';
+import { prunePings } from '../services/fleet/track.js';
 
 /**
  * In-process background jobs (single container, no external queue):
@@ -20,6 +21,7 @@ const TICK_MS = Number(process.env.SCHEDULER_INTERVAL_MS || 30000);
 const BATCH = 25;
 let timer = null;
 let running = false;
+let lastPrune = 0;
 
 async function sendDueEmails(now, log) {
   const due = await prisma.email.findMany({
@@ -169,6 +171,8 @@ export async function runSchedulerTick({ now = new Date(), quiet = false } = {})
     const reminders = await followUpReminders(now, log);
     const knowledge = await processKnowledge(now);
     const leadGenerators = await runDueGenerators(now, log);
+    // Hourly: drop GPS pings older than 30 days and expire old share links.
+    if (!lastPrune || now - lastPrune > 3600000) { lastPrune = now; await prunePings(now).catch((e) => log('prune', '-', e.message)); }
     return { sequenceEmails, emails, reminders, knowledge, leadGenerators };
   } catch (err) {
     log('tick', '-', err.message);

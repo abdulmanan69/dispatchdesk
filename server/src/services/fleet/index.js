@@ -32,6 +32,18 @@ export function crowMiles(a, b) {
 }
 
 /** Offline place search over the bundled freight-city and state-center tables (fallback for /api/market/geocode). */
+/** Nearest bundled freight city to a GPS fix (for a readable "near Dallas, TX"), within maxMiles. */
+export function nearestPlace(lat, lng, maxMiles = 75) {
+  let best = null;
+  for (const [key, [clat, clng]] of Object.entries(CITIES)) {
+    const miles = haversineMiles([lat, lng], [clat, clng]);
+    if (!best || miles < best.miles) best = { key, miles };
+  }
+  if (!best || best.miles > maxMiles) return null;
+  const [city, st] = best.key.split(', ');
+  return { city: city.replace(/\b\w/g, (c) => c.toUpperCase()), state: st.toUpperCase(), miles: Math.round(best.miles) };
+}
+
 export function searchPlaces(q, limit = 8) {
   const s = String(q || '').trim().toLowerCase();
   if (s.length < 2) return [];
@@ -47,6 +59,48 @@ export function searchPlaces(q, limit = 8) {
     if (code.toLowerCase() === s || name.toLowerCase().includes(s)) out.push({ label: `${name} (state center)`, city: null, state: code, lat, lng, precision: 'state' });
   }
   return out.slice(0, limit);
+}
+
+export const STALE_MS = 15 * 60000;
+
+/** Live-location summary for a truck: where the position came from, how fresh it is, and any active driver link. */
+export function liveView(c, now = Date.now()) {
+  const raw = (c.locationShares || [])[0] || null;
+  const expired = raw && new Date(raw.expiresAt).getTime() <= now;
+  const share = raw && { ...raw, status: expired ? 'expired' : raw.status };
+  const lastAt = share?.lastAt || (c.locationSource === 'driver_link' ? c.locationUpdatedAt : null);
+  return {
+    source: c.locationSource || (c.locationUpdatedAt ? 'manual' : null),
+    sharing: share?.status === 'sharing',
+    shareStatus: share?.status ?? null,
+    shareId: share?.id ?? null,
+    driverName: share?.driverName ?? null,
+    lastAt: lastAt ?? null,
+    speedMph: share?.lastSpeed != null ? Math.round(share.lastSpeed * 2.23694) : null,
+    heading: share?.lastHeading ?? null,
+    accuracyM: share?.lastAccuracy != null ? Math.round(share.lastAccuracy) : null,
+    stale: lastAt ? now - new Date(lastAt).getTime() > STALE_MS : null,
+    expiresAt: share?.expiresAt ?? null,
+  };
+}
+
+/**
+ * Carrier fields to change when a trip moves to `status` (shared by the dispatcher and the driver check-in).
+ * in_transit → loaded; delivered → truck sits at the destination and is available; canceled in transit → available.
+ */
+export function truckUpdateForTrip(prevStatus, status, load) {
+  const data = {};
+  if (status === 'in_transit') data.truckStatus = 'loaded';
+  if (status === 'delivered') {
+    const pt = pointFor(load.destCity, load.destState, load.destLat, load.destLng);
+    Object.assign(data, {
+      truckStatus: 'available', locationCity: load.destCity, locationState: load.destState,
+      locationLat: pt?.lat ?? null, locationLng: pt?.lng ?? null, locationUpdatedAt: new Date(),
+      availableAt: load.deliveryDate && load.deliveryDate > new Date() ? load.deliveryDate : new Date(),
+    });
+  }
+  if (status === 'canceled' && prevStatus === 'in_transit') data.truckStatus = 'available';
+  return data;
 }
 
 /** Shape a carrier row (with loads) for the fleet map. */
@@ -72,6 +126,7 @@ export function truckView(c) {
       ? { city: c.locationCity, state: c.locationState, lat: point?.lat ?? null, lng: point?.lng ?? null, precision: point?.precision ?? null, updatedAt: c.locationUpdatedAt }
       : null,
     availableAt: c.availableAt,
+    live: liveView(c),
     trips,
     currentTrip: trips.find((t) => t.status === 'in_transit') || null,
     nextTrip: trips.find((t) => t.status === 'planned' || t.status === 'booked') || null,

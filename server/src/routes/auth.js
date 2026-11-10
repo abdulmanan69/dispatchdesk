@@ -7,7 +7,7 @@ import { parse, z, reqEmail, reqStr } from '../lib/validate.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { getBool, getSetting } from '../lib/settings.js';
-import { createSession, destroySession, requireAuth, publicUser } from '../middleware/auth.js';
+import { createSession, destroySession, requireAuth, publicUser, invalidateUserSessions } from '../middleware/auth.js';
 import { authLimiter } from '../middleware/security.js';
 import { sendSystemMail, systemMailConfigured } from '../services/email/system.js';
 
@@ -103,6 +103,7 @@ r.post('/verify-email', ah(async (req, res) => {
   const { token } = parse(z.object({ token: reqStr(200) }), req.body);
   const row = await consumeToken(token, 'verify_email');
   await prisma.user.update({ where: { id: row.userId }, data: { emailVerifiedAt: new Date() } });
+  invalidateUserSessions(row.userId);
   await audit(req, 'auth.email_verified', { entityType: 'user', entityId: row.userId, actorId: row.userId });
   res.json({ ok: true });
 }));
@@ -136,6 +137,7 @@ r.post('/reset-password', authLimiter, ah(async (req, res) => {
   const row = await consumeToken(body.token, 'reset_password');
   await prisma.user.update({ where: { id: row.userId }, data: { passwordHash: await bcrypt.hash(body.password, 12) } });
   await prisma.session.deleteMany({ where: { userId: row.userId } });
+  invalidateUserSessions(row.userId);
   await audit(req, 'auth.password_reset', { entityType: 'user', entityId: row.userId, actorId: row.userId });
   res.json({ ok: true });
 }));
@@ -145,6 +147,7 @@ r.post('/change-password', requireAuth, ah(async (req, res) => {
   if (!(await bcrypt.compare(body.currentPassword, req.user.passwordHash))) throw badRequest('Current password is incorrect');
   await prisma.user.update({ where: { id: req.user.id }, data: { passwordHash: await bcrypt.hash(body.newPassword, 12) } });
   await prisma.session.deleteMany({ where: { userId: req.user.id, NOT: { id: req.sessionId } } });
+  invalidateUserSessions(req.user.id);
   await audit(req, 'auth.password_changed');
   res.json({ ok: true });
 }));
@@ -160,12 +163,14 @@ r.delete('/sessions/:prefix', requireAuth, ah(async (req, res) => {
   const prefix = String(req.params.prefix);
   if (prefix.length < 12) throw badRequest('Invalid session id');
   const result = await prisma.session.deleteMany({ where: { userId: req.user.id, id: { startsWith: prefix }, NOT: { id: req.sessionId } } });
+  invalidateUserSessions(req.user.id);
   await audit(req, 'auth.session_revoked');
   res.json({ revoked: result.count });
 }));
 
 r.post('/sessions/revoke-others', requireAuth, ah(async (req, res) => {
   const result = await prisma.session.deleteMany({ where: { userId: req.user.id, NOT: { id: req.sessionId } } });
+  invalidateUserSessions(req.user.id);
   await audit(req, 'auth.sessions_revoked');
   res.json({ revoked: result.count });
 }));

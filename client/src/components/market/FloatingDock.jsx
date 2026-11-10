@@ -62,7 +62,7 @@ export default function FloatingDock() {
   const btn = 'inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium transition-ui';
   return (
     <>
-      <div className="fixed bottom-4 right-4 z-40 flex items-center gap-1 rounded-full border border-line bg-surface/95 p-1 shadow-lg shadow-black/10 backdrop-blur print:hidden">
+      <div data-tour="dock" className="fixed bottom-4 right-4 z-40 flex items-center gap-1 rounded-full border border-line bg-surface/95 p-1 shadow-lg shadow-black/10 backdrop-blur print:hidden">
         <button type="button" onClick={() => navigate('/app/ai')} className={cx(btn, 'text-fg-2 hover:bg-surface-2 hover:text-fg')} title="AI dispatcher">
           <Bot className="size-4" aria-hidden />AI
         </button>

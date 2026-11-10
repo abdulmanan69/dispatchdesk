@@ -1,14 +1,15 @@
 import { Router } from 'express';
 import { prisma } from '../db.js';
-import { ah, badRequest } from '../lib/errors.js';
+import { ah, badRequest, notFound } from '../lib/errors.js';
 import { parse, z, optStr, optInt, optDate, clean } from '../lib/validate.js';
 import { requirePermission } from '../middleware/auth.js';
 import { loadCarrier, loadOwned, readableOwnerIds } from '../lib/access.js';
 import { EQUIPMENT } from '../lib/constants.js';
 import { logActivity } from '../lib/activity.js';
 import { timezoneForState } from '../lib/timezones.js';
+import { SHARE_HOURS, ACTIVE_SHARE, createShare, shareView, shareMessage } from '../services/fleet/track.js';
 import {
-  TRUCK_STATUSES, ACTIVE_TRIP_STATUSES, TRIP_FLOW, pointFor, estimateMiles, crowMiles, searchPlaces, truckView, tripView, availableBy,
+  TRUCK_STATUSES, ACTIVE_TRIP_STATUSES, TRIP_FLOW, pointFor, estimateMiles, crowMiles, searchPlaces, truckView, tripView, availableBy, truckUpdateForTrip,
 } from '../services/fleet/index.js';
 
 /**
@@ -28,6 +29,7 @@ const truckInclude = {
   customer: { select: { id: true, status: true } },
   stage: { select: { key: true } },
   loads: { where: { status: { in: ACTIVE_TRIP_STATUSES } }, orderBy: [{ pickupDate: 'asc' }, { createdAt: 'asc' }], take: 10, include: tripLoadInclude },
+  locationShares: { where: { status: { in: ['pending', 'sharing', 'paused'] } }, orderBy: { updatedAt: 'desc' }, take: 1 },
 };
 
 async function visibleWhere(user, scope) {
@@ -83,6 +85,7 @@ r.patch('/carriers/:id', ah(async (req, res) => {
       locationCity: l.city || null, locationState: l.state || null,
       locationLat: body.location ? pt.lat : null, locationLng: body.location ? pt.lng : null,
       locationUpdatedAt: body.location ? new Date() : null,
+      locationSource: body.location ? 'manual' : null,
     });
   }
   const updated = await prisma.carrier.update({ where: { id: carrier.id }, data, include: truckInclude });
@@ -206,17 +209,9 @@ r.post('/trips/:id/status', ah(async (req, res) => {
   if (existing.carrierId) {
     const carrier = await loadCarrier(req.user, existing.carrierId, { write: true }).catch(() => null);
     if (carrier) {
-      const data = {};
-      if (status === 'in_transit') data.truckStatus = 'loaded';
-      if (status === 'delivered') {
-        const pt = pointFor(load.destCity, load.destState, load.destLat, load.destLng);
-        Object.assign(data, {
-          truckStatus: 'available', locationCity: load.destCity, locationState: load.destState,
-          locationLat: pt?.lat ?? null, locationLng: pt?.lng ?? null, locationUpdatedAt: new Date(),
-          availableAt: load.deliveryDate && load.deliveryDate > new Date() ? load.deliveryDate : new Date(),
-        });
-      }
-      if (status === 'canceled' && existing.status === 'in_transit') data.truckStatus = 'available';
+      const data = truckUpdateForTrip(existing.status, status, load);
+      // A delivered trip moves the truck to the destination; that is a dispatcher-set position, not GPS.
+      if (status === 'delivered') data.locationSource = 'manual';
       if (Object.keys(data).length) {
         const updated = await prisma.carrier.update({ where: { id: carrier.id }, data, include: truckInclude });
         truck = truckView(updated);
@@ -249,6 +244,72 @@ r.get('/trips', ah(async (req, res) => {
     include: { ...tripLoadInclude, carrier: { select: { id: true, companyName: true, timezone: true, state: true } } },
   });
   res.json({ from, to, items: rows.map((l) => ({ ...tripView(l), carrier: l.carrier ? { ...l.carrier, timezone: l.carrier.timezone || timezoneForState(l.carrier.state) } : null })) });
+}));
+
+// ---------------------------------------------------------------------------
+// Live location (driver links)
+// ---------------------------------------------------------------------------
+const shareSchema = z.object({
+  driverName: optStr(80),
+  driverPhone: optStr(30),
+  loadId: optStr(40),
+  hours: z.coerce.number().int().refine((h) => SHARE_HOURS.includes(h), 'Pick 8, 24, 72 or 168 hours').default(24),
+});
+
+/** Create a driver link. The token is returned once; only its hash is stored. */
+r.post('/carriers/:id/share', ah(async (req, res) => {
+  const carrier = await loadCarrier(req.user, req.params.id, { write: true });
+  const body = parse(shareSchema, req.body);
+  if (body.loadId) {
+    const load = await prisma.load.findFirst({ where: { id: body.loadId, carrierId: carrier.id } });
+    if (!load) throw badRequest('That trip is not assigned to this carrier');
+  }
+  // One live link per carrier: older active links are stopped so the map shows a single source.
+  await prisma.locationShare.updateMany({ where: { carrierId: carrier.id, status: { in: ACTIVE_SHARE } }, data: { status: 'stopped' } });
+  const { share, link, message } = await createShare(req.user, carrier, { ...body });
+  await logActivity(req.user, { type: 'fleet', carrierId: carrier.id, summary: `Live location link created for ${share.driverName || 'the driver'} (${body.hours} h)` });
+  res.status(201).json({ share: shareView(share), link, message });
+}));
+
+r.get('/carriers/:id/shares', ah(async (req, res) => {
+  const carrier = await loadCarrier(req.user, req.params.id);
+  const rows = await prisma.locationShare.findMany({ where: { carrierId: carrier.id }, orderBy: { createdAt: 'desc' }, take: 20 });
+  res.json({ items: rows.map((x) => shareView(x)) });
+}));
+
+r.post('/shares/:id/stop', ah(async (req, res) => {
+  const share = await prisma.locationShare.findUnique({ where: { id: String(req.params.id) } });
+  if (!share) throw notFound('Share not found');
+  await loadCarrier(req.user, share.carrierId, { write: true });
+  const updated = await prisma.locationShare.update({ where: { id: share.id }, data: { status: 'stopped' } });
+  res.json({ share: shareView(updated) });
+}));
+
+/** Message text and send links again for an active share (the link itself cannot be recovered). */
+r.get('/shares/:id/message', ah(async (req, res) => {
+  const share = await prisma.locationShare.findUnique({ where: { id: String(req.params.id) } });
+  if (!share) throw notFound('Share not found');
+  const carrier = await loadCarrier(req.user, share.carrierId);
+  res.json({ note: 'For security the link is shown only when it is created. Create a new link to send it again.', message: shareMessage({ companyName: carrier.companyName, link: '', driverPhone: share.driverPhone }) });
+}));
+
+/** GPS breadcrumbs for the last N hours. */
+r.get('/carriers/:id/trail', ah(async (req, res) => {
+  const carrier = await loadCarrier(req.user, req.params.id);
+  const q = parse(z.object({ hours: z.coerce.number().int().min(1).max(168).default(24) }), req.query);
+  const since = new Date(Date.now() - q.hours * 3600_000);
+  const pings = await prisma.locationPing.findMany({
+    where: { at: { gte: since }, share: { carrierId: carrier.id } },
+    orderBy: { at: 'asc' }, take: 2000, select: { lat: true, lng: true, speed: true, heading: true, accuracy: true, at: true },
+  });
+  res.json({ items: pings.map((p) => ({ lat: p.lat, lng: p.lng, at: p.at, speedMph: p.speed != null ? Math.round(p.speed * 2.23694) : null, heading: p.heading })) });
+}));
+
+/** Driver check-ins and other activity for the truck timeline. */
+r.get('/carriers/:id/checkins', ah(async (req, res) => {
+  const carrier = await loadCarrier(req.user, req.params.id);
+  const rows = await prisma.activity.findMany({ where: { carrierId: carrier.id, type: { in: ['checkin', 'fleet', 'load'] } }, orderBy: { createdAt: 'desc' }, take: 30 });
+  res.json({ items: rows.map((a) => ({ id: a.id, type: a.type, summary: a.summary, createdAt: a.createdAt })) });
 }));
 
 export default r;
