@@ -57,6 +57,9 @@ const CLIENT_DIST = process.env.CLIENT_DIST || path.resolve(__dirname, '../../cl
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  // Security: Express matches routes case-insensitively by default, so "/API/ADMIN" would reach "/api/admin" while
+  // path-based checks (CSRF exemptions, API-token blocklist) compared the raw path. Make mounts case-sensitive.
+  app.set('case sensitive routing', true);
   app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1));
 
   app.use(helmet({

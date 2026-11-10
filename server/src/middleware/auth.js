@@ -61,7 +61,9 @@ async function loadApiToken(req, res, next, raw) {
   if (!row || row.revokedAt || (row.expiresAt && row.expiresAt < new Date()) || row.user.status !== 'active') {
     return res.status(401).json({ error: 'Invalid or revoked API token' });
   }
-  if (TOKEN_BLOCKED.some((r) => r.test(req.path))) return res.status(403).json({ error: 'API tokens cannot access this endpoint' });
+  // Compare a normalized path: lower-case and with repeated slashes collapsed, so case or slash tricks cannot skip the list.
+  const p = req.path.toLowerCase().replace(/\/{2,}/g, '/');
+  if (TOKEN_BLOCKED.some((r) => r.test(p))) return res.status(403).json({ error: 'API tokens cannot access this endpoint' });
   if (!row.lastUsedAt || Date.now() - row.lastUsedAt.getTime() > 60000) {
     await prisma.apiToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
   }

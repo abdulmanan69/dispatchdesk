@@ -23,7 +23,8 @@ export function csrf(req, res, next) {
     res.cookie(CSRF_COOKIE, token, { httpOnly: false, sameSite: 'lax', secure: config.cookieSecure, path: '/' });
     req.cookies[CSRF_COOKIE] = token;
   }
-  if (SAFE.has(req.method) || !req.path.startsWith('/api/') || EXEMPT.some((r) => r.test(req.path))) return next();
+  const p = req.path.toLowerCase().replace(/\/{2,}/g, '/'); // case/slash variants must not skip the check
+  if (SAFE.has(req.method) || !p.startsWith('/api/') || EXEMPT.some((r) => r.test(p))) return next();
   // Bearer-token requests carry no ambient credentials (no cookies), so CSRF does not apply.
   if ((req.get('authorization') || '').startsWith('Bearer ddk_') && !req.cookies?.dd_session) return next();
   const header = req.get('x-csrf-token');
