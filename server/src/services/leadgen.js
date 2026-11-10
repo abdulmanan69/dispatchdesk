@@ -7,6 +7,7 @@ import { runAutomations } from './automation.js';
 import { enrollCarriers } from './sequenceEngine.js';
 import { normMc } from './carriers/normalize.js';
 import * as census from './carriers/fmcsaCensus.js';
+import { withLock, LockBusyError } from '../lib/locks.js';
 
 /**
  * Lead generator: turns saved FMCSA Census criteria into fresh, de-duplicated, scored carrier leads.
@@ -16,7 +17,6 @@ import * as census from './carriers/fmcsaCensus.js';
 
 const PAGE = 200;
 const PAGES_PER_STATE = 3; // at most 600 census rows scanned per state per run
-const running = new Set();
 
 const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
 
@@ -129,10 +129,18 @@ export function nextRunFrom(frequency, from = new Date()) {
 }
 
 /** Run one generator: fetch, de-duplicate, score and save leads. Always records a LeadGenRun. */
-export async function runGenerator(user, gen, { trigger = 'manual' } = {}) {
-  if (running.has(gen.id)) throw new HttpError(409, 'This generator is already running');
-  running.add(gen.id);
+export async function runGenerator(user, gen, opts = {}) {
+  // Database lock so two app processes (cluster workers) never run the same generator at once.
   try {
+    return await withLock(`leadgen.${gen.id}`, 10 * 60_000, () => runGeneratorUnlocked(user, gen, opts));
+  } catch (err) {
+    if (err instanceof LockBusyError) throw new HttpError(409, 'This generator is already running');
+    throw err;
+  }
+}
+
+async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
+  {
     const criteria = parseCriteria(gen.criteria);
     const budget = Math.min(gen.batchSize, await remaining(user, 'leadGenMonth'), await remaining(user, 'carriers'));
     const run = { trigger, status: 'ok', scanned: 0, created: 0, skipped: 0, belowScore: 0, message: null };
@@ -211,8 +219,6 @@ export async function runGenerator(user, gen, { trigger = 'manual' } = {}) {
       });
     }
     return saved;
-  } finally {
-    running.delete(gen.id);
   }
 }
 

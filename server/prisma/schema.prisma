@@ -1241,9 +1241,28 @@ model LocationShare {
   driverName  String?
   driverPhone String?
   loadId      String?         // trip shown to the driver
-  status      String          @default("pending") // pending | sharing | paused | stopped | expired
+  status      String          @default("pending") // pending | sharing | paused | stopped | expired | locked
   consentAt   DateTime?
-  expiresAt   DateTime
+  expiresAt   DateTime        // before the first device claims the link this is the claim deadline; then claim time + durationHours
+  durationHours Int           @default(24)
+  claimMinutes  Int           @default(120) // the link must be opened within this window or it expires
+  // Anti-forwarding: the link is bound to the first phone that claims it (only a hash of the device secret is kept).
+  deviceHash    String?
+  deviceLabel   String?       // e.g. "iPhone · Safari"
+  deviceKind    String?       // mobile | desktop | unknown
+  deviceBoundAt DateTime?
+  firstBoundAt  DateTime?
+  firstSeenIp   String?       // coarse only (/24 or /48), never the full address
+  pinHash       String?       // HMAC of the 6-digit PIN keyed with the app secret; null = no PIN on this link
+  pinAttempts   Int           @default(0)
+  pinVerifiedAt DateTime?
+  flags         String        @default("[]") // JSON [{ type, at, detail }], newest first, max 50
+  lastPingFlags String?       // comma-separated flags of the latest fix
+  lastAlertAt   DateTime?     // throttles security notifications (other device, locked) to the dispatcher
+  lastGpsAlertAt DateTime?    // separate throttle for GPS plausibility notifications
+  trustedLat    Float?        // last fix that passed the plausibility checks
+  trustedLng    Float?
+  trustedAt     DateTime?
   lastLat     Float?
   lastLng     Float?
   lastAccuracy Float?
@@ -1268,6 +1287,7 @@ model LocationPing {
   accuracy  Float?
   speed     Float?
   heading   Float?
+  flags     String?       // comma-separated trust flags (impossible_jump, low_accuracy, desktop, stale_clock, far_from_trip)
   at        DateTime      @default(now())
   share     LocationShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
 

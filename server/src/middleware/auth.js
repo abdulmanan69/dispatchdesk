@@ -2,6 +2,7 @@ import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { sha256, randomToken } from '../lib/crypto.js';
 import { unauthorized, forbidden } from '../lib/errors.js';
+import { broadcast, onBroadcast } from '../lib/broadcast.js';
 
 export const SESSION_COOKIE = 'dd_session';
 
@@ -9,9 +10,15 @@ export const SESSION_COOKIE = 'dd_session';
 // Entries live 10 s and are dropped immediately when a user is signed out, suspended, deleted or changes role/password.
 const SESSION_TTL_MS = 10_000;
 const sessionCache = new Map(); // sessionId -> { at, session }
-export function invalidateUserSessions(userId) {
+function dropSessions(userId) {
   for (const [k, v] of sessionCache) if (!userId || v.session.userId === userId) sessionCache.delete(k);
 }
+onBroadcast('sessions', (userId) => dropSessions(userId));
+/** Drop cached sessions for one user (or everyone when no id) in every process. */
+export function invalidateUserSessions(userId) {
+  broadcast('sessions', userId || null);
+}
+onBroadcast('session-token', (sid) => sessionCache.delete(sid));
 function cachedSession(id) {
   const hit = sessionCache.get(id);
   if (hit && Date.now() - hit.at < SESSION_TTL_MS) return hit.session;
@@ -40,7 +47,7 @@ export async function createSession(res, req, userId) {
 
 export async function destroySession(req, res) {
   const token = req.cookies?.[SESSION_COOKIE];
-  if (token) sessionCache.delete(sha256(token));
+  if (token) broadcast('session-token', sha256(token));
   if (token) await prisma.session.deleteMany({ where: { id: sha256(token) } });
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
@@ -81,6 +88,7 @@ export async function loadSession(req, res, next) {
       }
     }
     if (!session || session.expiresAt < new Date()) {
+      sessionCache.delete(sid);
       if (session) await prisma.session.delete({ where: { id: session.id } }).catch(() => {});
       res.clearCookie(SESSION_COOKIE, { path: '/' });
       return next();

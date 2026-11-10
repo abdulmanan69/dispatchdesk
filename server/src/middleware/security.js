@@ -1,4 +1,6 @@
+import cluster from 'node:cluster';
 import rateLimit from 'express-rate-limit';
+import { ClusterMemoryStoreWorker } from '@express-rate-limit/cluster-memory-store';
 import { config } from '../config.js';
 import { randomToken, safeEqual } from '../lib/crypto.js';
 import { HttpError } from '../lib/errors.js';
@@ -29,15 +31,17 @@ export function csrf(req, res, next) {
   next();
 }
 
-const make = (windowMs, limit, message) =>
+// In cluster mode the counters live in the primary process, so every worker shares one limit per client.
+const make = (name, windowMs, limit, message) =>
   rateLimit({
     windowMs, limit, standardHeaders: 'draft-7', legacyHeaders: false,
+    ...(cluster.isWorker ? { store: new ClusterMemoryStoreWorker({ prefix: `${name}:` }) } : {}),
     skip: () => config.rateLimitDisabled || config.isTest,
     handler: (req, res) => res.status(429).json({ error: message }),
   });
 
-export const apiLimiter = make(60_000, 600, 'Too many requests. Slow down and try again in a minute.');
-export const authLimiter = make(15 * 60_000, 30, 'Too many authentication attempts. Try again in 15 minutes.');
-export const aiLimiter = make(60_000, 30, 'Too many AI requests. Try again in a minute.');
-export const trackLimiter = make(60_000, 30, 'Too many location updates. Try again in a minute.');
-export const publicFormLimiter = make(60 * 60_000, 20, 'Too many submissions. Try again later.');
+export const apiLimiter = make('api', 60_000, 600, 'Too many requests. Slow down and try again in a minute.');
+export const authLimiter = make('auth', 15 * 60_000, 30, 'Too many authentication attempts. Try again in 15 minutes.');
+export const aiLimiter = make('ai', 60_000, 30, 'Too many AI requests. Try again in a minute.');
+export const trackLimiter = make('track', 60_000, 30, 'Too many location updates. Try again in a minute.');
+export const publicFormLimiter = make('public', 60 * 60_000, 20, 'Too many submissions. Try again later.');

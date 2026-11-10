@@ -128,3 +128,20 @@ describe('admin setup checklist', () => {
     expect(await getSetting('stripe.webhookSecret')).toMatch(/^whsec_/);
   });
 });
+
+describe('database backups', () => {
+  it('creates, lists and downloads a consistent SQLite copy; blocks traversal and non-admins', async () => {
+    const admin = await createAdmin();
+    const made = await admin.agent.post('/api/admin/setup/backups');
+    expect(made.status).toBe(201);
+    expect(made.body.backup.name).toMatch(/^app-\d{4}-\d{2}-\d{2}-\d{6}\.db$/);
+    const list = (await admin.agent.get('/api/admin/setup/backups')).body.items;
+    expect(list.some((b) => b.name === made.body.backup.name)).toBe(true);
+    const dl = await admin.agent.get(`/api/admin/setup/backups/${made.body.backup.name}`).buffer(true).parse((res, cb) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
+    expect(dl.status).toBe(200);
+    expect(dl.body.subarray(0, 15).toString()).toBe('SQLite format 3');
+    expect((await admin.agent.get('/api/admin/setup/backups/..%2F..%2Fapp.db')).status).toBe(400);
+    const user = await registerUser();
+    expect((await user.agent.post('/api/admin/setup/backups')).status).toBe(403);
+  });
+});

@@ -1,6 +1,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import compression from 'compression';
+import { renderIndex, robotsTxt, sitemapXml, webManifest } from './lib/seo.js';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -146,7 +147,16 @@ export function createApp() {
   // Built single-page client.
   if (fs.existsSync(CLIENT_DIST)) {
     app.use(express.static(CLIENT_DIST, { index: false, maxAge: '1h', setHeaders: (res, p) => { if (p.includes(`${path.sep}assets${path.sep}`)) res.set('Cache-Control', 'public, max-age=31536000, immutable'); } }));
-    app.get('*', (req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')));
+    const indexTemplate = fs.readFileSync(path.join(CLIENT_DIST, 'index.html'), 'utf8');
+    const builtAt = fs.statSync(path.join(CLIENT_DIST, 'index.html')).mtime;
+    app.get('/robots.txt', (req, res) => res.type('text/plain').set('Cache-Control', 'public, max-age=3600').send(robotsTxt()));
+    app.get('/sitemap.xml', (req, res) => res.type('application/xml').set('Cache-Control', 'public, max-age=3600').send(sitemapXml(builtAt)));
+    app.get('/manifest.webmanifest', (req, res) => res.type('application/manifest+json').set('Cache-Control', 'public, max-age=86400').send(JSON.stringify(webManifest())));
+    // Every other path gets index.html with that page's title, description and link-preview tags.
+    app.get('*', (req, res) => {
+      const { body, status } = renderIndex(indexTemplate, req.path);
+      res.status(status).type('html').set('Cache-Control', 'no-cache').send(body);
+    });
   } else {
     app.get('/', (req, res) => res.type('text').send('API is running. Build the client (cd client && npm run build) to serve the UI.'));
   }

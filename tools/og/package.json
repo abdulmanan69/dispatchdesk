@@ -1,0 +1,12 @@
+{
+  "name": "dispatchdesk-og-images",
+  "private": true,
+  "type": "module",
+  "description": "Renders the Open Graph / social preview images and app icons into client/public. Run: npm install && node render.mjs",
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "d3-geo": "3.1.1",
+    "topojson-client": "3.1.0",
+    "us-atlas": "3.0.1"
+  }
+}

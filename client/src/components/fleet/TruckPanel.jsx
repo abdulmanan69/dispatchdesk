@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, ExternalLink, FileText, MessageSquare, Navigation, Pencil, Radio, Send, StickyNote, X } from 'lucide-react';
+import { Activity, ExternalLink, FileText, Lock, MessageSquare, Navigation, Pencil, Radio, Send, StickyNote, X } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { dateTime, label, money, relative } from '../../lib/format.js';
 import { Badge, Button, LocalClock, cx } from '../ui.jsx';
 import CallButton from '../calling/CallButton.jsx';
-import ShareLocation from './ShareLocation.jsx';
+import ShareLocation, { CONFIDENCE } from './ShareLocation.jsx';
 import { STATUS, TRIP_STATUS, NEXT_TRIP_STATUS, placeLabel, sinceText } from './fleetApi.js';
 
 export function StatusChip({ status, className }) {
@@ -30,22 +30,51 @@ function TripLine({ trip, onAdvance, busy }) {
   );
 }
 
+/** How far to trust a driver-link position (one phone, PIN, plausibility checks), in plain words. */
+function TrustRow({ live }) {
+  const conf = live.confidence ? CONFIDENCE[live.confidence] : null;
+  if (!conf) return null;
+  const tone = live.confidence === 'high' ? 'text-c-green' : live.confidence === 'medium' ? 'text-amber-700 dark:text-amber-300' : 'text-red-700 dark:text-red-300';
+  return (
+    <div className="mt-1.5 border-t border-line pt-1.5">
+      <span className={cx('flex items-center gap-1.5 font-medium', tone)}><conf.Icon className="size-3.5" aria-hidden />{conf.label}</span>
+      {live.reasons?.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-[12px] text-fg-2">
+          {live.reasons.slice(0, 5).map((r) => <li key={r} className="flex gap-1.5"><span className="mt-1.5 size-1 shrink-0 rounded-full bg-current opacity-50" />{r}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function LiveRow({ truck }) {
   const l = truck.live || {};
   if (l.source !== 'driver_link' && !l.shareStatus) {
     return <p className="text-xs text-muted">Position set by dispatch{truck.location?.updatedAt ? ` ${relative(truck.location.updatedAt)}` : ''}. Share a live link to follow the driver's GPS.</p>;
   }
+  if (l.shareStatus === 'locked') {
+    return <p className="flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-[12.5px] text-red-700 dark:border-red-900 dark:text-red-300"><Lock className="size-3.5" aria-hidden />Link locked after 5 wrong PINs. Create a new link or reset the device.</p>;
+  }
   const tone = l.sharing && !l.stale ? 'text-c-green' : 'text-muted';
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-line px-3 py-2 text-[12.5px]">
-      <span className={cx('flex items-center gap-1.5 font-medium', tone)}>
-        <span className={cx('size-2 rounded-full', l.sharing && !l.stale ? 'animate-pulse bg-c-green' : 'bg-c-gray')} />
-        {l.sharing && !l.stale ? 'Live GPS' : l.shareStatus === 'pending' ? 'Link sent, not opened' : l.shareStatus === 'paused' ? 'Driver paused sharing' : l.shareStatus === 'expired' ? 'Link expired' : 'GPS not updating'}
-      </span>
-      {l.lastAt && <span className="text-muted">{sinceText(l.lastAt)}</span>}
-      {l.speedMph != null && <span className="tabular text-muted">{l.speedMph} mph</span>}
-      {l.accuracyM != null && <span className="tabular text-muted">±{l.accuracyM} m</span>}
-      {l.driverName && <span className="text-muted">{l.driverName}</span>}
+    <div className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className={cx('flex items-center gap-1.5 font-medium', tone)}>
+          <span className={cx('size-2 rounded-full', l.sharing && !l.stale ? 'animate-pulse bg-c-green' : 'bg-c-gray')} />
+          {l.sharing && !l.stale ? 'Live GPS' : l.shareStatus === 'pending' ? 'Link sent, not opened' : l.shareStatus === 'paused' ? 'Driver paused sharing' : l.shareStatus === 'expired' ? 'Link expired' : 'GPS not updating'}
+        </span>
+        {l.lastAt && <span className="text-muted">{sinceText(l.lastAt)}</span>}
+        {l.speedMph != null && <span className="tabular text-muted">{l.speedMph} mph</span>}
+        {l.accuracyM != null && <span className="tabular text-muted">±{l.accuracyM} m</span>}
+        {l.driverName && <span className="text-muted">{l.driverName}</span>}
+        {l.deviceLabel && <span className="text-muted">{l.deviceLabel}</span>}
+      </div>
+      {l.unverified && (
+        <p className="mt-1.5 text-[12px] text-red-700 dark:text-red-300">
+          Unverified GPS fix {sinceText(l.unverified.at)} at {l.unverified.lat.toFixed(3)}, {l.unverified.lng.toFixed(3)} was ignored: it is too far from the last real position. The pin shows the last verified position.
+        </p>
+      )}
+      <TrustRow live={l} />
     </div>
   );
 }

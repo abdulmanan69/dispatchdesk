@@ -7,7 +7,7 @@ import { loadCarrier, loadOwned, readableOwnerIds } from '../lib/access.js';
 import { EQUIPMENT } from '../lib/constants.js';
 import { logActivity } from '../lib/activity.js';
 import { timezoneForState } from '../lib/timezones.js';
-import { SHARE_HOURS, ACTIVE_SHARE, createShare, shareView, shareMessage } from '../services/fleet/track.js';
+import { SHARE_HOURS, CLAIM_MINUTES, ACTIVE_SHARE, createShare, shareView, shareMessage, newPin, pinHashFor } from '../services/fleet/track.js';
 import {
   TRUCK_STATUSES, ACTIVE_TRIP_STATUSES, TRIP_FLOW, pointFor, estimateMiles, crowMiles, searchPlaces, truckView, tripView, availableBy, truckUpdateForTrip,
 } from '../services/fleet/index.js';
@@ -29,7 +29,8 @@ const truckInclude = {
   customer: { select: { id: true, status: true } },
   stage: { select: { key: true } },
   loads: { where: { status: { in: ACTIVE_TRIP_STATUSES } }, orderBy: [{ pickupDate: 'asc' }, { createdAt: 'asc' }], take: 10, include: tripLoadInclude },
-  locationShares: { where: { status: { in: ['pending', 'sharing', 'paused'] } }, orderBy: { updatedAt: 'desc' }, take: 1 },
+  // 'locked' is included so the map can say why a link stopped working.
+  locationShares: { where: { status: { in: ['pending', 'sharing', 'paused', 'locked'] } }, orderBy: { updatedAt: 'desc' }, take: 1 },
 };
 
 async function visibleWhere(user, scope) {
@@ -254,6 +255,9 @@ const shareSchema = z.object({
   driverPhone: optStr(30),
   loadId: optStr(40),
   hours: z.coerce.number().int().refine((h) => SHARE_HOURS.includes(h), 'Pick 8, 24, 72 or 168 hours').default(24),
+  // A PIN read to the driver separately stops a forwarded link from working on someone else's phone (on by default).
+  pin: z.boolean().default(true),
+  claimMinutes: z.coerce.number().int().refine((m) => CLAIM_MINUTES.includes(m), 'Pick 30, 120 or 360 minutes').default(120),
 });
 
 /** Create a driver link. The token is returned once; only its hash is stored. */
@@ -266,9 +270,10 @@ r.post('/carriers/:id/share', ah(async (req, res) => {
   }
   // One live link per carrier: older active links are stopped so the map shows a single source.
   await prisma.locationShare.updateMany({ where: { carrierId: carrier.id, status: { in: ACTIVE_SHARE } }, data: { status: 'stopped' } });
-  const { share, link, message } = await createShare(req.user, carrier, { ...body });
-  await logActivity(req.user, { type: 'fleet', carrierId: carrier.id, summary: `Live location link created for ${share.driverName || 'the driver'} (${body.hours} h)` });
-  res.status(201).json({ share: shareView(share), link, message });
+  const { share, link, message, pin } = await createShare(req.user, carrier, { ...body });
+  await logActivity(req.user, { type: 'fleet', carrierId: carrier.id, summary: `Live location link created for ${share.driverName || 'the driver'} (${body.hours} h${pin ? ', PIN' : ''})` });
+  // The link and PIN are returned only now; neither can be recovered later.
+  res.status(201).json({ share: shareView(share), link, message, pin });
 }));
 
 r.get('/carriers/:id/shares', ah(async (req, res) => {
@@ -283,6 +288,32 @@ r.post('/shares/:id/stop', ah(async (req, res) => {
   await loadCarrier(req.user, share.carrierId, { write: true });
   const updated = await prisma.locationShare.update({ where: { id: share.id }, data: { status: 'stopped' } });
   res.json({ share: shareView(updated) });
+}));
+
+/**
+ * Unlock a link from the phone that claimed it (the driver changed phones, or someone else claimed it first).
+ * The next phone must claim it again; links with a PIN get a new PIN, shown once.
+ */
+r.post('/shares/:id/reset-device', ah(async (req, res) => {
+  const share = await prisma.locationShare.findUnique({ where: { id: String(req.params.id) } });
+  if (!share) throw notFound('Share not found');
+  await loadCarrier(req.user, share.carrierId, { write: true });
+  const view = shareView(share);
+  if (!['pending', 'sharing', 'paused', 'locked'].includes(view.status)) throw badRequest('This link has ended. Create a new link instead.');
+  const pin = share.pinHash ? newPin() : null;
+  const now = new Date();
+  const updated = await prisma.locationShare.update({
+    where: { id: share.id },
+    data: {
+      deviceHash: null, deviceLabel: null, deviceKind: null, deviceBoundAt: null, firstSeenIp: null, pinVerifiedAt: null, pinAttempts: 0,
+      consentAt: null, status: 'pending', lastPingFlags: null, trustedLat: null, trustedLng: null, trustedAt: null,
+      ...(pin ? { pinHash: pinHashFor(share.tokenHash, pin) } : {}),
+      // A link that was never claimed gets a fresh claim window; a claimed one keeps its end time.
+      ...(!share.firstBoundAt ? { expiresAt: new Date(now.getTime() + share.claimMinutes * 60_000) } : {}),
+    },
+  });
+  await logActivity(req.user, { type: 'fleet', carrierId: share.carrierId, summary: `Location link reset so ${share.driverName || 'the driver'} can open it on a new phone` });
+  res.json({ share: shareView(updated), pin });
 }));
 
 /** Message text and send links again for an active share (the link itself cannot be recovered). */
@@ -300,9 +331,14 @@ r.get('/carriers/:id/trail', ah(async (req, res) => {
   const since = new Date(Date.now() - q.hours * 3600_000);
   const pings = await prisma.locationPing.findMany({
     where: { at: { gte: since }, share: { carrierId: carrier.id } },
-    orderBy: { at: 'asc' }, take: 2000, select: { lat: true, lng: true, speed: true, heading: true, accuracy: true, at: true },
+    orderBy: { at: 'asc' }, take: 2000, select: { lat: true, lng: true, speed: true, heading: true, accuracy: true, at: true, flags: true },
   });
-  res.json({ items: pings.map((p) => ({ lat: p.lat, lng: p.lng, at: p.at, speedMph: p.speed != null ? Math.round(p.speed * 2.23694) : null, heading: p.heading })) });
+  // Implausible jumps are left out of the trail so it never draws a line to a position the truck could not have reached.
+  const real = pings.filter((p) => !String(p.flags || '').includes('impossible_jump'));
+  res.json({
+    items: real.map((p) => ({ lat: p.lat, lng: p.lng, at: p.at, speedMph: p.speed != null ? Math.round(p.speed * 2.23694) : null, heading: p.heading })),
+    skipped: pings.length - real.length,
+  });
 }));
 
 /** Driver check-ins and other activity for the truck timeline. */

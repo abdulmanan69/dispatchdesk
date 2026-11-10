@@ -1,3 +1,4 @@
+import cluster from 'node:cluster';
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { prisma, tuneDatabase } from './db.js';
@@ -5,13 +6,16 @@ import { bootstrap } from './bootstrap.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
 
 async function main() {
-  await tuneDatabase();
-  await bootstrap();
+  await tuneDatabase(); // per-connection pragmas (busy_timeout) must run in every process
+  // In cluster mode the primary already ran bootstrap once; running it in every worker would race on upserts.
+  if (process.env.DD_SKIP_BOOTSTRAP !== '1') await bootstrap();
   const app = createApp();
   const server = app.listen(config.port, () => {
-    console.log(`[server] listening on :${config.port} (${config.env}) — ${config.appUrl}`);
+    console.log(`[server] ${cluster.isWorker ? `worker ${cluster.worker.id} ` : ''}listening on :${config.port} (${config.env}) — ${config.appUrl}`);
   });
-  if (!config.disableScheduler) startScheduler();
+  // One scheduler per deployment: in cluster mode only the worker started with DD_RUN_SCHEDULER=1 runs it.
+  const schedulerHere = !cluster.isWorker || process.env.DD_RUN_SCHEDULER === '1';
+  if (!config.disableScheduler && schedulerHere) startScheduler();
 
   const shutdown = async (signal) => {
     console.log(`[server] ${signal} received, shutting down`);

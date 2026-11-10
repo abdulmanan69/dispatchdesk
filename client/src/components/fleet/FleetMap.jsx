@@ -52,6 +52,16 @@ function setData(map, id, data) {
 
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Shield badge for driver-link positions: how far to trust the GPS (anti-forwarding and plausibility checks).
+const TRUST = { high: ['#16a34a', 'High confidence'], medium: ['#d97706', 'Check this position'], low: ['#dc2626', 'Low confidence'] };
+function trustBadge(live) {
+  const t = live.confidence ? TRUST[live.confidence] : null;
+  if (!t || !(live.source === 'driver_link' || live.shareStatus)) return { html: '', text: '' };
+  const text = `${t[1]}${live.reasons?.length ? `: ${live.reasons.join('; ')}` : ''}`;
+  const html = `<span class="fleet-pin__trust" aria-hidden="true" style="position:absolute;right:-6px;top:-6px;width:17px;height:17px;border-radius:9999px;background:${t[0]};display:grid;place-items:center;border:2px solid var(--surface,#fff);box-shadow:0 1px 3px rgba(0,0,0,.35)"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>`;
+  return { html, text };
+}
+
 /** Build or update the DOM for a truck pin. */
 function paintPin(el, t, selected) {
   const color = (STATUS[t.truckStatus] || STATUS.unknown).color;
@@ -66,11 +76,15 @@ function paintPin(el, t, selected) {
   el.classList.toggle('fleet-pin--selected', !!selected);
   el.classList.toggle('fleet-pin--live', !!isLive);
   el.classList.toggle('fleet-pin--stale', !!stale);
-  el.setAttribute('aria-label', `${t.companyName}, ${(STATUS[t.truckStatus] || STATUS.unknown).label}${tag ? `, ${tag.text}` : ''}`);
+  const trust = trustBadge(live);
+  el.setAttribute('aria-label', `${t.companyName}, ${(STATUS[t.truckStatus] || STATUS.unknown).label}${tag ? `, ${tag.text}` : ''}${trust.text ? `. ${trust.text}` : ''}`);
+  if (trust.text) el.title = `${t.companyName} · ${trust.text}`;
+  else el.removeAttribute('title');
   el.innerHTML = `
     <span class="fleet-pin__halo"></span>
     ${moving ? `<span class="fleet-pin__arrow" style="transform: rotate(${Math.round(live.heading)}deg)"></span>` : ''}
     <span class="fleet-pin__body">${esc(initials(t.companyName))}</span>
+    ${trust.html}
     ${tag && (selected || isLive || stale) ? `<span class="fleet-pin__tag fleet-pin__tag--${tag.tone}">${tag.tone === 'live' ? '<span class="fleet-pin__dot"></span>' : ''}${esc(tag.text)}</span>` : ''}`;
 }
 

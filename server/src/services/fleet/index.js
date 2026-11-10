@@ -1,4 +1,5 @@
 import { haversineMiles, ROAD_FACTOR, locate, STATES, CITIES } from '../market/geo.js';
+import { trustFor } from './track.js';
 
 /**
  * Fleet helpers: truck positions, distance estimates and simple place lookup.
@@ -81,6 +82,12 @@ export function liveView(c, now = Date.now()) {
     accuracyM: share?.lastAccuracy != null ? Math.round(share.lastAccuracy) : null,
     stale: lastAt ? now - new Date(lastAt).getTime() > STALE_MS : null,
     expiresAt: share?.expiresAt ?? null,
+    // Anti-forwarding and plausibility: how much to trust this position, and why.
+    ...(share ? (({ confidence, reasons, deviceLabel, pinVerified, pinEnabled, recentFlags }) => ({ confidence, reasons, deviceLabel, pinVerified, pinEnabled, recentFlags }))(trustFor(share, now)) : { confidence: null, reasons: [], deviceLabel: null, pinVerified: false, pinEnabled: false, recentFlags: [] }),
+    // The latest fix when it failed the jump check: shown as unverified, never used as the truck's position.
+    unverified: share?.lastAt && String(share.lastPingFlags || '').includes('impossible_jump')
+      ? { lat: share.lastLat, lng: share.lastLng, at: share.lastAt }
+      : null,
   };
 }
 

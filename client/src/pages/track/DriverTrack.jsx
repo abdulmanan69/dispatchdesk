@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router';
-import { AlertTriangle, CheckCircle2, Loader2, MapPin, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Truck, Warehouse } from 'lucide-react';
-import { api } from '../../lib/api.js';
+import { AlertTriangle, CheckCircle2, KeyRound, Loader2, Lock, MapPin, Monitor, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Smartphone, Truck, Warehouse } from 'lucide-react';
 import { Logo } from '../../components/Logo.jsx';
-import { cx } from '../../components/ui.jsx';
+import { Checkbox, cx } from '../../components/ui.jsx';
 
 /**
  * Public driver page for a live-location link. No login: the secret token in the URL is the credential.
@@ -11,6 +10,44 @@ import { cx } from '../../components/ui.jsx';
  */
 const SEND_EVERY_MS = 30_000;
 const SEND_IF_MOVED_M = 200;
+const MISMATCH = 'This link is already active on another phone. Ask your dispatcher for a new link.';
+
+/*
+ * Anti-forwarding: the first phone that claims the link receives a device secret. It is kept in this browser only and
+ * sent with every request; the server stores just a hash, so a forwarded link does not work on another phone.
+ */
+const deviceKey = (token) => `dd-track-device:${token}`;
+const getDevice = (token) => { try { return localStorage.getItem(deviceKey(token)) || ''; } catch { return ''; } };
+const setDevice = (token, secret) => { try { if (secret) localStorage.setItem(deviceKey(token), secret); } catch { /* private mode: works until the tab closes */ } };
+
+/** Signals the server uses to tell a phone from a computer. */
+function deviceSignals() {
+  const touch = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+  const coarse = !!window.matchMedia?.('(pointer: coarse)').matches;
+  return { touch, coarse, width: window.innerWidth };
+}
+const looksLikeComputer = () => { const s = deviceSignals(); return !s.touch && !s.coarse; };
+
+class TrackError extends Error {
+  constructor(status, message, details) { super(message); this.status = status; this.code = details?.code; this.details = details; }
+}
+
+/** Minimal fetch for the public driver API: no session or CSRF, plus the device secret header. */
+async function call(token, method, path, body, memorySecret) {
+  const headers = { Accept: 'application/json' };
+  const secret = getDevice(token) || memorySecret || '';
+  if (secret) headers['X-Track-Device'] = secret;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  let res;
+  try {
+    res = await fetch(`/api/public/track/${encodeURIComponent(token)}${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: 'omit' });
+  } catch {
+    throw new TrackError(0, 'No connection. Check your signal and try again.');
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new TrackError(res.status, data?.error || `Request failed (${res.status})`, { ...(data?.details || {}), retryAfterSec: data?.retryAfterSec });
+  return data;
+}
 
 function metersBetween(a, b) {
   const R = 6371000;
@@ -68,9 +105,13 @@ function Stop({ kind, stop }) {
 
 export default function DriverTrack() {
   const { token } = useParams();
-  const base = `/api/public/track/${encodeURIComponent(token)}`;
   const [info, setInfo] = useState(null);
-  const [error, setError] = useState(null); // { gone, message }
+  const [error, setError] = useState(null); // { gone, mismatch, message }
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState(null);
+  const [desktopOk, setDesktopOk] = useState(false);
+  const memSecret = useRef(''); // fallback when this browser blocks localStorage
+  const isComputer = useRef(looksLikeComputer()).current;
   const [sharing, setSharing] = useState(false);
   const [geoError, setGeoError] = useState(null);
   const [last, setLast] = useState(null); // { at, accuracy }
@@ -86,31 +127,40 @@ export default function DriverTrack() {
   const queued = useRef(null);
   const wakeLock = useRef(null);
 
+  const api = useCallback((method, path, body) => call(token, method, path, body, memSecret.current), [token]);
+  const remember = (secret) => { if (secret) { memSecret.current = secret; setDevice(token, secret); } };
+  const fail = (e) => {
+    if (e.code === 'DEVICE_MISMATCH') { setError({ mismatch: true, message: MISMATCH }); return true; }
+    if (e.status === 410) { setError({ gone: true, message: e.message }); return true; }
+    return false;
+  };
+
   const load = useCallback(async () => {
     try {
-      setInfo(await api.get(base));
+      setInfo(await api('GET', ''));
       setError(null);
     } catch (e) {
-      setError({ gone: e.status === 410, message: e.message });
+      if (!fail(e)) setError({ gone: false, message: e.message });
     }
-  }, [base]);
+  }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [load]);
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 15000); return () => clearInterval(t); }, []);
 
   const send = useCallback(async (fix) => {
     try {
-      const r = await api.post(`${base}/ping`, fix);
+      const r = await api('POST', '/ping', fix);
       lastSent.current = { lat: fix.lat, lng: fix.lng, t: Date.now() };
       queued.current = null;
       setPending(false);
       setLast({ at: r.at, accuracy: fix.accuracy });
     } catch (e) {
-      if (e.status === 410) { stopWatching(); setError({ gone: true, message: e.message }); return; }
+      if (e.status === 410 || e.code === 'DEVICE_MISMATCH') { stopWatching(); fail(e); return; }
       if (e.status === 429) return; // too soon; the next fix goes through
+      if (e.status === 409) { stopWatching(); setGeoError(e.message); return; }
       queued.current = fix; // offline or server unreachable: keep the latest fix and retry
       setPending(true);
     }
-  }, [base]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Retry a queued fix when the connection comes back, and every 30 s while waiting.
   useEffect(() => {
@@ -125,6 +175,7 @@ export default function DriverTrack() {
       lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy ?? null,
       speed: pos.coords.speed != null && pos.coords.speed >= 0 ? pos.coords.speed : null,
       heading: pos.coords.heading != null && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : null,
+      clientTime: Number.isFinite(pos.timestamp) ? Math.round(pos.timestamp) : null,
     };
     setGeoError(null);
     const prev = lastSent.current;
@@ -161,7 +212,8 @@ export default function DriverTrack() {
     if (!('geolocation' in navigator)) { setGeoError('This browser cannot share location. Try Chrome or Safari on your phone.'); return; }
     setBusy('start');
     try {
-      if (!info.consentAt) await api.post(`${base}/consent`);
+      const c = await api('POST', '/consent', { signals: deviceSignals() });
+      remember(c.deviceSecret);
       lastSent.current = null;
       watchId.current = navigator.geolocation.watchPosition(onFix, (err) => {
         setGeoError(err.code === 1 ? 'Location permission is blocked. Allow location for this site in your browser settings, then tap Start again.' : 'Could not get your location yet. Make sure location is on.');
@@ -171,30 +223,56 @@ export default function DriverTrack() {
       keepAwake();
       await load();
     } catch (e) {
-      if (e.status === 410) setError({ gone: true, message: e.message });
-      else setGeoError(e.message);
+      if (!fail(e)) setGeoError(e.message);
     } finally { setBusy(null); }
   };
 
   const stop = async () => {
     stopWatching();
-    try { await api.post(`${base}/stop`); } catch { /* the link may have just expired */ }
+    try { await api('POST', '/stop', {}); } catch (e) { if (fail(e)) return; /* the link may have just expired */ }
     load();
+  };
+
+  const submitPin = async (e) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(pin)) { setPinError('Enter the 6 digits your dispatcher read to you.'); return; }
+    setBusy('pin');
+    setPinError(null);
+    try {
+      const r = await api('POST', '/pin', { pin, signals: deviceSignals() });
+      remember(r.deviceSecret);
+      const { deviceSecret, ...rest } = r; // eslint-disable-line no-unused-vars
+      setInfo(rest);
+      setPin('');
+    } catch (err) {
+      if (!fail(err)) setPinError(err.message);
+    } finally { setBusy(null); }
   };
 
   const checkin = async (event) => {
     setBusy(event);
     try {
-      const r = await api.post(`${base}/checkin`, { event, note: event === 'issue' ? note : undefined });
+      const r = await api('POST', '/checkin', { event, note: event === 'issue' ? note : undefined, signals: deviceSignals() });
+      remember(r.deviceSecret);
       setDone((d) => ({ ...d, [event]: new Date() }));
       if (event === 'issue') { setNote(''); setIssueOpen(false); }
       if (r.tripStatus) setInfo((i) => (i?.trip ? { ...i, trip: { ...i.trip, status: r.tripStatus } } : i));
     } catch (e) {
-      if (e.status === 410) setError({ gone: true, message: e.message });
-      else setGeoError(e.message);
+      if (!fail(e)) setGeoError(e.message);
     } finally { setBusy(null); }
   };
 
+  if (error?.mismatch) {
+    return (
+      <Shell>
+        <div className="rounded-2xl border border-line bg-surface p-6 text-center">
+          <Smartphone className="mx-auto size-10 text-muted" aria-hidden />
+          <h1 className="mt-3 text-xl font-medium">Already active on another phone</h1>
+          <p className="mt-2 text-fg-2">{error.message}</p>
+        </div>
+      </Shell>
+    );
+  }
   if (error) {
     return (
       <Shell>
@@ -208,6 +286,32 @@ export default function DriverTrack() {
     );
   }
   if (!info) return <Shell><div className="flex justify-center py-20"><Loader2 className="size-8 animate-spin text-muted" aria-label="Loading" /></div></Shell>;
+
+  if (info.pinRequired) {
+    return (
+      <Shell company={info.company}>
+        <form onSubmit={submitPin} className="space-y-4 rounded-2xl border border-line bg-surface p-5">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-c-blue-soft text-c-blue"><KeyRound className="size-5" aria-hidden /></span>
+            <div>
+              <h1 className="text-xl font-medium leading-tight">{info.company}</h1>
+              <p className="mt-1 text-[15px] text-fg-2">Enter the PIN your dispatcher gave you.</p>
+            </div>
+          </div>
+          {isComputer && <DesktopWarning />}
+          <label htmlFor="pin" className="sr-only">6-digit PIN</label>
+          <input id="pin" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]*" maxLength={6} value={pin} autoFocus
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="••••••"
+            className="h-16 w-full rounded-2xl border border-line-strong bg-surface text-center font-mono text-3xl tracking-[0.5em] text-fg placeholder:text-muted focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15" />
+          {pinError && <p className="flex items-start gap-2 text-sm text-red-700 dark:text-red-300"><AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />{pinError}</p>}
+          <BigButton type="submit" className="bg-brand-600 text-white hover:bg-brand-700" disabled={busy === 'pin' || pin.length !== 6}>
+            {busy === 'pin' ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <Lock className="size-5" aria-hidden />}Continue
+          </BigButton>
+          <p className="text-center text-xs text-muted">After you continue, this link works only on this phone.</p>
+        </form>
+      </Shell>
+    );
+  }
 
   const trip = info.trip;
   const expires = fmtDate(info.expiresAt);
@@ -237,7 +341,8 @@ export default function DriverTrack() {
                 </p>
               </div>
             </div>
-            <p className="mt-3 rounded-xl bg-surface/70 px-3 py-2 text-sm text-fg-2">Keep this page open. Your phone stops sending when the page is closed or the screen turns off{wakeOn ? '; the screen is being kept on for you' : ''}.</p>
+            <p className="mt-3 flex items-center gap-2 text-sm font-medium text-c-green"><ShieldCheck className="size-4" aria-hidden />Shared only from this phone</p>
+            <p className="mt-2 rounded-xl bg-surface/70 px-3 py-2 text-sm text-fg-2">Keep this page open. Your phone stops sending when the page is closed or the screen turns off{wakeOn ? '; the screen is being kept on for you' : ''}.</p>
             <BigButton className="mt-3 border border-line-strong bg-surface text-fg" onClick={stop}><PauseCircle className="size-5" aria-hidden />Stop sharing</BigButton>
           </>
         ) : (
@@ -248,7 +353,14 @@ export default function DriverTrack() {
                 <span className="font-medium text-fg">{info.company}</span> will see your location while this page is open{expires ? <>, until <span className="font-medium text-fg">{expires}</span></> : ''}. Stop anytime.
               </p>
             </div>
-            <BigButton className="mt-4 bg-brand-600 text-white hover:bg-brand-700" disabled={busy === 'start'} onClick={start}>
+            {isComputer && (
+              <div className="mt-4 space-y-3">
+                <DesktopWarning />
+                <Checkbox checked={desktopOk} onChange={(e) => setDesktopOk(e.target.checked)} label={<span className="text-sm">I am in the truck with this device</span>} />
+              </div>
+            )}
+            {info.bound && <p className="mt-3 flex items-center gap-2 text-sm text-fg-2"><ShieldCheck className="size-4 text-c-green" aria-hidden />This link works only on this phone.</p>}
+            <BigButton className="mt-4 bg-brand-600 text-white hover:bg-brand-700" disabled={busy === 'start' || (isComputer && !desktopOk)} onClick={start}>
               {busy === 'start' ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <Radio className="size-5" aria-hidden />}
               {info.consentAt ? 'Start sharing again' : 'Start sharing my location'}
             </BigButton>
@@ -309,6 +421,15 @@ export default function DriverTrack() {
 
       <p className="pb-6 text-center text-xs text-muted">Your location goes only to {info.company}. It is not shared with anyone else and is deleted after 30 days.</p>
     </Shell>
+  );
+}
+
+function DesktopWarning() {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-200">
+      <Monitor className="mt-0.5 size-5 shrink-0" aria-hidden />
+      <p><span className="font-medium">Open this link on the phone in the truck.</span> A computer cannot report where the truck is, and your dispatcher will see this position as low confidence.</p>
+    </div>
   );
 }
 

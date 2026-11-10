@@ -6,7 +6,7 @@ import { advanceEnrollment } from '../services/sequenceEngine.js';
 import { ingestDocument } from '../services/ai/rag.js';
 import { sendSystemMail } from '../services/email/system.js';
 import { runDueGenerators } from '../services/leadgen.js';
-import { prunePings } from '../services/fleet/track.js';
+import { runMaintenance } from './maintenance.js';
 
 /**
  * In-process background jobs (single container, no external queue):
@@ -15,13 +15,13 @@ import { prunePings } from '../services/fleet/track.js';
  * 3. follow-up due reminders
  * 4. process pending knowledge documents
  * 5. scheduled lead generators (plans with leadGenAutoRun)
+ * 6. maintenance jobs (cleanup, document expiry reminders, backup, SQLite optimize) — see maintenance.js
  * A re-entrancy guard prevents overlapping ticks.
  */
 const TICK_MS = Number(process.env.SCHEDULER_INTERVAL_MS || 30000);
 const BATCH = 25;
 let timer = null;
 let running = false;
-let lastPrune = 0;
 
 async function sendDueEmails(now, log) {
   const due = await prisma.email.findMany({
@@ -171,9 +171,9 @@ export async function runSchedulerTick({ now = new Date(), quiet = false } = {})
     const reminders = await followUpReminders(now, log);
     const knowledge = await processKnowledge(now);
     const leadGenerators = await runDueGenerators(now, log);
-    // Hourly: drop GPS pings older than 30 days and expire old share links.
-    if (!lastPrune || now - lastPrune > 3600000) { lastPrune = now; await prunePings(now).catch((e) => log('prune', '-', e.message)); }
-    return { sequenceEmails, emails, reminders, knowledge, leadGenerators };
+    // Maintenance jobs on their own schedules (each checks if it is due; at most 3 per tick).
+    const maintenance = process.env.NODE_ENV === 'test' ? [] : await runMaintenance(now, log);
+    return { sequenceEmails, emails, reminders, knowledge, leadGenerators, maintenance };
   } catch (err) {
     log('tick', '-', err.message);
     return { error: err.message };

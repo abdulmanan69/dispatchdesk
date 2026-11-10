@@ -41,6 +41,14 @@ export default function PublicLayout() {
   const [open, setOpen] = useState(false);
   const { pathname, hash } = useLocation();
   useEffect(() => { setOpen(false); }, [pathname]);
+  // Keep the tab title in sync on client-side navigation (the server sets it for the first load and for link previews).
+  useEffect(() => {
+    const T = { '/': 'DispatchDesk · CRM and dispatch desk for truck dispatchers', '/features': 'Features · DispatchDesk', '/pricing': 'Pricing · DispatchDesk',
+      '/training': 'Dispatch training · DispatchDesk', '/marketplace': 'Marketplace · DispatchDesk', '/community': 'Community · DispatchDesk',
+      '/login': 'Log in · DispatchDesk', '/register': 'Create your free account · DispatchDesk', '/terms': 'Terms of service · DispatchDesk', '/privacy': 'Privacy policy · DispatchDesk' };
+    const key = pathname.replace(/\/$/, '') || '/';
+    if (T[key]) document.title = T[key];
+  }, [pathname]);
   useEffect(() => {
     if (hash) document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' });
     else window.scrollTo(0, 0);

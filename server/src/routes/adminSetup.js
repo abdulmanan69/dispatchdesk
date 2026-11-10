@@ -8,6 +8,8 @@ import { requirePermission } from '../middleware/auth.js';
 import { getSettings, setSetting } from '../lib/settings.js';
 import { OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
+import { listBackups, runBackup, backupPath } from '../services/backup.js';
+import { JOBS, jobStatuses, runJob } from '../jobs/maintenance.js';
 
 /**
  * Admin setup guide: an ordered checklist computed from the real configuration, plus one-click Stripe provisioning.
@@ -216,8 +218,16 @@ export async function buildChecklist(req) {
   }));
 
   // Operations
-  items.push(item('backups', 'Backups and admin account', 'optional', 'All data (database, uploads, generated secret) lives in the /data volume.', {
+  const backups = listBackups();
+  const latest = backups[0];
+  const fresh = latest && Date.now() - new Date(latest.createdAt).getTime() < 2 * 86400000;
+  items.push(item('backups', 'Backups and admin account', fresh ? 'done' : 'todo', latest
+    ? `Automatic daily database backup. Latest: ${latest.name} (${Math.round(latest.size / 1024)} KB). The newest 7 are kept in /data/backups. Download one now and then and keep it off the server.`
+    : 'The app makes a database backup once a day into /data/backups. The first one runs within an hour of startup, or press Back up now.', {
+    backups: backups.slice(0, 7),
     steps: [
+      'Use **Back up now** for an extra copy, and **Download** to keep one off the server (it contains password hashes and encrypted keys: store it safely).',
+      'To restore a database backup: stop the app in Coolify, copy the file over `/data/app.db` in the volume (delete `app.db-wal` and `app.db-shm`), then start the app.',
       'Coolify: open the app → **Storages** to see the volume name (it ends with `dispatchdesk-data`). Coolify\'s **Backups** are for databases; back up this volume from the server shell.',
       'On the server: `docker run --rm -v <volume-name>:/data -v /root/backups:/backup busybox tar czf /backup/dispatchdesk-$(date +%F).tgz /data`. Schedule it with cron and copy the files off the server.',
       'Restore: stop the app, then `docker run --rm -v <volume-name>:/data -v /root/backups:/backup busybox sh -c "rm -rf /data/* && tar xzf /backup/<file>.tgz -C /"`, then start it.',
@@ -225,6 +235,12 @@ export async function buildChecklist(req) {
       'Keep `APP_SECRET` unchanged: it encrypts saved credentials. If it changes, saved keys and mailbox passwords must be entered again.',
     ],
   }));
+
+  const jobs = await jobStatuses();
+  const failing = jobs.filter((j) => j.lastOk === false);
+  items.push(item('jobs', 'Background jobs', failing.length ? 'partial' : 'done', failing.length
+    ? `${failing.length} job(s) failed on their last run: ${failing.map((j) => j.name).join(', ')}.`
+    : 'Cleanup, reminders, backup and database upkeep run automatically on their schedules.', { jobs }));
 
   const required = items.filter((i) => i.required);
   return {
@@ -236,6 +252,36 @@ export async function buildChecklist(req) {
 
 r.get('/', requirePermission('admin.settings'), ah(async (req, res) => {
   res.json(await buildChecklist(req));
+}));
+
+r.get('/jobs', requirePermission('admin.settings'), ah(async (req, res) => {
+  res.json({ items: await jobStatuses() });
+}));
+
+r.post('/jobs/:name/run', requirePermission('admin.settings'), ah(async (req, res) => {
+  const job = JOBS.find((j) => j.name === req.params.name);
+  if (!job) throw badRequest('Unknown job');
+  const result = await runJob(job, new Date());
+  await audit(req, 'admin.job_run', { details: { job: job.name, ok: result.ok } });
+  res.json({ result, items: await jobStatuses() });
+}));
+
+r.get('/backups', requirePermission('admin.settings'), ah(async (req, res) => {
+  res.json({ items: listBackups() });
+}));
+
+r.post('/backups', requirePermission('admin.settings'), ah(async (req, res) => {
+  const b = await runBackup({ force: true });
+  if (!b) throw unavailable('A backup is already running, or this database is not a SQLite file');
+  await audit(req, 'admin.backup_created', { details: { name: b.name } });
+  res.status(201).json({ backup: b, items: listBackups() });
+}));
+
+r.get('/backups/:name', requirePermission('admin.settings'), ah(async (req, res) => {
+  const p = backupPath(req.params.name);
+  if (!p) throw badRequest('Backup not found');
+  await audit(req, 'admin.backup_downloaded', { details: { name: req.params.name } });
+  res.download(p, req.params.name);
 }));
 
 /** Find a product created earlier for this plan (metadata dispatchdesk_plan=<key>). */

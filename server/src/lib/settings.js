@@ -1,6 +1,7 @@
 import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { encrypt, decrypt } from './crypto.js';
+import { broadcast, onBroadcast } from './broadcast.js';
 
 /**
  * System settings: DB values (set by admins) override environment defaults.
@@ -47,7 +48,9 @@ async function load() {
   return cache;
 }
 
-export function invalidateSettings() { cache = null; }
+onBroadcast('settings', () => { cache = null; });
+/** Settings changed: drop the 5 s cache in every process. */
+export function invalidateSettings() { broadcast('settings'); }
 
 export async function getSetting(key) {
   const def = SETTING_DEFS[key];

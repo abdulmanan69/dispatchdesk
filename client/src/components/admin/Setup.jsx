@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Settings2, Wand2 } from 'lucide-react';
+import { Check, ChevronDown, Copy, DatabaseBackup, Download, ExternalLink, FlaskConical, Play, Settings2, Wand2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../Toast.jsx';
@@ -56,6 +56,71 @@ function StripeReport({ report, onClose }) {
   );
 }
 
+/** Backup list with "Back up now" and per-file download (admin only, audited on the server). */
+function BackupPanel({ initial }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['admin', 'backups'], queryFn: () => api.get('/api/admin/setup/backups'), initialData: initial ? { items: initial } : undefined });
+  const run = useApiMutation(() => api.post('/api/admin/setup/backups'), {
+    success: (d) => `Backup ${d.backup.name} created`,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin', 'backups'] }); qc.invalidateQueries({ queryKey: ['admin', 'setup'] }); },
+  });
+  const items = q.data?.items || [];
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[13px] font-medium">Database backups</span>
+        <Button size="sm" icon={DatabaseBackup} loading={run.isPending} onClick={() => run.mutate()}>Back up now</Button>
+      </div>
+      {items.length === 0 ? <p className="text-xs text-muted">No backups yet.</p> : (
+        <ul className="divide-y divide-line text-[13px]">
+          {items.map((b) => (
+            <li key={b.name} className="flex items-center justify-between gap-3 py-1.5">
+              <span className="font-mono text-xs">{b.name}</span>
+              <span className="ml-auto tabular text-xs text-muted">{(b.size / 1024 / 1024).toFixed(2)} MB · {new Date(b.createdAt).toLocaleString()}</span>
+              <a href={`/api/admin/setup/backups/${encodeURIComponent(b.name)}`} className="inline-flex items-center gap-1 text-xs text-brand-700 hover:underline dark:text-brand-300" download>
+                <Download className="size-3.5" aria-hidden />Download
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Background job status table with "Run now" (runs under a database lock on the server). */
+function JobsPanel({ initial }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['admin', 'jobs'], queryFn: () => api.get('/api/admin/setup/jobs'), initialData: initial ? { items: initial } : undefined, refetchInterval: 60_000 });
+  const run = useApiMutation((name) => api.post(`/api/admin/setup/jobs/${name}/run`), {
+    success: (d, name) => (d.result.ok ? `${name} finished` : `${name}: ${d.result.error || d.result.skipped}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin', 'jobs'] }); qc.invalidateQueries({ queryKey: ['admin', 'setup'] }); },
+  });
+  return (
+    <div className="overflow-x-auto rounded-lg border border-line">
+      <table className="w-full text-[13px]">
+        <thead className="bg-surface-2 text-left text-xs text-muted">
+          <tr><th className="px-3 py-2 font-medium">Job</th><th className="px-3 py-2 font-medium">Schedule</th><th className="px-3 py-2 font-medium">Last run</th><th className="px-3 py-2 font-medium">Result</th><th /></tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {(q.data?.items || []).map((j) => (
+            <tr key={j.name}>
+              <td className="px-3 py-2"><div className="font-medium">{j.label}</div><div className="font-mono text-[11px] text-muted">{j.name}</div></td>
+              <td className="whitespace-nowrap px-3 py-2 text-muted">{j.schedule}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-muted">{j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : 'Not yet'}{j.durationMs != null && <span className="block text-[11px]">{j.durationMs} ms</span>}</td>
+              <td className="px-3 py-2">
+                {j.lastOk == null ? <Badge>Waiting</Badge> : j.lastOk ? <Badge color="green">OK</Badge> : <Badge color="red" title={j.lastError || ''}>Failed</Badge>}
+                {j.result && <span className="mt-1 block max-w-xs truncate font-mono text-[11px] text-muted" title={JSON.stringify(j.result)}>{JSON.stringify(j.result)}</span>}
+              </td>
+              <td className="px-3 py-2 text-right"><Button size="sm" variant="ghost" icon={Play} loading={run.isPending && run.variables === j.name} onClick={() => run.mutate(j.name)}>Run now</Button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function SetupCard({ it, onOpenSettings, open, onToggle }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -97,6 +162,8 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
               ))}
             </ol>
           )}
+          {it.key === 'backups' && <BackupPanel initial={it.backups} />}
+          {it.key === 'jobs' && <JobsPanel initial={it.jobs} />}
           {it.values.length > 0 && <div className="grid gap-2 md:grid-cols-2">{it.values.map((v) => <CopyValue key={v.label} v={v} />)}</div>}
           <div className="flex flex-wrap items-center gap-2">
             {it.testService && <Button size="sm" variant="secondary" icon={FlaskConical} loading={test.isPending} onClick={() => test.mutate()}>Test</Button>}
