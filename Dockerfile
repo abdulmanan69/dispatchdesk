@@ -5,6 +5,8 @@ ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ---- 1. Build the client -------------------------------------------------
 FROM ${NODE_IMAGE} AS client-build
+# Retry flaky registry downloads instead of failing the whole deploy.
+ENV NPM_CONFIG_FETCH_RETRIES=6 NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 WORKDIR /build/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -13,6 +15,7 @@ RUN npm run build
 
 # ---- 2. Install server dependencies (native better-sqlite3) --------------
 FROM ${NODE_IMAGE} AS server-deps
+ENV NPM_CONFIG_FETCH_RETRIES=6 NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /build/server
