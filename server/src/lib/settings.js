@@ -10,6 +10,8 @@ import { broadcast, onBroadcast } from './broadcast.js';
 export const SETTING_DEFS = {
   'app.name': { group: 'app', default: () => 'DispatchDesk' },
   'app.registrationOpen': { group: 'app', type: 'bool', default: () => 'true' },
+  // Public contact address printed on the privacy policy and terms of service.
+  'app.supportEmail': { group: 'app', default: () => process.env.SUPPORT_EMAIL || '' },
   'app.requireEmailVerification': { group: 'app', type: 'bool', default: () => 'false' },
   'ai.baseUrl': { group: 'ai', default: () => config.ai.baseUrl },
   'ai.apiKey': { group: 'ai', secret: true, default: () => config.ai.apiKey },

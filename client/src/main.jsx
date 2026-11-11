@@ -51,6 +51,9 @@ setSharedSink((queryKey, data) => {
   if (Array.isArray(queryKey) && queryClient.getQueryCache().find({ queryKey, exact: true })) queryClient.setQueryData(queryKey, data);
 });
 
+// The server writes the privacy policy / terms text into #root (for crawlers); keep it so those pages render instantly.
+window.__SSR_LEGAL__ = document.querySelector('#root [data-legal]')?.outerHTML || null;
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

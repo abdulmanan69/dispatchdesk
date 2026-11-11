@@ -2,6 +2,8 @@ import express from 'express';
 import helmet from 'helmet';
 import compression from 'compression';
 import { renderIndex, robotsTxt, sitemapXml, webManifest } from './lib/seo.js';
+import { LEGAL_DOCS, homeHtml } from './content/legal.js';
+import { getSettings } from './lib/settings.js';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -208,6 +210,15 @@ export function createApp() {
   app.use('/api/public/portal', portalRoutes); // carrier portal links (token in URL, no session)
   app.use('/api/public/calendar', calendarFeedRoutes); // private iCalendar feeds (token in URL, no session)
   app.use('/api/public/onboarding', publicOnboardingRoutes); // carrier onboarding + e-signature links (token in URL, no session)
+  // Privacy policy and terms as HTML for the React pages (the same text the server writes into the page for crawlers).
+  app.get('/api/public/legal/:doc', async (req, res, next) => {
+    try {
+      const fn = LEGAL_DOCS[req.params.doc];
+      if (!fn) return res.status(404).json({ error: 'Not found' });
+      const s = await getSettings(['app.name', 'app.supportEmail']);
+      res.set('Cache-Control', 'public, max-age=300').json({ html: fn({ appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'] }) });
+    } catch (err) { next(err); }
+  });
   app.use('/api/public', publicRoutes);
   app.use('/api/billing', billingRoutes); // /plans is public, the rest checks auth itself
   app.use('/api/training', trainingRoutes); // catalogue + request form are public
@@ -280,11 +291,22 @@ export function createApp() {
     app.get('/sitemap.xml', (req, res) => { loadIndex(); res.type('application/xml').set('Cache-Control', 'public, max-age=3600').send(sitemapXml(builtAt)); });
     app.get('/manifest.webmanifest', (req, res) => res.type('application/manifest+json').set('Cache-Control', 'public, max-age=86400').send(JSON.stringify(webManifest())));
     // Every other path gets index.html with that page's title, description and link-preview tags.
-    app.get('*', (req, res) => {
-      const template = loadIndex();
-      if (!template) return res.status(503).type('text/plain').set('Cache-Control', 'no-store').set('Retry-After', '5').send('The app is being updated. Reload in a moment.');
-      const { body, status } = renderIndex(template, req.path);
-      res.status(status).type('html').set('Cache-Control', 'no-cache').send(body);
+    // The home page, privacy policy and terms also carry their text in the HTML, for crawlers and reviewers (for example
+    // Google's OAuth verification) that do not run JavaScript. React replaces it when the app starts.
+    const SSR = { '/': homeHtml, '/privacy': LEGAL_DOCS.privacy, '/terms': LEGAL_DOCS.terms };
+    app.get('*', async (req, res, next) => {
+      try {
+        const template = loadIndex();
+        if (!template) return res.status(503).type('text/plain').set('Cache-Control', 'no-store').set('Retry-After', '5').send('The app is being updated. Reload in a moment.');
+        let { body, status } = renderIndex(template, req.path);
+        const ssr = status === 200 && SSR[req.path.replace(/\/+$/, '') || '/'];
+        if (ssr) {
+          const s = await getSettings(['app.name', 'app.supportEmail']);
+          const html = ssr({ appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'] });
+          body = body.replace('<div id="root"></div>', () => `<div id="root">${html}</div>`);
+        }
+        res.status(status).type('html').set('Cache-Control', 'no-cache').send(body);
+      } catch (err) { next(err); }
     });
   } else {
     app.get('/', (req, res) => res.type('text').send('API is running. Build the client (cd client && npm run build) to serve the UI.'));

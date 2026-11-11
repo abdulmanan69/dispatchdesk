@@ -358,6 +358,7 @@ r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
     if (key === 'smtp.dailyLimit' && value && !/^[1-9]\d{0,6}$/.test(value)) throw badRequest('Platform emails per day must be a whole number of at least 1');
     if ((key === 'ai.baseUrl') && value && !/^https?:\/\//.test(value)) throw badRequest('AI base URL must start with http(s)://');
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
+    if (key === 'app.supportEmail' && value && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(value)) throw badRequest('Support email must be a valid email address');
     writes.push([key, value]);
   }
   for (const key of body.clear) {

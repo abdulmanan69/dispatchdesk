@@ -17,7 +17,7 @@ const GROUPS = [
 ];
 
 const LABELS = {
-  'app.name': 'Application name', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
+  'app.name': 'Application name', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
   'ai.baseUrl': 'API base URL (OpenAI-compatible)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional)',
   'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
   'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
