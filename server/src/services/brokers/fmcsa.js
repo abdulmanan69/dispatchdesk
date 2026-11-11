@@ -7,8 +7,12 @@ import { normDot, normMc, normPhone, dateOrNull } from '../carriers/normalize.js
  * FMCSA public data for broker vetting and the nightly watchlist (read-only, free):
  *   - Company Census (data.transportation.gov az4n-8mr2) through services/carriers/fmcsaCensus.js query():
  *     legal name, USDOT status, operation classification (carship: B = broker), phone, email, address, add date.
- *   - QCMobile (mobile.fmcsa.dot.gov), only when an admin saved the free webKey: broker/common authority status,
- *     BMC-84/85 bond on file, BIPD insurance on file, allowed to operate, out-of-service date.
+ *   - FMCSA Licensing & Insurance "Carrier" dataset (data.transportation.gov 6eyk-hxee, updated daily, no key):
+ *     broker/common/contract authority status (active, inactive, pending), revocation pending, BMC-84/85 bond and
+ *     BIPD insurance required / on file. Used whenever QCMobile is not available.
+ *   - QCMobile (mobile.fmcsa.dot.gov), only when an admin saved the free webKey: the same authority and bond facts
+ *     plus allowed to operate and out-of-service date. QCMobile refuses requests from outside the US (403), so a
+ *     server hosted abroad relies on the licensing dataset.
  * Results are snapshots ({ found, ... , checkedAt }) with their sources. Per-process cache (6 h, 2,000 entries) with
  * in-flight de-duplication and at most 2 concurrent upstream calls per process; the shared copy of a snapshot lives on
  * the Broker / Carrier row (fmcsaSnapshot), so one lookup serves every page view of that row.
@@ -17,6 +21,7 @@ const TTL_MS = 6 * 60 * 60_000;
 const MAX_ENTRIES = 2000;
 const TIMEOUT_MS = 12_000;
 const QC_BASE = 'https://mobile.fmcsa.dot.gov/qc/services';
+export const LICENSING_URL = 'https://data.transportation.gov/resource/6eyk-hxee.json';
 const cache = new Map(); // key -> { at, value }
 const inflight = new Map(); // key -> Promise
 let fetchOverride = null;
@@ -56,8 +61,8 @@ const str = (v) => {
   return s || null;
 };
 
-/** Normalized snapshot from a census row (and an optional QCMobile carrier record). */
-export function snapshotFrom(row, { qc = null, query = {}, checkedAt = new Date() } = {}) {
+/** Normalized snapshot from a census row, plus an optional QCMobile carrier record or licensing (L&I) row. */
+export function snapshotFrom(row, { qc = null, lic = null, query = {}, checkedAt = new Date() } = {}) {
   const at = iso(checkedAt);
   if (!row) return { v: 1, found: false, query, checkedAt: at, sources: [{ name: 'FMCSA census', dataset: 'az4n-8mr2', asOf: at }] };
   const carship = str(row.carship);
@@ -68,8 +73,12 @@ export function snapshotFrom(row, { qc = null, query = {}, checkedAt = new Date(
     const s = String(v || '').toUpperCase();
     return s === 'A' ? 'active' : s === 'P' ? 'pending' : s === 'I' ? 'inactive' : s === 'N' ? 'none' : null;
   };
-  const common = authority(qc?.commonAuthorityStatus);
-  const contract = authority(qc?.contractAuthorityStatus);
+  // Licensing rows say A/I/N plus a separate "application pending" flag.
+  const liAuthority = (stat, pending) => (yn(pending) && String(stat || '').toUpperCase() !== 'A' ? 'pending' : authority(stat));
+  const li = !qc && lic ? lic : null;
+  const common = qc ? authority(qc.commonAuthorityStatus) : li ? liAuthority(li.common_stat, li.common_app_pend) : null;
+  const contract = qc ? authority(qc.contractAuthorityStatus) : li ? liAuthority(li.contract_stat, li.contract_app_pend) : null;
+  const amount = (v) => (v == null || String(v).trim() === '' ? null : Number(v));
   return {
     v: 1,
     found: true,
@@ -89,17 +98,21 @@ export function snapshotFrom(row, { qc = null, query = {}, checkedAt = new Date(
     mcs150Date: iso(dateOrNull(row.mcs150_date)),
     qc: !!qc,
     qcAsOf: qc ? at : null,
-    brokerAuthority: qc ? authority(qc.brokerAuthorityStatus) : null,
-    carrierAuthority: qc ? (common === 'active' || contract === 'active' ? 'active' : common === 'pending' || contract === 'pending' ? 'pending' : common || contract) : null,
-    bondOnFile: qc ? yn(qc.bondInsuranceOnFile) : null,
-    bondRequired: qc ? yn(qc.bondInsuranceRequired) : null,
-    insuranceOnFile: qc ? yn(qc.bipdInsuranceOnFile) : null,
-    insuranceRequired: qc ? yn(qc.bipdInsuranceRequired) : null,
+    licensing: !!li,
+    licensingAsOf: li ? at : null,
+    brokerAuthority: qc ? authority(qc.brokerAuthorityStatus) : li ? liAuthority(li.broker_stat, li.broker_app_pend) : null,
+    carrierAuthority: (qc || li) ? (common === 'active' || contract === 'active' ? 'active' : common === 'pending' || contract === 'pending' ? 'pending' : common || contract) : null,
+    brokerRevocationPending: li ? yn(li.broker_rev_pend) : null,
+    bondOnFile: qc ? yn(qc.bondInsuranceOnFile) : li ? yn(li.bond_file) : null,
+    bondRequired: qc ? yn(qc.bondInsuranceRequired) : li ? yn(li.bond_req) : null,
+    insuranceOnFile: qc ? yn(qc.bipdInsuranceOnFile) : li ? (amount(li.bipd_file) == null ? null : amount(li.bipd_file) > 0) : null,
+    insuranceRequired: qc ? yn(qc.bipdInsuranceRequired) : li ? (amount(li.min_cov_amount) == null ? null : amount(li.min_cov_amount) > 0) : null,
     allowedToOperate: qc ? yn(qc.allowedToOperate) : null,
     oosDate: qc?.oosDate ? iso(dateOrNull(qc.oosDate)) : null,
     sources: [
       { name: 'FMCSA census', dataset: 'az4n-8mr2', asOf: at },
       ...(qc ? [{ name: 'FMCSA QCMobile', asOf: at }] : []),
+      ...(li ? [{ name: 'FMCSA licensing', dataset: '6eyk-hxee', asOf: at }] : []),
     ],
   };
 }
@@ -113,6 +126,53 @@ export async function censusRows({ dots = [], mcs = [] } = {}) {
   if (d.length) parts.push(`dot_number in(${d.map((x) => `'${x}'`).join(',')})`);
   if (m.length) parts.push(`(docket1prefix='MC' AND docket1 in(${m.map((x) => `'${x}'`).join(',')}))`);
   return limited(() => censusQuery({ $limit: String(Math.min(1000, (d.length + m.length) * 2)), $where: parts.join(' OR ') }, (url, opts) => timedFetch(url, opts)));
+}
+
+/**
+ * Best census row among several for the same MC docket: an MC number can appear on an old, inactive USDOT record and
+ * on the current one (e.g. a company that re-registered). Active USDOT first, then active docket, then the newest.
+ */
+export function bestCensusRow(rows) {
+  const score = (r) => (String(r.status_code || '').toUpperCase() === 'A' ? 2 : 0) + (String(r.docket1_status_code || '').toUpperCase() === 'A' ? 1 : 0);
+  return [...rows].sort((a, b) => score(b) - score(a) || String(b.add_date || '').localeCompare(String(a.add_date || '')))[0] || null;
+}
+
+const padDot = (d) => String(d).padStart(8, '0'); // the licensing dataset stores USDOT numbers as 8 digits
+
+/**
+ * Licensing (L&I) rows for up to 200 USDOT and 200 MC numbers in one request. Best effort: [] when the dataset is
+ * unreachable (the census facts still stand).
+ */
+export async function licensingRows({ dots = [], mcs = [] } = {}) {
+  const d = [...new Set(dots.map(normDot).filter(Boolean))].slice(0, 200);
+  const m = [...new Set(mcs.map(normMc).filter(Boolean))].slice(0, 200);
+  if (!d.length && !m.length) return [];
+  const parts = [];
+  if (d.length) parts.push(`dot_number in(${d.map((x) => `'${padDot(x)}'`).join(',')})`);
+  if (m.length) parts.push(`docket_number in(${m.map((x) => `'MC${x}'`).join(',')})`);
+  const url = new URL(LICENSING_URL);
+  url.searchParams.set('$where', parts.join(' OR '));
+  url.searchParams.set('$limit', String(Math.min(2000, (d.length + m.length) * 5)));
+  try {
+    const token = await getSetting('fmcsa.socrataAppToken');
+    const res = await limited(() => timedFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) } }));
+    if (!res.ok) return [];
+    const rows = await res.json().catch(() => null);
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The licensing row that describes this company: its MC docket first, then a docket with active broker authority. */
+export function pickLicensing(rows, { dot, mc } = {}) {
+  const d = normDot(dot);
+  const m = normMc(mc);
+  const isMine = (r) => String(r.docket_number || '').toUpperCase() === `MC${m}`;
+  const ours = rows.filter((r) => (m && isMine(r)) || (d && normDot(r.dot_number) === d));
+  return ours.find((r) => m && isMine(r))
+    || ours.find((r) => String(r.broker_stat || '').toUpperCase() === 'A')
+    || ours[0] || null;
 }
 
 /** QCMobile carrier record (null when no webKey is configured, not found, or the service fails). */
@@ -159,9 +219,14 @@ export async function lookupBroker({ mc, dot }, { fresh = false, now = new Date(
   if (inflight.has(key)) return inflight.get(key);
   const p = (async () => {
     const rows = await censusRows(normDot(dot) ? { dots: [dot] } : { mcs: [mc] });
-    const row = rows.find((r) => (normDot(dot) ? normDot(r.dot_number) === normDot(dot) : normMc(r.docket1) === normMc(mc))) || rows[0] || null;
-    const qc = row ? await qcCarrier(row.dot_number) : null;
-    const snap = snapshotFrom(row, { qc, query: { mc: normMc(mc), dot: normDot(dot) }, checkedAt: now });
+    const matches = rows.filter((r) => (normDot(dot) ? normDot(r.dot_number) === normDot(dot) : r.docket1prefix === 'MC' && normMc(r.docket1) === normMc(mc)));
+    const row = bestCensusRow(matches.length ? matches : rows);
+    const rowMc = row && row.docket1prefix === 'MC' ? row.docket1 : mc;
+    const [qc, licRows] = row
+      ? await Promise.all([qcCarrier(row.dot_number), licensingRows({ dots: [row.dot_number], mcs: rowMc ? [rowMc] : [] })])
+      : [null, []];
+    const lic = row ? pickLicensing(licRows, { dot: row.dot_number, mc: rowMc }) : null;
+    const snap = snapshotFrom(row, { qc, lic, query: { mc: normMc(mc), dot: normDot(dot) }, checkedAt: now });
     remember(key, snap);
     if (snap.found && snap.dot) remember(`dot:${snap.dot}`, snap);
     if (snap.found && snap.mc) remember(`mc:${snap.mc}`, snap);

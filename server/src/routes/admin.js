@@ -423,11 +423,13 @@ const TESTS = {
     const headers = s['fmcsa.socrataAppToken'] ? { 'X-App-Token': s['fmcsa.socrataAppToken'] } : {};
     const census = await fetch(`${config.fmcsa.censusUrl}?$limit=1`, { headers, signal: timeout() });
     const parts = [census.ok ? 'FMCSA Census dataset reachable' : `FMCSA Census responded ${census.status}`];
-    let ok = census.ok;
+    const lic = await fetch('https://data.transportation.gov/resource/6eyk-hxee.json?$limit=1', { headers, signal: timeout() }).catch(() => null);
+    parts.push(lic?.ok ? 'FMCSA licensing dataset reachable (broker authority and bond, no key needed)' : `FMCSA licensing dataset responded ${lic ? lic.status : 'with no answer'}`);
+    const ok = census.ok && !!lic?.ok;
     if (s['fmcsa.webKey']) {
-      const qc = await fetch(`https://mobile.fmcsa.dot.gov/qc/services/carriers/1?webKey=${encodeURIComponent(s['fmcsa.webKey'])}`, { signal: timeout() });
-      parts.push(qc.ok ? 'QCMobile webKey accepted' : `QCMobile responded ${qc.status}`);
-      ok = ok && qc.ok;
+      const qc = await fetch(`https://mobile.fmcsa.dot.gov/qc/services/carriers/1?webKey=${encodeURIComponent(s['fmcsa.webKey'])}`, { signal: timeout() }).catch(() => null);
+      // QCMobile blocks requests from outside the US; authority and bond then come from the licensing dataset.
+      parts.push(qc?.ok ? 'QCMobile webKey accepted' : qc?.status === 403 ? 'QCMobile refused this server (403: it only answers US addresses). Not needed: the licensing dataset covers authority and bond' : `QCMobile responded ${qc ? qc.status : 'with no answer'} (optional)`);
     } else parts.push('QCMobile webKey not set (optional)');
     return { ok, message: parts.join('. ') };
   },

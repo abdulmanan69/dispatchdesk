@@ -63,7 +63,7 @@ export function computeFlags(snapshot, { previous = null, rateCon = {}, known = 
   const flags = [];
   const asOf = snapshot?.checkedAt || null;
   const census = 'FMCSA census';
-  const qc = 'FMCSA QCMobile';
+  const qc = snapshot?.qc ? 'FMCSA QCMobile' : 'FMCSA licensing';
   const add = (code, level, message, source, extra = {}) => flags.push({ code, level, message, source, asOf, ...extra });
   if (!snapshot) return flags;
 
@@ -75,6 +75,7 @@ export function computeFlags(snapshot, { previous = null, rateCon = {}, known = 
     if (snapshot.brokerAuthority && snapshot.brokerAuthority !== 'active') {
       add('broker_authority', snapshot.brokerAuthority === 'pending' ? 'amber' : 'red', `Broker authority is ${snapshot.brokerAuthority}.`, qc);
     }
+    if (snapshot.brokerRevocationPending === true) add('revocation_pending', 'red', 'A revocation of the broker authority is pending.', qc);
     if (snapshot.bondRequired === true && snapshot.bondOnFile === false) add('no_bond', 'red', 'A broker bond or trust (BMC-84/85) is required but none is on file.', qc);
     if (snapshot.allowedToOperate === false) add('not_allowed', 'red', 'FMCSA lists this company as not allowed to operate.', qc);
     if (snapshot.oosDate) add('out_of_service', 'red', `Out-of-service order dated ${ymd(snapshot.oosDate)}.`, qc);

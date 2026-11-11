@@ -7,7 +7,7 @@ import { date, phoneFmt } from '../../lib/format.js';
 import { Badge, Button, Card, Field, Input, Switch, cx } from '../ui.jsx';
 
 /**
- * Broker vetting from FMCSA public data (census; QCMobile when an admin configured it). Every fact names its source
+ * Broker vetting from FMCSA public data (census and the licensing dataset; QCMobile when configured and reachable). Every fact names its source
  * and date. Flags are levels of attention, never a verdict. The "Call back" button only opens the phone app.
  */
 const LEVEL = {
@@ -55,7 +55,7 @@ export function VettingFacts({ snapshot, qcConfigured }) {
   if (!snapshot) return null;
   if (!snapshot.found) return <p className="text-sm text-muted">No FMCSA census record was found for this number. Check the MC or USDOT number with the broker; this alone does not mean the broker has no authority.</p>;
   const census = `FMCSA census · ${date(snapshot.checkedAt)}`;
-  const qc = `FMCSA QCMobile · ${date(snapshot.checkedAt)}`;
+  const qc = `${snapshot.qc ? 'FMCSA QCMobile' : 'FMCSA licensing'} · ${date((snapshot.qc ? snapshot.qcAsOf : snapshot.licensingAsOf) || snapshot.checkedAt)}`;
   const addr = snapshot.address ? [snapshot.address.street, snapshot.address.city, snapshot.address.state, snapshot.address.zip].filter(Boolean).join(', ') : null;
   return (
     <dl className="divide-y divide-line">
@@ -63,15 +63,15 @@ export function VettingFacts({ snapshot, qcConfigured }) {
       <Fact k="USDOT / MC" source={census}>{[snapshot.dot && `USDOT ${snapshot.dot}`, snapshot.mc && `MC ${snapshot.mc}`].filter(Boolean).join(' · ')}</Fact>
       <Fact k="USDOT status" source={census}>{authority(snapshot.usdotStatus)}</Fact>
       <Fact k="Registered as a broker" source={census}>{yesNo(snapshot.registeredBroker)}</Fact>
-      {snapshot.qc ? (
+      {snapshot.qc || snapshot.licensing ? (
         <>
-          <Fact k="Broker authority" source={qc}>{authority(snapshot.brokerAuthority)}</Fact>
-          <Fact k="Bond (BMC-84/85) on file" source={qc}>{yesNo(snapshot.bondOnFile)}</Fact>
-          <Fact k="Allowed to operate" source={qc}>{yesNo(snapshot.allowedToOperate)}</Fact>
-          <Fact k="Out-of-service order" source={qc}>{snapshot.oosDate ? date(snapshot.oosDate) : 'None'}</Fact>
+          <Fact k="Broker authority" source={qc}>{authority(snapshot.brokerAuthority)}{snapshot.brokerRevocationPending ? ' · revocation pending' : ''}</Fact>
+          <Fact k="Bond (BMC-84/85) on file" source={qc}>{snapshot.bondRequired === false && snapshot.bondOnFile === false ? 'Not required' : yesNo(snapshot.bondOnFile)}</Fact>
+          {snapshot.qc && <Fact k="Allowed to operate" source={qc}>{yesNo(snapshot.allowedToOperate)}</Fact>}
+          {snapshot.qc && <Fact k="Out-of-service order" source={qc}>{snapshot.oosDate ? date(snapshot.oosDate) : 'None'}</Fact>}
         </>
       ) : (
-        <Fact k="Broker authority and bond">{qcConfigured ? 'Not available for this record' : 'Not checked: the FMCSA QCMobile key is not configured (Admin → Integrations)'}</Fact>
+        <Fact k="Broker authority and bond">{qcConfigured ? 'Not available for this record' : 'No FMCSA licensing record was found for this number'}</Fact>
       )}
       <Fact k="Registered since" source={census}>{snapshot.addedAt ? date(snapshot.addedAt) : null}</Fact>
       <Fact k="FMCSA phone" source={census}>{snapshot.phones?.length ? snapshot.phones.map(phoneFmt).join(', ') : null}</Fact>

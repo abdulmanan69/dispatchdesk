@@ -183,6 +183,6 @@ describe('password reset email', () => {
 
     const row = await prisma.auditLog.findFirst({ where: { action: 'auth.password_reset_requested', entityId: u.user.id }, orderBy: { createdAt: 'desc' } });
     expect(row).toBeTruthy();
-    expect(JSON.parse(row.details)).toEqual({ emailSent: false, reason: 'Platform email (SMTP) is not configured' });
+    expect(JSON.parse(row.details)).toEqual({ emailSent: false, reason: 'Platform email (SMTP or Brevo) is not configured' });
   });
 });

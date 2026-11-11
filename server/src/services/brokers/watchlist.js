@@ -1,7 +1,7 @@
 import { prisma } from '../../db.js';
 import { notify } from '../../lib/activity.js';
 import { normDot, normMc } from '../carriers/normalize.js';
-import { censusRows, qcCarrier, qcConfigured, snapshotFrom } from './fmcsa.js';
+import { bestCensusRow, censusRows, licensingRows, pickLicensing, qcCarrier, qcConfigured, snapshotFrom } from './fmcsa.js';
 import { computeFlags } from './flags.js';
 import { parseJson, teamFlagOf, knownContacts } from './vetting.js';
 
@@ -98,7 +98,17 @@ async function snapshotsFor(items, { useQc, delayMs, now }) {
     rows.push(...await censusRows({ dots: dots.slice(i, i + CENSUS_CHUNK), mcs: mcs.slice(i, i + CENSUS_CHUNK) }));
   }
   const byDot = new Map(rows.map((r) => [normDot(r.dot_number), r]));
-  const byMc = new Map(rows.filter((r) => r.docket1prefix === 'MC').map((r) => [normMc(r.docket1), r]));
+  // Several census rows can carry the same MC docket (old inactive USDOT + current one): keep the best per docket.
+  const mcGroups = new Map();
+  for (const r of rows.filter((x) => x.docket1prefix === 'MC')) {
+    const k = normMc(r.docket1);
+    mcGroups.set(k, [...(mcGroups.get(k) || []), r]);
+  }
+  const byMc = new Map([...mcGroups].map(([k, list]) => [k, bestCensusRow(list)]));
+  // Authority and bond status from the licensing dataset, in the same chunk sizes (no key, works from any country).
+  const licDots = [...new Set(rows.map((r) => normDot(r.dot_number)).filter(Boolean))];
+  const lic = [];
+  for (let i = 0; i < licDots.length; i += CENSUS_CHUNK) lic.push(...await licensingRows({ dots: licDots.slice(i, i + CENSUS_CHUNK) }));
   const out = new Map();
   const qcByDot = new Map();
   let qcCalls = 0;
@@ -114,7 +124,8 @@ async function snapshotsFor(items, { useQc, delayMs, now }) {
       if (dot) qcByDot.set(dot, qc);
       if (delayMs) await sleep(delayMs);
     }
-    out.set(item.key, snapshotFrom(row, { qc, query: { dot: item.dot, mc: item.mc }, checkedAt: now }));
+    const licRow = row ? pickLicensing(lic, { dot: row.dot_number, mc: row.docket1prefix === 'MC' ? row.docket1 : item.mc }) : null;
+    out.set(item.key, snapshotFrom(row, { qc, lic: licRow, query: { dot: item.dot, mc: item.mc }, checkedAt: now }));
   }
   return out;
 }
