@@ -17,8 +17,12 @@ import { resolveAttachments } from './attachments.js';
  *   documentIds: up to 5 Document ids (10 MB total) the user may access (owner, or team access to the document's
  *   carrier/load). Stored in Email.attachments; delivery attaches the files (SMTP, Gmail and Microsoft mailboxes).
  *   `user` must be the full user row (teamMembership included when team access matters), e.g. req.user.
+ *   aiGenerated: mark the email as written by AI (shown with an AI badge).
+ *   negotiationId: link the email to a broker rate negotiation (broker replies are routed back to it).
+ *   review: true stores it with status 'review' (waiting for the user's approval; nothing is sent, sendNow is
+ *     ignored). Approving moves it to 'scheduled'. Plan limits are checked again when it is approved and sent.
  */
-export async function queueUserEmail({ user, toEmail, subject, body, carrierId = null, brokerId = null, templateId = null, documentIds = [], accountId, sendNow = true }) {
+export async function queueUserEmail({ user, toEmail, subject, body, carrierId = null, brokerId = null, templateId = null, documentIds = [], accountId, sendNow = true, aiGenerated = false, negotiationId = null, review = false }) {
   if (!toEmail) throw badRequest('Recipient email is required');
   if (!subject) throw badRequest('Subject is required');
   if (!String(body || '').trim()) throw badRequest('Body is required');
@@ -28,13 +32,15 @@ export async function queueUserEmail({ user, toEmail, subject, body, carrierId =
   if (!account) throw badRequest('Connect a mailbox first (Email → Mailboxes)');
   const attachments = await resolveAttachments(user, documentIds);
 
-  await assertLimit(user, 'emailsToday');
+  if (!review) await assertLimit(user, 'emailsToday');
   const created = await prisma.email.create({
     data: {
       userId: user.id, carrierId, brokerId, templateId, toEmail, subject, body, attachments,
-      status: 'scheduled', scheduledAt: new Date(), emailAccountId: account.id,
+      status: review ? 'review' : 'scheduled', scheduledAt: review ? null : new Date(), emailAccountId: account.id,
+      aiGenerated: !!aiGenerated, negotiationId: negotiationId || null,
     },
   });
+  if (review) return { email: created, outcome: 'review', message: 'Waiting for your approval' };
   if (!sendNow) return { email: created, outcome: 'scheduled', message: 'Queued' };
   const result = await deliverEmail(created.id, { retry: false });
   return { email: result.email, outcome: result.outcome, message: result.message };
