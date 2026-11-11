@@ -63,6 +63,22 @@ describe('broker authority and bond from the FMCSA licensing dataset', () => {
     vi.useRealTimers();
   });
 
+  it('answers from the licensing dataset alone when the census is rate limited, without census-based flags', async () => {
+    setFmcsaFetch(async (url) => {
+      const u = String(url);
+      if (u.includes('6eyk-hxee')) {
+        return { ok: true, status: 200, json: async () => [lic({ docket_number: 'MC555001', dot_number: '05550001', legal_name: 'FALLBACK BROKER LLC', bus_street_po: '1 MAIN ST', bus_city: 'DALLAS', bus_state_code: 'TX', bus_zip_code: '75201', bus_telno: '2145550100' })] };
+      }
+      return { ok: false, status: 429, json: async () => ({ message: 'Too many requests' }) };
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = await lookupBroker({ mc: '555001' }, { fresh: true });
+    expect(s).toMatchObject({ found: true, censusUnavailable: true, licensing: true, legalName: 'FALLBACK BROKER LLC', mc: '555001', brokerAuthority: 'active', bondOnFile: true, usdotStatus: null, registeredBroker: null });
+    expect(s.phones).toEqual(['2145550100']);
+    expect(s.sources.map((x) => x.name)).toEqual(['FMCSA licensing']);
+    expect(computeFlags(s, { now: NOW }).map((f) => f.code)).toEqual([]);
+  });
+
   it('picks the licensing row for the MC docket first, then one with active broker authority', () => {
     const carrierDocket = lic({ docket_number: 'MC111', broker_stat: 'N' });
     const brokerDocket = lic({ docket_number: 'MC222', broker_stat: 'A' });

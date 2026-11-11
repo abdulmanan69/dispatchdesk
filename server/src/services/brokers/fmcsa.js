@@ -139,6 +139,21 @@ export function bestCensusRow(rows) {
   return [...rows].sort((a, b) => score(b) - score(a) || String(b.add_date || '').localeCompare(String(a.add_date || '')))[0] || null;
 }
 
+/**
+ * Snapshot from a licensing row alone, for when the census cannot be reached. Census-only facts (USDOT status,
+ * broker classification, registration date, email) stay null so no flag is raised from missing data.
+ */
+export function snapshotFromLicensingOnly(lic, { query = {}, checkedAt = new Date() } = {}) {
+  const docket = String(lic.docket_number || '').toUpperCase();
+  const row = {
+    dot_number: lic.dot_number, legal_name: lic.legal_name, dba_name: lic.dba_name,
+    docket1prefix: docket.startsWith('MC') ? 'MC' : null, docket1: docket.startsWith('MC') ? docket.slice(2) : null,
+    phone: lic.bus_telno, phy_street: lic.bus_street_po, phy_city: lic.bus_city, phy_state: lic.bus_state_code, phy_zip: lic.bus_zip_code,
+  };
+  const snap = snapshotFrom(row, { lic, query, checkedAt });
+  return { ...snap, censusUnavailable: true, sources: snap.sources.filter((s) => s.name !== 'FMCSA census') };
+}
+
 const padDot = (d) => String(d).padStart(8, '0'); // the licensing dataset stores USDOT numbers as 8 digits
 
 /**
@@ -224,7 +239,19 @@ export async function lookupBroker({ mc, dot }, { fresh = false, now = new Date(
   }
   if (inflight.has(key)) return inflight.get(key);
   const p = (async () => {
-    const rows = await censusRows(normDot(dot) ? { dots: [dot] } : { mcs: [mc] });
+    let rows;
+    try {
+      rows = await censusRows(normDot(dot) ? { dots: [dot] } : { mcs: [mc] });
+    } catch (err) {
+      // The census dataset is rate limited or down: answer from the licensing dataset alone (legal name, address,
+      // phone, authority, bond) and try the census again in a couple of minutes.
+      const licOnly = await licensingRows(normDot(dot) ? { dots: [dot] } : { mcs: [mc] });
+      const lic = licOnly && pickLicensing(licOnly, { dot, mc });
+      if (!lic) throw err;
+      const snap = snapshotFromLicensingOnly(lic, { query: { mc: normMc(mc), dot: normDot(dot) }, checkedAt: now });
+      remember(key, snap, RETRY_TTL_MS);
+      return snap;
+    }
     const matches = rows.filter((r) => (normDot(dot) ? normDot(r.dot_number) === normDot(dot) : r.docket1prefix === 'MC' && normMc(r.docket1) === normMc(mc)));
     const row = bestCensusRow(matches.length ? matches : rows);
     const rowMc = row && row.docket1prefix === 'MC' ? row.docket1 : mc;

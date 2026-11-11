@@ -54,11 +54,12 @@ function Fact({ k, children, source }) {
 export function VettingFacts({ snapshot, qcConfigured }) {
   if (!snapshot) return null;
   if (!snapshot.found) return <p className="text-sm text-muted">No FMCSA census record was found for this number. Check the MC or USDOT number with the broker; this alone does not mean the broker has no authority.</p>;
-  const census = `FMCSA census · ${date(snapshot.checkedAt)}`;
+  const census = `${snapshot.censusUnavailable ? 'FMCSA licensing' : 'FMCSA census'} · ${date(snapshot.checkedAt)}`;
   const qc = `${snapshot.qc ? 'FMCSA QCMobile' : 'FMCSA licensing'} · ${date((snapshot.qc ? snapshot.qcAsOf : snapshot.licensingAsOf) || snapshot.checkedAt)}`;
   const addr = snapshot.address ? [snapshot.address.street, snapshot.address.city, snapshot.address.state, snapshot.address.zip].filter(Boolean).join(', ') : null;
   return (
     <dl className="divide-y divide-line">
+      {snapshot.censusUnavailable && <p className="py-2 text-xs text-muted">The FMCSA census is busy right now, so this shows the licensing record only. It is checked again in a few minutes.</p>}
       <Fact k="Legal name" source={census}>{[snapshot.legalName, snapshot.dbaName && `DBA ${snapshot.dbaName}`].filter(Boolean).join(' · ')}</Fact>
       <Fact k="USDOT / MC" source={census}>{[snapshot.dot && `USDOT ${snapshot.dot}`, snapshot.mc && `MC ${snapshot.mc}`].filter(Boolean).join(' · ')}</Fact>
       <Fact k="USDOT status" source={census}>{authority(snapshot.usdotStatus)}</Fact>
