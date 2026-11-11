@@ -63,6 +63,7 @@ export const router = createBrowserRouter([
         { path: 'today', lazy: page(() => import('./pages/today/Today.jsx')) },
         { path: 'templates', lazy: page(() => import('./pages/templates/Templates.jsx')) },
         { path: 'invoices', lazy: page(() => import('./pages/invoices/Invoices.jsx')) },
+        { path: 'reports', lazy: page(() => import('./pages/reports/Reports.jsx')) },
         { path: 'new-authority', lazy: page(() => import('./pages/leads/NewAuthority.jsx')) },
         { path: 'truck-posts', lazy: page(() => import('./pages/leads/TruckPosts.jsx')) },
         { path: 'lead-generator', lazy: page(() => import('./pages/carriers/LeadGenerator.jsx')) },

@@ -65,6 +65,8 @@ model User {
   pushPrefs         String? // JSON { "<notification type>": false } per type; a missing type is on
   companyName       String? // fills {{my_company}} in templates for users without a team
   agreementTemplate String? // last dispatch agreement text used for onboarding links
+  googleSub         String?   @unique // Google account id ("sub") linked for Continue with Google
+  invoiceLogo       String? // stored file name of the logo printed on invoices and statements
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -106,6 +108,8 @@ model User {
   loadShares         LoadShare[]
   documents          Document[]            @relation("DocumentOwner")
   onboardingLinks    OnboardingLink[]
+  loadTemplates      LoadTemplate[]
+  consolidations     Consolidation[]
   uploadedDocuments  Document[]            @relation("DocumentUploader")
   trainingCourses    TrainingCourse[]
   trainingProgress   TrainingProgress[]
@@ -899,7 +903,7 @@ model Broker {
 }
 
 model Load {
-  id                  String      @id @default(cuid())
+  id                  String         @id @default(cuid())
   ownerId             String
   brokerId            String?
   carrierId           String?
@@ -924,8 +928,8 @@ model Load {
   pickupAddress       String?
   deliveryFacility    String?
   deliveryAddress     String?
-  freeTimeHours       Float       @default(2)
-  tonuCents           Int         @default(0)
+  freeTimeHours       Float          @default(2)
+  tonuCents           Int            @default(0)
   fitWarnings         String? // JSON warnings from the carrier-rules check at save time
   fitAckAt            DateTime?
   fitAckById          String?
@@ -939,26 +943,29 @@ model Load {
   commodity           String?
   weightLbs           Int?
   loadedMiles         Int
-  deadheadMiles       Int         @default(0)
+  deadheadMiles       Int            @default(0)
   rateCents           Int
-  detentionHours      Float       @default(0)
-  detentionRateCents  Int         @default(0)
+  detentionHours      Float          @default(0)
+  detentionRateCents  Int            @default(0)
   fuelPricePerGallon  Float?
   mpg                 Float?
-  otherCostsCents     Int         @default(0)
+  otherCostsCents     Int            @default(0)
   dispatchFeePercent  Float?
-  status              String      @default("planned") // planned | booked | in_transit | delivered | invoiced | paid | canceled
+  status              String         @default("planned") // planned | booked | in_transit | delivered | invoiced | paid | canceled
   notes               String?
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
-  owner               User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  broker              Broker?     @relation(fields: [brokerId], references: [id], onDelete: SetNull)
-  carrier             Carrier?    @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  owner               User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  broker              Broker?        @relation(fields: [brokerId], references: [id], onDelete: SetNull)
+  carrier             Carrier?       @relation(fields: [carrierId], references: [id], onDelete: SetNull)
   documents           Document[]
   events              LoadEvent[]
   shares              LoadShare[]
   invoices            Invoice[]
   route               LoadRoute?
+  consolidationId     String?
+  consolidation       Consolidation? @relation(fields: [consolidationId], references: [id], onDelete: SetNull)
+  templateId          String? // LoadTemplate that generated this load (recurring lanes)
 
   @@index([ownerId, status])
   @@index([brokerId])
@@ -967,6 +974,8 @@ model Load {
   @@index([ownerId, pickupDate])
   @@index([ownerId, deliveryDate])
   @@index([ownerId, referenceNumber])
+  @@index([consolidationId])
+  @@index([templateId, pickupDate])
 }
 
 model Document {
@@ -1036,6 +1045,49 @@ model OnboardingLink {
 
   @@index([ownerId, status])
   @@index([carrierId])
+}
+
+/// Saved load template; with a recurrence it becomes a dedicated lane that generates planned loads ahead of time.
+model LoadTemplate {
+  id          String    @id @default(cuid())
+  ownerId     String
+  name        String
+  fields      String // JSON of load fields (lane, facilities, rate, equipment, carrierId, brokerId, windows as local times)
+  carrierId   String?
+  brokerId    String?
+  weekdays    String? // recurrence: comma list of 0-6 (Sun-Sat) in the pickup time zone; null = template only
+  pickupTime  String? // "HH:MM" local pickup time for generated loads
+  leadDays    Int       @default(7) // generate loads this many days ahead
+  active      Boolean   @default(true)
+  generatedTo DateTime? // loads exist up to this date (exclusive), so the job never makes duplicates
+  lastRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  owner       User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, active])
+  @@index([active, generatedTo])
+}
+
+/// Consolidated trip: two or more loads (customers) on one truck, each still billed and documented on its own load.
+model Consolidation {
+  id              String    @id @default(cuid())
+  ownerId         String
+  carrierId       String
+  name            String?
+  status          String    @default("planned") // planned | in_transit | delivered | canceled
+  stops           String // JSON ordered stops [{ loadId, kind: 'pickup' | 'delivery' }]
+  routeGeometry   String? // encoded polyline through every stop, in order
+  routeMiles      Float?
+  routeMinutes    Int?
+  routeComputedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  owner           User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  loads           Load[]
+
+  @@index([ownerId, status])
+  @@index([carrierId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,4 +1631,5 @@ model Invoice {
   @@index([loadId])
   @@index([carrierId])
   @@index([brokerId])
+  @@index([ownerId, brokerId, paidAt])
 }

@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Radar, Truck, Upload, KanbanSquare, PhoneCall, ListOrdered, CalendarClock, Handshake, BadgeCheck,
   Building2, Package, Calculator, Mail, Workflow, Bot, GraduationCap, Store, MessagesSquare, Users, CreditCard, Settings,
   Shield, Bell, Search, Menu, X, Sun, Moon, LogOut, ChevronDown, Monitor, PanelLeftClose, PanelLeftOpen, PhoneOutgoing, ScrollText, Wrench, Puzzle, Crosshair, Map as MapIcon, MapPinned,
-  Sun as SunIcon, Receipt, FileStack, BadgePlus, Megaphone, Download, Share, WifiOff,
+  Sun as SunIcon, Receipt, FileStack, BadgePlus, Megaphone, Download, Share, WifiOff, BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { applyTheme, storedTheme } from '../context/theme.js';
@@ -51,6 +51,7 @@ const NAV = [
     { to: '/app/fleet', label: 'Fleet map', icon: MapPinned },
     { to: '/app/loads', label: 'Loads', icon: Package, end: true },
     { to: '/app/invoices', label: 'Invoices', icon: Receipt },
+    { to: '/app/reports', label: 'Reports', icon: BarChart3 },
     { to: '/app/truck-posts', label: 'Post trucks', icon: Megaphone },
     { to: '/app/loads/calculator', label: 'Rate calculator', icon: Calculator },
     { to: '/app/tools', label: 'Dispatch tools', icon: Wrench },

@@ -64,6 +64,9 @@ import todayRoutes from './routes/today.js';
 import authorityKitRoutes from './routes/authorityKit.js';
 import truckPostRoutes from './routes/truckPosts.js';
 import onboardingLinkRoutes from './routes/onboardingLinks.js';
+import loadTemplateRoutes from './routes/loadTemplates.js';
+import consolidationRoutes from './routes/consolidations.js';
+import reportRoutes from './routes/reports.js';
 import publicOnboardingRoutes from './routes/publicOnboarding.js';
 import planEtaRoutes from './routes/planEta.js';
 import onboardingRoutes from './routes/onboarding.js';
@@ -251,6 +254,9 @@ export function createApp() {
   app.use('/api/truck-posts', requireAuth, truckPostRoutes);
   app.use('/api/onboarding', requireAuth, onboardingRoutes);
   app.use('/api/onboarding-links', requireAuth, onboardingLinkRoutes);
+  app.use('/api/load-templates', requireAuth, loadTemplateRoutes);
+  app.use('/api/consolidations', requireAuth, consolidationRoutes);
+  app.use('/api/reports', requireAuth, reportRoutes);
   app.use('/api/plan-eta', requireAuth, planEtaRoutes);
 
   app.use('/api', notFoundApi);
