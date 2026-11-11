@@ -27,19 +27,30 @@ const criteriaSchema = z.object({
 }).refine((c) => c.minPowerUnits == null || c.maxPowerUnits == null || c.minPowerUnits <= c.maxPowerUnits, { message: 'Minimum fleet size is above the maximum', path: ['minPowerUnits'] })
   .refine((c) => c.authorityAgeMinMonths == null || c.authorityAgeMaxMonths == null || c.authorityAgeMinMonths <= c.authorityAgeMaxMonths, { message: 'Minimum authority age is above the maximum', path: ['authorityAgeMinMonths'] });
 
-const generatorSchema = z.object({
+// Field shapes without defaults. Zod fills .default() values even inside .partial(), so defaults live only in the
+// create schema: a PATCH that sends { autoRun } must never reset batch size, stage, minimum score or frequency.
+const generatorFields = {
   name: z.string().trim().min(1, 'Required').max(80),
   criteria: criteriaSchema,
-  batchSize: z.coerce.number().int().min(1).max(200).default(25),
-  stageKey: z.enum(STAGE_KEYS).default('lead'),
+  batchSize: z.coerce.number().int().min(1).max(200),
+  stageKey: z.enum(STAGE_KEYS),
   listId: z.string().max(40).nullable().optional(),
   newListName: z.string().trim().max(80).nullable().optional(),
   sequenceId: z.string().max(40).nullable().optional(),
-  minScore: z.coerce.number().int().min(0).max(100).default(0),
-  autoRun: z.boolean().default(false),
-  frequency: z.enum(['daily', 'weekly']).default('daily'),
+  minScore: z.coerce.number().int().min(0).max(100),
+  autoRun: z.boolean(),
+  frequency: z.enum(['daily', 'weekly']),
   active: z.boolean().optional(),
+};
+const generatorSchema = z.object({
+  ...generatorFields,
+  batchSize: generatorFields.batchSize.default(25),
+  stageKey: generatorFields.stageKey.default('lead'),
+  minScore: generatorFields.minScore.default(0),
+  autoRun: generatorFields.autoRun.default(false),
+  frequency: generatorFields.frequency.default('daily'),
 });
+const generatorPatchSchema = z.object(generatorFields).partial();
 
 async function entitlements(user) {
   const [{ plan }, u] = await Promise.all([effectivePlan(user), usage(user)]);
@@ -143,7 +154,9 @@ r.post('/', ah(async (req, res) => {
 
 r.patch('/:id', ah(async (req, res) => {
   const g = await loadGen(req);
-  const body = parse(generatorSchema.partial(), req.body);
+  // Only keys the client sent (no defaults, see generatorFields).
+  const body = parse(generatorPatchSchema, req.body);
+  for (const k of Object.keys(body)) if (!Object.prototype.hasOwnProperty.call(req.body || {}, k)) delete body[k];
   await assertAutoRun(req.user, body.autoRun);
   const listId = await resolveList(req.user, body);
   const sequenceId = await resolveSequence(req.user, body.sequenceId);

@@ -4,17 +4,24 @@ import { prisma } from '../db.js';
 import { ah, notFound, badRequest, forbidden } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, optEmail, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { MARKET_CATEGORIES } from '../lib/constants.js';
-import { requireAuth, requirePermission, hasPermission } from '../middleware/auth.js';
-import { uploader, verifyFileSignature, removeFile, filePath } from '../middleware/upload.js';
+import { requireAuth, requirePermission, hasPermission, avatarUrl } from '../middleware/auth.js';
+import { uploader, verifyFileSignature, removeFile, filePath, storedFileSize } from '../middleware/upload.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/activity.js';
 
 const r = Router();
-const imageUpload = uploader('image', 'marketplace', 5);
+// Replacing a listing image frees the old one, so only the difference counts toward storage.
+const imageUpload = uploader('image', 'marketplace', 5, {
+  quotaCredit: async (req) => {
+    const l = await prisma.marketplaceListing.findUnique({ where: { id: String(req.params.id) }, select: { sellerId: true, imagePath: true } });
+    return l && l.sellerId === req.user?.id ? storedFileSize('marketplace', l.imagePath) : 0;
+  },
+});
+/** Keep only keys present in the request body (undefined values dropped). */
+const sentOnly = (parsed, raw) => Object.fromEntries(Object.entries(parsed).filter(([k, v]) => v !== undefined && Object.hasOwn(raw || {}, k)));
 const PRICE_TYPES = ['fixed', 'hourly', 'monthly', 'free', 'contact'];
 export const REPORT_REASONS = ['spam', 'scam', 'abuse', 'inappropriate', 'other'];
 
-const avatarUrl = (u) => (u?.avatarPath ? `/api/profile/avatar/${u.id}` : null);
 const isModerator = (req) => hasPermission(req, 'admin.moderate');
 
 function listingOut(l, req) {
@@ -134,7 +141,8 @@ async function loadOwnListing(req) {
 
 r.patch('/listings/:id', requireAuth, ah(async (req, res) => {
   const l = await loadOwnListing(req);
-  const body = parse(listingBody.partial().extend({ status: z.enum(['active', 'hidden']).optional() }), req.body);
+  // Partial update: keep only the fields the request sent, so .partial() can never re-apply a schema default.
+  const body = sentOnly(parse(listingBody.partial().extend({ status: z.enum(['active', 'hidden']).optional() }), req.body), req.body);
   if (l.status === 'removed') throw forbidden('This listing was removed by a moderator and cannot be edited');
   const merged = { priceType: l.priceType, priceCents: l.priceCents, ...clean(body) };
   if (body.priceType !== undefined || body.priceCents !== undefined) checkPrice(merged);

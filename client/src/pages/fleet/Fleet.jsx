@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { Search, Maximize2, Minimize2, Navigation, Radar, Truck, Layers, CalendarRange, X, List, MapPinPlus, Radio } from 'lucide-react';
+import { Search, Maximize2, Minimize2, Navigation, Radar, Truck, Layers, CalendarRange, X, List, MapPinPlus, Radio, AlertTriangle, Clock } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
 import { EQUIPMENT, label, money, relative, dateTime } from '../../lib/format.js';
 import TruckPanel from '../../components/fleet/TruckPanel.jsx';
-import { Button, Card, ErrorState, Loading, Select, Switch, cx } from '../../components/ui.jsx';
+import { useTripStatus } from '../../components/fleet/useTripStatus.js';
+import { Badge, Button, Card, ErrorState, Loading, RefreshError, Select, Switch, cx } from '../../components/ui.jsx';
 import FleetMap from '../../components/fleet/FleetMap.jsx';
 import TruckEditor from '../../components/fleet/TruckEditor.jsx';
 import TripPlanner from '../../components/fleet/TripPlanner.jsx';
 import TripTimeline from '../../components/fleet/TripTimeline.jsx';
 import NearbyTrucks from '../../components/fleet/NearbyTrucks.jsx';
-import { STATUS, STATUS_KEYS, TRIP_STATUS, placeLabel, weather, liveTag } from '../../components/fleet/fleetApi.js';
+import { STATUS, STATUS_KEYS, TRIP_STATUS, RISK, placeLabel, weather, liveTag, isStale, fetchRoutes, fetchDeadheads, timeIn } from '../../components/fleet/fleetApi.js';
+import { decodePolyline, boundsOf } from '../../components/fleet/polyline.js';
 
 function useDarkMode() {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
@@ -24,11 +25,18 @@ function useDarkMode() {
   return dark;
 }
 
-/** Height that fills the viewport below the element's top edge. */
+/**
+ * Height that fills the viewport below the element's top edge. On phones the map is capped at 60% of the screen so the
+ * page (week board, list) stays reachable by scrolling past it.
+ */
 function useFillHeight(ref, min = 520) {
   const [h, setH] = useState(640);
   useEffect(() => {
-    const calc = () => { const top = ref.current?.getBoundingClientRect().top ?? 0; setH(Math.max(min, window.innerHeight - Math.max(0, top) - 24)); };
+    const calc = () => {
+      const top = ref.current?.getBoundingClientRect().top ?? 0;
+      const fill = window.innerHeight - Math.max(0, top) - 24;
+      setH(window.innerWidth < 640 ? Math.max(340, Math.round(window.innerHeight * 0.6)) : Math.max(min, fill));
+    };
     calc();
     window.addEventListener('resize', calc);
     return () => window.removeEventListener('resize', calc);
@@ -45,10 +53,54 @@ function readyBy(t, when) {
   return t.truckStatus === 'available';
 }
 
+const chunks = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, i * n + n));
+
+/** Road geometry for every trip on the map, fetched once per route version and kept for the session. */
+function useRoutes(trucks) {
+  const trips = useMemo(() => trucks.flatMap((t) => t.trips || []), [trucks]);
+  const key = useMemo(() => trips.map((t) => `${t.id}:${t.route?.computedAt || 'none'}`).sort().join(','), [trips]);
+  const q = useQuery({
+    queryKey: ['fleet', 'routes', key],
+    queryFn: async ({ signal }) => {
+      const ids = [...new Set(trips.map((t) => t.id))];
+      const parts = await Promise.all(chunks(ids, 100).map((c) => fetchRoutes(c, { signal })));
+      return parts.flatMap((p) => p.items || []);
+    },
+    enabled: trips.length > 0,
+    staleTime: Infinity,
+    gcTime: 30 * 60_000,
+    placeholderData: (prev) => prev,
+    // Routes still being computed on the server come back as estimates: ask again shortly.
+    refetchInterval: (query) => (query.state.data?.some((r) => r.pending) ? 15_000 : false),
+  });
+  return useMemo(() => new Map((q.data || []).map((r) => [r.id, { points: decodePolyline(r.geometry), estimate: r.estimate, miles: r.miles }])), [q.data]);
+}
+
+/** Road route from each truck to its next pickup (only for trucks that are not hauling a load). */
+function useDeadheads(trucks) {
+  const pairs = useMemo(() => trucks
+    .filter((t) => t.location?.lat != null && t.nextTrip && !t.currentTrip && t.truckStatus !== 'loaded' && t.nextTrip.origin.lat != null)
+    .map((t) => ({ pair: `${t.id}:${t.nextTrip.id}`, near: `${t.location.lat.toFixed(1)},${t.location.lng.toFixed(1)}` })), [trucks]);
+  const key = pairs.map((p) => `${p.pair}@${p.near}`).sort().join(',');
+  const q = useQuery({
+    queryKey: ['fleet', 'deadhead', key],
+    queryFn: async ({ signal }) => {
+      const parts = await Promise.all(chunks(pairs.map((p) => p.pair), 50).map((c) => fetchDeadheads(c, { signal })));
+      return parts.flatMap((p) => p.items || []);
+    },
+    enabled: pairs.length > 0,
+    staleTime: 10 * 60_000,
+    placeholderData: (prev) => prev,
+    refetchInterval: (query) => (query.state.data?.some((r) => r.pending) ? 20_000 : false),
+  });
+  return useMemo(() => new Map((q.data || []).map((r) => [`${r.carrierId}:${r.loadId}`, { points: decodePolyline(r.geometry), estimate: r.estimate }])), [q.data]);
+}
+
 export default function Fleet() {
   const dark = useDarkMode();
   const wrap = useRef(null);
   const height = useFillHeight(wrap);
+  const [params, setParams] = useSearchParams();
   const [scopeAll, setScopeAll] = useState(false);
   const [search, setSearch] = useState('');
   const [statuses, setStatuses] = useState([]);
@@ -70,14 +122,16 @@ export default function Fleet() {
   const [full, setFull] = useState(false);
 
   const q = useQuery({
-    queryKey: ['fleet', scopeAll ? 'all' : 'fleet'], queryFn: () => api.get('/api/fleet', { scope: scopeAll ? 'all' : 'fleet' }),
-    // Follow live drivers: refresh every 20 s while anyone is sharing, otherwise every 2 minutes.
+    queryKey: ['fleet', scopeAll ? 'all' : 'fleet'], queryFn: ({ signal }) => api.get('/api/fleet', { scope: scopeAll ? 'all' : 'fleet' }, { signal }),
+    // Follow live drivers: refresh every 20 s while anyone is sharing, otherwise every 2 minutes. Unchanged data costs a 304.
     refetchInterval: (query) => (query.state.data?.trucks?.some((t) => t.live?.sharing) ? 20000 : 120000),
   });
-  const trucks = q.data?.trucks || [];
+  const trucks = q.data?.trucks || EMPTY;
+  const routes = useRoutes(trucks);
+  const deadheads = useDeadheads(trucks);
   const trailQ = useQuery({ queryKey: ['fleet', 'trail', trailFor], queryFn: () => api.get(`/api/fleet/carriers/${trailFor}/trail`, { hours: 24 }), enabled: !!trailFor, refetchInterval: 30000 });
-  const trail = trailFor ? (trailQ.data?.items || []).map((p) => [p.lng, p.lat]) : null;
-  const liveCount = trucks.filter((t) => t.live?.sharing && !t.live?.stale).length;
+  const trail = useMemo(() => (trailFor ? (trailQ.data?.items || []).map((p) => [p.lng, p.lat]) : null), [trailFor, trailQ.data]);
+  const liveCount = trucks.filter((t) => t.live?.sharing && !isStale(t.live)).length;
   const toggleFull = async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -92,6 +146,22 @@ export default function Fleet() {
   const fitted = useRef(false);
   useEffect(() => { if (q.data && !fitted.current) { fitted.current = true; setFitKey((k) => k + 1); } }, [q.data]);
 
+  // Deep links from notifications and the Today board: /app/fleet?truck=<carrierId>&trip=<loadId>
+  const deep = params.get('truck') || params.get('trip');
+  useEffect(() => {
+    if (!deep || !q.data) return;
+    const tripId = params.get('trip');
+    const t = trucks.find((x) => x.id === params.get('truck')) || (tripId && trucks.find((x) => (x.trips || []).some((tr) => tr.id === tripId)));
+    if (t) {
+      setSelectedId(t.id);
+      if (t.location?.lat != null) setFocus({ key: `deep-${t.id}-${Date.now()}`, lat: t.location.lat, lng: t.location.lng, zoom: 7 });
+    }
+    const next = new URLSearchParams(params);
+    next.delete('truck');
+    next.delete('trip');
+    setParams(next, { replace: true });
+  }, [deep, q.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const states = useMemo(() => [...new Set(trucks.map((t) => t.location?.state || t.homeState).filter(Boolean))].sort(), [trucks]);
   const visible = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -105,38 +175,45 @@ export default function Fleet() {
   const unplaced = visible.filter((t) => t.location?.lat == null).length;
 
   // Weather alerts for trucks (only when the layer is on; capped to keep the weather service polite).
-  const located = visible.filter((t) => t.location?.lat != null).slice(0, 20);
+  const located = useMemo(() => visible.filter((t) => t.location?.lat != null).slice(0, 20), [visible]);
   const wx = useQueries({
     queries: located.map((t) => ({
       queryKey: ['fleet', 'weather', t.location.lat.toFixed(2), t.location.lng.toFixed(2)],
       queryFn: () => weather(t.location), enabled: layers.weather, staleTime: 900000,
     })),
   });
-  const alerts = layers.weather ? located.map((t, i) => ({ t, w: wx[i]?.data })).filter((x) => x.w?.alerts?.length)
-    .map(({ t, w }) => ({ id: t.id, lat: t.location.lat, lng: t.location.lng, label: w.alerts[0].event })) : [];
+  const alertKey = layers.weather ? located.map((t, i) => `${t.id}:${wx[i]?.data?.alerts?.[0]?.event || ''}`).join('|') : '';
+  const alerts = useMemo(() => (layers.weather ? located.map((t, i) => ({ t, w: wx[i]?.data })).filter((x) => x.w?.alerts?.length)
+    .map(({ t, w }) => ({ id: t.id, lat: t.location.lat, lng: t.location.lng, label: w.alerts[0].event })) : EMPTY), [alertKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const weatherDown = layers.weather && located.length > 0 && wx.every((r) => r.isFetched && !r.data);
 
-  const advance = useApiMutation(({ id, status }) => api.post(`/api/fleet/trips/${id}/status`, { status }), {
-    success: (d) => `Trip is now ${TRIP_STATUS[d.trip.status]?.label.toLowerCase()}`, invalidate: [['fleet'], ['loads']],
-  });
+  const advance = useTripStatus();
 
   const focusTruck = (t) => {
     setSelectedId(t.id);
     setListOpen(false);
     if (t.location?.lat != null) setFocus({ key: `${t.id}-${Date.now()}`, lat: t.location.lat, lng: t.location.lng, zoom: 8 });
   };
+  /** Fit the map to a truck and its trips' road routes. */
+  const showRoute = (t) => {
+    const lists = (t.trips || []).map((tr) => routes.get(tr.id)?.points || [[tr.origin.lng, tr.origin.lat], [tr.dest.lng, tr.dest.lat]]);
+    if (t.location?.lat != null) lists.push([[t.location.lng, t.location.lat]]);
+    const b = boundsOf(...lists);
+    if (b) setFocus({ key: `route-${t.id}-${Date.now()}`, bounds: b });
+  };
   const closePanel = () => { setPanel(null); setPickMode(false); setMapPoint(null); setEditPoint(null); setPlannedRoute(null); };
   const toggle = (k) => setLayers((l) => ({ ...l, [k]: !l[k] }));
   const toggleStatus = (k) => setStatuses((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
 
-  if (q.isError) return <ErrorState error={q.error} onRetry={q.refetch} />;
+  // A failed background refresh keeps the map (and any open panel) on screen with a notice; only a first load error replaces it.
+  if (q.isError && q.data === undefined) return <ErrorState error={q.error} onRetry={q.refetch} />;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-medium tracking-[-0.01em]">Fleet map</h1>
-          <p className="mt-1 text-sm text-fg-2">Where every truck is, what it is doing, and the trips you plan for it</p>
+          <p className="mt-1 text-sm text-fg-2">Where every truck is, the road it will take, and when it gets there</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" icon={Radar} onClick={() => { closePanel(); setPanel({ kind: 'near' }); }}>Find trucks near</Button>
@@ -154,6 +231,8 @@ export default function Fleet() {
           </button>
         ))}
       </div>
+
+      {q.isRefetchError && <RefreshError query={q} className="mb-0" />}
 
       <div ref={wrap} className={cx('relative flex overflow-hidden border border-line bg-surface', full ? 'rounded-none' : 'rounded-xl')} style={{ height: full ? '100vh' : height }}>
         {/* Truck list */}
@@ -181,43 +260,30 @@ export default function Fleet() {
                 {trucks.length ? 'No trucks match these filters.' : <>No trucks yet. Customers appear here automatically. Turn on <span className="text-fg">All carriers</span> to place any carrier on the map.</>}
               </li>
             )}
-            {visible.map((t) => (
-              <li key={t.id}>
-                <button type="button" onClick={() => focusTruck(t)}
-                  className={cx('flex w-full items-start gap-3 border-b border-line px-3 py-2.5 text-left transition-ui hover:bg-surface-2', selectedId === t.id && 'bg-surface-2')}>
-                  <span className="mt-1 size-2.5 shrink-0 rounded-full ring-2 ring-white dark:ring-zinc-900" style={{ background: STATUS[t.truckStatus]?.color }} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium">{t.companyName}</span>
-                    <span className="block truncate text-xs text-muted">{t.location ? placeLabel(t.location) : 'No location'}{t.equipment ? ` · ${label(t.equipment.split(',')[0])}` : ''}</span>
-                    {(t.currentTrip || t.nextTrip) && <span className="block truncate text-xs" style={{ color: TRIP_STATUS[(t.currentTrip || t.nextTrip).status]?.color }}>{(t.currentTrip || t.nextTrip).origin.city} → {(t.currentTrip || t.nextTrip).dest.city}</span>}
-                    {liveTag(t) && <span className={cx('mt-0.5 flex items-center gap-1 text-[11px]', liveTag(t).tone === 'live' ? 'text-c-green' : 'text-muted')}><Radio className="size-3" aria-hidden />{liveTag(t).text}</span>}
-                  </span>
-                  {t.availableAt && <span className="shrink-0 text-[11px] text-muted">{new Date(t.availableAt) <= new Date() ? 'Ready' : relative(t.availableAt)}</span>}
-                </button>
-              </li>
-            ))}
+            {visible.map((t) => <TruckRow key={t.id} t={t} selected={selectedId === t.id} onClick={() => focusTruck(t)} />)}
           </ul>
         </aside>
 
         {/* Map */}
         <div className="relative min-w-0 flex-1">
           {listOpen && <button type="button" aria-label="Close truck list" className="absolute inset-0 z-[9] bg-black/20 md:hidden" onClick={() => setListOpen(false)} />}
-          <FleetMap className="absolute inset-0" dark={dark} trucks={visible} openLoads={q.data?.openLoads || []} alerts={alerts} layers={layers}
+          <FleetMap className="absolute inset-0" dark={dark} trucks={visible} openLoads={q.data?.openLoads || EMPTY} alerts={alerts} layers={layers}
+            routes={routes} deadheads={deadheads}
             selectedId={selectedId} onSelect={(id) => { setSelectedId(id); }} pickMode={pickMode}
             onPick={(p) => { setMapPoint(p); setPickMode(false); }} editPoint={editPoint} onEditMove={setMapPoint}
             plannedRoute={plannedRoute} focus={focus} fitKey={fitKey} trail={trail}
             onOpenLoad={(id) => { const l = q.data?.openLoads.find((x) => x.id === id); if (l) { closePanel(); setPanel({ kind: 'near-load', load: l }); } }} />
 
-          <div className="absolute left-3 top-3 flex flex-wrap items-center gap-1.5">
+          <div className="absolute left-3 top-3 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-1.5">
             <button type="button" onClick={() => setListOpen((v) => !v)} className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface/95 px-2.5 text-xs font-medium shadow-sm backdrop-blur hover:bg-surface-2 md:hidden"><List className="size-3.5" />Trucks {visible.length}</button>
             <button type="button" onClick={() => setFitKey((k) => k + 1)} className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface/95 px-2.5 text-xs font-medium shadow-sm backdrop-blur hover:bg-surface-2"><Navigation className="size-3.5" />Fit all</button>
             <button type="button" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'} className="flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface/95 px-2.5 text-xs font-medium shadow-sm backdrop-blur hover:bg-surface-2">{full ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}<span className="hidden sm:inline">{full ? 'Exit' : 'Full screen'}</span></button>
-            {liveCount > 0 && <span className="flex h-8 items-center gap-1.5 rounded-lg border border-c-green/30 bg-c-green-soft px-2.5 text-xs font-medium text-c-green shadow-sm"><span className="size-2 animate-pulse rounded-full bg-c-green" />{liveCount} live</span>}
-            <span className="flex h-8 items-center gap-1 rounded-lg border border-line bg-surface/95 px-1.5 shadow-sm backdrop-blur">
-              <Layers className="mx-1 size-3.5 text-muted" aria-hidden />
-              {[['trucks', 'Trucks'], ['trips', 'Trips'], ['origins', 'Open loads'], ['weather', 'Weather']].map(([k, l]) => (
+            {liveCount > 0 && <span className="flex h-8 items-center gap-1.5 rounded-lg border border-c-green/30 bg-c-green-soft px-2.5 text-xs font-medium text-c-green shadow-sm"><span className="size-2 rounded-full bg-c-green" />{liveCount} live</span>}
+            <span className="flex h-8 items-center gap-1 overflow-x-auto rounded-lg border border-line bg-surface/95 px-1.5 shadow-sm backdrop-blur">
+              <Layers className="mx-1 size-3.5 shrink-0 text-muted" aria-hidden />
+              {[['trucks', 'Trucks'], ['trips', 'Routes'], ['origins', 'Open loads'], ['weather', 'Weather']].map(([k, l]) => (
                 <button key={k} type="button" aria-pressed={layers[k]} onClick={() => toggle(k)}
-                  className={cx('rounded-md px-2 py-1 text-xs transition-ui', layers[k] ? 'bg-brand-600 text-white' : 'text-fg-2 hover:bg-surface-2')}>{l}</button>
+                  className={cx('shrink-0 rounded-md px-2 py-1 text-xs transition-ui', layers[k] ? 'bg-brand-600 text-white' : 'text-fg-2 hover:bg-surface-2')}>{l}</button>
               ))}
             </span>
             {pickMode && <span className="rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm">Click the map to place the truck</span>}
@@ -230,6 +296,7 @@ export default function Fleet() {
               onPlan={() => setPanel({ kind: 'plan', carrierId: selected.id })}
               onEdit={() => setPanel({ kind: 'edit', truck: selected })}
               onAdvance={(id, status) => advance.mutate({ id, status })} advancing={advance.isPending}
+              onShowRoute={() => showRoute(selected)}
               trailOn={trailFor === selected.id} onTrail={() => setTrailFor((x) => (x === selected.id ? null : selected.id))} />
           )}
 
@@ -254,7 +321,7 @@ export default function Fleet() {
 
           {/* Side drawer */}
           {panel && (
-            <div className="dd-enter absolute bottom-3 right-3 top-3 w-[min(400px,calc(100%-24px))] overflow-y-auto rounded-xl border border-line bg-surface p-4 shadow-xl">
+            <div className="dd-enter absolute bottom-3 right-3 top-3 z-[6] w-[min(400px,calc(100%-24px))] overflow-y-auto rounded-xl border border-line bg-surface p-4 shadow-xl">
               {panel.kind === 'edit' && (
                 <TruckEditor key={panel.truck.id} truck={panel.truck} onClose={closePanel} pickMode={pickMode} setPickMode={setPickMode} mapPoint={mapPoint} setEditPoint={setEditPoint} />
               )}
@@ -263,29 +330,32 @@ export default function Fleet() {
                   onPreview={(r) => { setPlannedRoute(r); if (r) setFitKey((k) => k + 1); }} />
               )}
               {panel.kind === 'near' && (
-                <NearbyTrucks onClose={closePanel} onFocus={focusTruck} onPlan={(t, place) => setPanel({ kind: 'plan', carrierId: t.id, origin: place })} />
+                <NearbyTrucks key={panel.load?.id || 'near'} initialPlace={panel.origin} load={panel.load} onClose={closePanel} onFocus={focusTruck}
+                  onPlan={(t, place) => setPanel({ kind: 'plan', carrierId: t.id, origin: place })} />
               )}
               {panel.kind === 'near-load' && (
                 <div className="space-y-3">
                   <div className="flex items-start justify-between"><div><p className="text-xs text-muted">Open load</p><h3 className="font-medium">{panel.load.origin.city}, {panel.load.origin.state} → {panel.load.dest.city}, {panel.load.dest.state}</h3></div>
                     <button type="button" onClick={closePanel} className="rounded p-1 text-muted hover:bg-surface-2 hover:text-fg" aria-label="Close"><X className="size-4" /></button></div>
                   <p className="text-sm text-fg-2">{money(panel.load.rateCents, { digits: 0 })} · {panel.load.loadedMiles} mi{panel.load.pickupDate ? ` · pickup ${dateTime(panel.load.pickupDate)}` : ''}</p>
-                  <p className="text-xs text-muted">This load has no carrier yet. Assign it from the Loads page, or plan a new trip for a nearby truck.</p>
-                  <div className="flex gap-2">
-                    <Button size="sm" icon={Radar} onClick={() => setPanel({ kind: 'near' })}>Find trucks near</Button>
-                    <Button size="sm" variant="secondary" to="/app/loads">Open loads</Button>
+                  <p className="text-xs text-muted">This load has no carrier yet. Assign one on the load, or find a nearby truck and check it against the carrier's rules.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" icon={Radar} onClick={() => setPanel({ kind: 'near', origin: panel.load.origin, load: panel.load })}>Find trucks near</Button>
+                    <Button size="sm" variant="secondary" to={`/app/loads?load=${panel.load.id}`}>Open load</Button>
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          <div className={cx('pointer-events-none absolute right-3 top-14 hidden flex-col gap-1 rounded-lg border border-line bg-surface/95 p-2 text-[11px] shadow-sm backdrop-blur', !panel && 'sm:flex')}>
+          <div className={cx('pointer-events-none absolute right-3 top-14 hidden flex-col gap-1 rounded-lg border border-line bg-surface/95 p-2 text-[11px] shadow-sm backdrop-blur', !panel && 'lg:flex')}>
             {STATUS_KEYS.map((k) => <span key={k} className="flex items-center gap-1.5"><span className="size-2 rounded-full" style={{ background: STATUS[k].color }} />{STATUS[k].label}</span>)}
             <span className="flex items-center gap-1.5"><span className="size-2 rounded-full border-2 border-violet-600 bg-white" />Open load</span>
             <span className="mt-1 flex items-center gap-1.5 border-t border-line pt-1"><span className="relative flex size-2"><span className="absolute inset-0 animate-ping rounded-full bg-c-green opacity-60" /><span className="relative size-2 rounded-full bg-c-green" /></span>Live GPS</span>
-            <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 rounded bg-blue-600" />Trip</span>
+            <span className="flex items-center gap-1.5"><span className="h-1 w-3 rounded bg-blue-600" />Road ahead</span>
+            <span className="flex items-center gap-1.5"><span className="h-1 w-3 rounded bg-zinc-400" />Driven</span>
             <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dashed border-zinc-500" />Empty miles</span>
+            <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dotted border-blue-600" />Estimate</span>
           </div>
         </div>
       </div>
@@ -295,7 +365,39 @@ export default function Fleet() {
         {showBoard ? <TripTimeline onSelectCarrier={(id) => { const t = trucks.find((x) => x.id === id); if (t) focusTruck(t); }} /> : <p className="text-sm text-muted">Hidden</p>}
       </Card>
 
-      <p className="flex items-center gap-1.5 text-xs text-muted"><Truck className="size-3.5" aria-hidden />Map tiles by OpenFreeMap with OpenStreetMap data. Road miles come from the routing service when it is connected; otherwise distances are straight-line estimates × 1.18 and are labelled as such. <Link to="/app/loads" className="text-brand-700 hover:underline dark:text-brand-300">All loads</Link></p>
+      <p className="flex items-start gap-1.5 text-xs text-muted"><Truck className="mt-0.5 size-3.5 shrink-0" aria-hidden /><span>Map tiles by OpenFreeMap with OpenStreetMap data. Road routes © OpenStreetMap contributors, OSRM. When the routing service has no answer, a dashed straight line marked Estimate is drawn instead. ETAs are planning estimates. <Link to="/app/loads" className="text-brand-700 hover:underline dark:text-brand-300">All loads</Link></span></p>
     </div>
+  );
+}
+
+const EMPTY = [];
+
+/** One truck in the list: status, place, trip, live GPS, and the next stop's ETA and risk. */
+function TruckRow({ t, selected, onClick }) {
+  const trip = t.currentTrip || t.nextTrip;
+  const tag = liveTag(t);
+  const next = t.plan?.nextStop;
+  const risk = next?.risk ? RISK[next.risk] : null;
+  return (
+    <li>
+      <button type="button" onClick={onClick}
+        className={cx('flex w-full items-start gap-3 border-b border-line px-3 py-2.5 text-left transition-ui hover:bg-surface-2', selected && 'bg-surface-2')}>
+        <span className="mt-1 size-2.5 shrink-0 rounded-full ring-2 ring-white dark:ring-zinc-900" style={{ background: STATUS[t.truckStatus]?.color }} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium">{t.companyName}</span>
+          <span className="block truncate text-xs text-muted">{t.location ? placeLabel(t.location) : 'No location'}{t.equipment ? ` · ${label(t.equipment.split(',')[0])}` : ''}</span>
+          {trip && <span className="block truncate text-xs" style={{ color: TRIP_STATUS[trip.status]?.color }}>{trip.origin.city} → {trip.dest.city}</span>}
+          {next?.eta && (
+            <span className="mt-0.5 flex items-center gap-1 text-[11px] text-fg-2">
+              <Clock className="size-3 shrink-0" aria-hidden />{next.kind === 'pickup' ? 'Pickup' : 'Delivery'} {timeIn(next.legalEta || next.eta, next.window?.tz)}
+              {risk && <Badge color={risk.color} className="ml-1">{risk.label}</Badge>}
+            </span>
+          )}
+          {t.plan?.progress?.offRoute && <span className="mt-0.5 flex items-center gap-1 text-[11px] text-c-red"><AlertTriangle className="size-3" aria-hidden />Off the planned route</span>}
+          {tag && <span className={cx('mt-0.5 flex items-center gap-1 text-[11px]', tag.tone === 'live' ? 'text-c-green' : 'text-muted')}><Radio className="size-3" aria-hidden />{tag.text}</span>}
+        </span>
+        {t.availableAt && <span className="shrink-0 text-[11px] text-muted">{new Date(t.availableAt) <= new Date() ? 'Ready' : relative(t.availableAt)}</span>}
+      </button>
+    </li>
   );
 }

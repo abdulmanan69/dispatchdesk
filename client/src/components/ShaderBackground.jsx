@@ -5,8 +5,11 @@ import { cx } from './ui.jsx';
  * Animated WebGL background: slowly drifting topographic contour lines, like a road atlas at night.
  * - Colors follow the theme (re-read when <html> class changes).
  * - Static single frame for prefers-reduced-motion; paused when off-screen or the tab is hidden.
- * - DPR capped for cheap rendering; falls back to nothing if WebGL is unavailable.
+ * - Cheap: rendered at 0.75 device pixels per CSS pixel (the motion is slow and sits under an overlay) and at most
+ *   30 frames per second; the WebGL context is released on unmount. Falls back to nothing without WebGL.
  */
+const MAX_DPR = 0.75;
+const FRAME_MS = 1000 / 30;
 const VERT = `attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
 
 const FRAG = `
@@ -125,25 +128,32 @@ export default function ShaderBackground({ className, density = 9, speed = 1 }) 
     gl.uniform1f(uDensity, density);
     applyTheme();
 
+    // Size the drawing buffer only when the element resizes, not on every frame.
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
       const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
       const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); }
       gl.uniform2f(uRes, w, h);
     };
 
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    let raf = 0; let visible = true; let start = performance.now(); let paused = 0;
+    const motionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    let reduced = !!motionQuery?.matches;
+    let raf = 0; let visible = true; let start = performance.now(); let paused = 0; let last = 0;
     const draw = (now) => {
-      resize();
       gl.uniform1f(uTime, reduced ? 12 : ((now - start) / 1000) * speed + 12);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     };
-    const loop = (now) => { draw(now); raf = requestAnimationFrame(loop); };
+    const loop = (now) => {
+      raf = requestAnimationFrame(loop);
+      if (now - last < FRAME_MS) return; // cap at 30 fps
+      last = now;
+      draw(now);
+    };
     const play = () => { if (reduced || raf || !visible || document.hidden) return; start += performance.now() - (paused || performance.now()); raf = requestAnimationFrame(loop); };
     const stop = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; paused = performance.now(); } };
 
+    resize();
     draw(performance.now());
     play();
 
@@ -151,15 +161,19 @@ export default function ShaderBackground({ className, density = 9, speed = 1 }) 
     io.observe(canvas);
     const onVis = () => (document.hidden ? stop() : play());
     document.addEventListener('visibilitychange', onVis);
-    const ro = new ResizeObserver(() => { if (!raf) draw(performance.now()); });
+    const ro = new ResizeObserver(() => { resize(); if (!raf) draw(performance.now()); });
     ro.observe(canvas);
     const mo = new MutationObserver(() => { applyTheme(); if (!raf) draw(performance.now()); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    const onMotion = (e) => { reduced = e.matches; if (reduced) { stop(); draw(performance.now()); } else play(); };
+    motionQuery?.addEventListener?.('change', onMotion);
 
     return () => {
       stop(); io.disconnect(); ro.disconnect(); mo.disconnect();
       document.removeEventListener('visibilitychange', onVis);
+      motionQuery?.removeEventListener?.('change', onMotion);
       gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs); gl.deleteBuffer(buf);
+      gl.getExtension('WEBGL_lose_context')?.loseContext(); // free the GPU context now, not when the browser gets to it
     };
   }, [density, speed]);
 

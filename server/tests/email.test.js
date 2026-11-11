@@ -286,7 +286,8 @@ describe('scheduler', () => {
     mail.sendMail.mockRejectedValue(new Error('Temporary failure 451'));
     const pending = rows.find((r) => r.status === 'scheduled');
     for (let i = 0; i < 3; i++) {
-      await prisma.email.update({ where: { id: pending.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
+      // A deferral moves scheduledAt to the retry time as well (so waiting rows leave the due range): rewind both.
+      await prisma.email.update({ where: { id: pending.id }, data: { nextAttemptAt: new Date(Date.now() - 1000), scheduledAt: new Date(Date.now() - 1000) } });
       await runSchedulerTick({ quiet: true });
     }
     const final = await prisma.email.findUnique({ where: { id: pending.id } });

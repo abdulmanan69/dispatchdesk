@@ -16,6 +16,7 @@ import {
 } from '../services/telephony/twilio.js';
 import { now } from '../services/telephony/clock.js';
 import { logCall } from '../services/calls.js';
+import { withLock, LockBusyError } from '../lib/locks.js';
 
 const r = Router();
 const auth = [requireAuth, requirePermission('crm.use')];
@@ -291,15 +292,21 @@ r.post('/twilio/dial-result/:id', ah(async (req, res) => {
   const unanswered = ['no_answer', 'busy', 'failed'].includes(status);
   if (unanswered && settings?.autoLogUnanswered !== false && attempt.carrierId && !attempt.callId) {
     try {
-      const user = await prisma.user.findUnique({ where: { id: attempt.userId }, include: { teamMembership: { include: { team: true } } } });
-      const carrier = await prisma.carrier.findUnique({ where: { id: attempt.carrierId } });
-      if (user && carrier) {
+      // Twilio retries callbacks and the dispatcher may press Save in the log form at the same moment. Only one
+      // delivery logs at a time (DB lock across processes), and it re-reads the attempt first: if a call is already
+      // linked, nothing is logged twice.
+      await withLock(`call-attempt-autolog.${attempt.id}`, 60_000, async () => {
         const fresh = await prisma.callAttempt.findUnique({ where: { id: attempt.id } });
+        if (!fresh || fresh.callId) return;
+        const user = await prisma.user.findUnique({ where: { id: attempt.userId }, include: { teamMembership: { include: { team: true } } } });
+        const carrier = await prisma.carrier.findUnique({ where: { id: attempt.carrierId } });
+        if (!user || !carrier) return;
         await logCall(user, carrier, { outcome: status === 'busy' ? 'busy' : 'no_answer', notes: 'Logged automatically from the phone system', automatic: true, autoFollowUp: true }, { attempt: fresh });
         await notify(user.id, { type: 'call', title: `${carrier.companyName}: ${status === 'busy' ? 'busy' : 'no answer'}`, body: 'Call logged automatically and a follow-up was scheduled', link: `/app/carriers/${carrier.id}` });
-      }
+      });
     } catch (err) {
-      console.error('[telephony] auto-log failed', err.message);
+      // LockBusy: another delivery of this callback is logging it right now. "already logged": the user saved it first.
+      if (!(err instanceof LockBusyError) && err?.status !== 400) console.error('[telephony] auto-log failed', err.message);
     }
   }
   res.type('text/xml').send('<Response/>');

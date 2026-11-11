@@ -15,9 +15,17 @@ export const EIA_SOURCE_URL = 'https://www.eia.gov/petroleum/gasdiesel/';
 export const CENSUS_SOURCE_URL = 'https://data.transportation.gov/Trucking-and-Motorcoaches/Motor-Carrier-Registrations-Census-Files/az4n-8mr2';
 const DIESEL_TTL = 6 * 3600000;
 const CENSUS_TTL = 24 * 3600000;
+// After a failure the source is not asked again for this long (the last good value, if any, is served meanwhile).
+const FAIL_TTL = 10 * 60000;
 
-const cache = { diesel: null, dieselAt: 0, dieselKey: '', census: null, censusAt: 0 };
-export function clearMarketCache() { cache.diesel = null; cache.dieselAt = 0; cache.census = null; cache.censusAt = 0; }
+const cache = { diesel: null, dieselAt: 0, dieselKey: '', dieselFail: null, census: null, censusAt: 0, censusFail: null };
+// Concurrent requests share one upstream call per source.
+const pending = { diesel: null, census: null };
+export function clearMarketCache() {
+  Object.assign(cache, { diesel: null, dieselAt: 0, dieselKey: '', dieselFail: null, census: null, censusAt: 0, censusFail: null });
+  pending.diesel = null;
+  pending.census = null;
+}
 
 async function fetchDiesel(apiKey, fetchImpl = globalThis.fetch) {
   const url = new URL(EIA_URL);
@@ -34,7 +42,7 @@ async function fetchDiesel(apiKey, fetchImpl = globalThis.fetch) {
   url.searchParams.set('length', '400');
   let res;
   try {
-    res = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
+    res = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
   } catch (err) {
     throw new HttpError(502, `EIA unreachable: ${err.message}`);
   }
@@ -72,19 +80,34 @@ export async function dieselRegions({ fetchImpl } = {}) {
   const apiKey = ownKey || (process.env.EIA_DISABLE_DEMO_KEY === 'true' ? null : 'DEMO_KEY');
   if (!apiKey) return { configured: false, regions: {}, gasoline: {}, history: [], error: 'Add a free EIA API key in Admin → Settings → Integrations to show diesel prices.' };
   if (cache.diesel && cache.dieselKey === apiKey && Date.now() - cache.dieselAt < DIESEL_TTL) return { configured: true, demoKey: !ownKey, ...cache.diesel };
-  try {
-    const { regions, gasoline, history } = await fetchDiesel(apiKey, fetchImpl);
-    cache.diesel = { regions, gasoline, history, fetchedAt: new Date().toISOString() };
-    markOk('eia');
-    cache.dieselAt = Date.now();
-    cache.dieselKey = apiKey;
-    return { configured: true, demoKey: !ownKey, ...cache.diesel };
-  } catch (err) {
-    markError('eia', err.message);
+  const failed = (message) => {
     // Serve the last good value if we have one, and say it is stale.
-    if (cache.diesel && cache.dieselKey === apiKey) return { configured: true, ...cache.diesel, error: `${err.message} (showing last fetched prices)` };
-    return { configured: true, regions: {}, gasoline: {}, history: [], error: err.message };
+    if (cache.diesel && cache.dieselKey === apiKey) return { configured: true, ...cache.diesel, error: `${message} (showing last fetched prices)` };
+    return { configured: true, regions: {}, gasoline: {}, history: [], error: message };
+  };
+  if (cache.dieselFail && cache.dieselFail.key === apiKey && Date.now() - cache.dieselFail.at < FAIL_TTL) return failed(cache.dieselFail.message);
+  if (!pending.diesel) {
+    pending.diesel = (async () => {
+      try {
+        const { regions, gasoline, history } = await fetchDiesel(apiKey, fetchImpl);
+        cache.diesel = { regions, gasoline, history, fetchedAt: new Date().toISOString() };
+        markOk('eia');
+        cache.dieselAt = Date.now();
+        cache.dieselKey = apiKey;
+        cache.dieselFail = null;
+        return null;
+      } catch (err) {
+        markError('eia', err.message);
+        cache.dieselFail = { key: apiKey, at: Date.now(), message: err.message };
+        return err.message;
+      } finally {
+        pending.diesel = null;
+      }
+    })();
   }
+  const error = await pending.diesel;
+  if (error) return failed(error);
+  return { configured: true, demoKey: !ownKey, ...cache.diesel };
 }
 
 export async function dieselForState(state, opts) {
@@ -103,19 +126,33 @@ export async function dieselForState(state, opts) {
 /** Active (USDOT status A) carriers per state from the FMCSA census, cached 24h. */
 export async function carriersByState({ fetchImpl } = {}) {
   if (cache.census && Date.now() - cache.censusAt < CENSUS_TTL) return cache.census;
-  try {
-    const rows = await census.query({ $select: 'phy_state,count(*) as n', $where: "status_code='A'", $group: 'phy_state', $order: 'n DESC', $limit: '100' }, fetchImpl);
-    const items = rows
-      .map((r) => ({ state: String(r.phy_state || '').toUpperCase(), count: Number(r.n) || 0 }))
-      // US states and DC only (the census also lists territories and Canadian/Mexican addresses).
-      .filter((r) => STATES[r.state] && r.count > 0);
-    cache.census = { items, source: 'FMCSA Company Census', sourceUrl: CENSUS_SOURCE_URL, fetchedAt: new Date().toISOString() };
-    cache.censusAt = Date.now();
-    markOk('fmcsa');
-    return cache.census;
-  } catch (err) {
-    markError('fmcsa', err.message);
-    if (cache.census) return { ...cache.census, error: `${err.message} (showing last fetched counts)` };
-    return { items: [], source: 'FMCSA Company Census', sourceUrl: CENSUS_SOURCE_URL, fetchedAt: null, error: err.message };
+  const failed = (message) => {
+    if (cache.census) return { ...cache.census, error: `${message} (showing last fetched counts)` };
+    return { items: [], source: 'FMCSA Company Census', sourceUrl: CENSUS_SOURCE_URL, fetchedAt: null, error: message };
+  };
+  if (cache.censusFail && Date.now() - cache.censusFail.at < FAIL_TTL) return failed(cache.censusFail.message);
+  if (!pending.census) {
+    pending.census = (async () => {
+      try {
+        const rows = await census.query({ $select: 'phy_state,count(*) as n', $where: "status_code='A'", $group: 'phy_state', $order: 'n DESC', $limit: '100' }, fetchImpl);
+        const items = rows
+          .map((r) => ({ state: String(r.phy_state || '').toUpperCase(), count: Number(r.n) || 0 }))
+          // US states and DC only (the census also lists territories and Canadian/Mexican addresses).
+          .filter((r) => STATES[r.state] && r.count > 0);
+        cache.census = { items, source: 'FMCSA Company Census', sourceUrl: CENSUS_SOURCE_URL, fetchedAt: new Date().toISOString() };
+        cache.censusAt = Date.now();
+        cache.censusFail = null;
+        markOk('fmcsa');
+        return null;
+      } catch (err) {
+        markError('fmcsa', err.message);
+        cache.censusFail = { at: Date.now(), message: err.message };
+        return err.message;
+      } finally {
+        pending.census = null;
+      }
+    })();
   }
+  const error = await pending.census;
+  return error ? failed(error) : cache.census;
 }

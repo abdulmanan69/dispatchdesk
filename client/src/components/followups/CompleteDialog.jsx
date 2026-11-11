@@ -3,7 +3,7 @@ import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { Button, Field, Textarea, cx } from '../ui.jsx';
 import { Modal } from '../Modal.jsx';
-import { FOLLOW_UP_INVALIDATE } from './FollowUpForm.jsx';
+import { followUpInvalidate } from './FollowUpForm.jsx';
 import { OUTCOMES, RECURRENCES } from './followUpUtils.js';
 
 /** Mark a follow-up done with an outcome and note. Recurring follow-ups schedule their next occurrence. */
@@ -11,7 +11,7 @@ export default function CompleteDialog({ followUp, onClose }) {
   const [outcome, setOutcome] = useState('');
   const [note, setNote] = useState('');
   const done = useApiMutation((body) => api.post(`/api/follow-ups/${followUp.id}/complete`, body), {
-    invalidate: FOLLOW_UP_INVALIDATE,
+    invalidate: followUpInvalidate(followUp?.carrierId || followUp?.carrier?.id),
     success: (d) => (d.next ? `Done · next one ${new Date(d.next.dueAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : 'Marked done'),
     onSuccess: onClose,
   });

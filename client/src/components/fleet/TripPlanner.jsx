@@ -7,6 +7,7 @@ import { EQUIPMENT, label, money, toLocalInput, dateTime } from '../../lib/forma
 import { Button, Field, Input, Select, cx } from '../ui.jsx';
 import { BrokerSelect } from '../dispatch/Pickers.jsx';
 import PlaceSearch from './PlaceSearch.jsx';
+import FitCard from '../dispatch/FitCard.jsx';
 import { route, weather, diesel, placeLabel } from './fleetApi.js';
 
 const tomorrow8 = () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); return toLocalInput(d); };
@@ -95,9 +96,15 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
   useEffect(() => { if (calc.eta && !delivery) setDelivery(toLocalInput(calc.eta)); }, [calc.eta?.getTime()]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = useApiMutation((body) => api.post('/api/fleet/trips', body), {
-    success: 'Trip planned', invalidate: [['fleet'], ['loads']], onSuccess: (d) => { onSaved?.(d.trip); onClose(); },
+    success: 'Trip planned', invalidate: [['fleet'], ['loads'], ['today']], onSuccess: (d) => { onSaved?.(d.trip); onClose(); },
   });
   const ready = carrierId && origin?.state && dest?.state && num(rate) != null;
+  // The carrier's rules and negotiation numbers for this plan (same check as the load form; never blocks saving).
+  const fitLoad = useMemo(() => ({
+    rateCents: calc.rateCents, loadedMiles: calc.lm ? Math.round(calc.lm) : null, deadheadMiles: calc.dh != null ? Math.round(calc.dh) : null,
+    equipment: equipment || null, originState: origin?.state || null, destState: dest?.state || null,
+    pickupDate: pickup ? new Date(pickup).toISOString() : null, deliveryDate: delivery ? new Date(delivery).toISOString() : null,
+  }), [calc.rateCents, calc.lm, calc.dh, equipment, origin?.state, dest?.state, pickup, delivery]);
   const submit = (e) => {
     e.preventDefault();
     save.mutate({
@@ -170,6 +177,10 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
         </div>
       )}
       {calc.eta && delivery && new Date(delivery) < calc.eta && <p className="text-xs text-amber-700 dark:text-amber-300">Delivery is earlier than the estimated arrival ({dateTime(calc.eta)}).</p>}
+
+      {carrierId && origin?.state && dest?.state && (
+        <FitCard className="rounded-xl border border-line p-3" carrierId={carrierId} load={fitLoad} />
+      )}
 
       <div className="flex justify-end gap-2 border-t border-line pt-4">
         <Button variant="secondary" onClick={onClose}>Cancel</Button>

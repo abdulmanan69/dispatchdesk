@@ -21,7 +21,8 @@ export default function CarrierPicker({ value, onChange, id, autoFocus }) {
   }, [open]);
   const res = useQuery({
     queryKey: ['carriers', 'picker', debounced],
-    queryFn: () => api.get('/api/carriers', { q: debounced || undefined, pageSize: 8, sort: 'updatedAt', dir: 'desc' }),
+    // The signal cancels the previous search when the user keeps typing.
+    queryFn: ({ signal }) => api.get('/api/carriers', { q: debounced || undefined, pageSize: 8, sort: 'updatedAt', dir: 'desc' }, { signal }),
     enabled: open,
     staleTime: 30000,
   });
@@ -36,7 +37,8 @@ export default function CarrierPicker({ value, onChange, id, autoFocus }) {
       </div>
     );
   }
-  const pick = (c) => { onChange({ id: c.id, companyName: c.companyName, phone: c.phone, email: c.email, timezone: c.timezone }); setOpen(false); };
+  // state too: call-back presets fall back to the state's zone when the carrier has no stored time zone.
+  const pick = (c) => { onChange({ id: c.id, companyName: c.companyName, phone: c.phone, email: c.email, timezone: c.timezone, state: c.state, doNotCall: c.doNotCall }); setOpen(false); };
   return (
     <div ref={ref} className="relative">
       <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted" aria-hidden />

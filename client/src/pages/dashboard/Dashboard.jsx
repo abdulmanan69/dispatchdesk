@@ -1,28 +1,33 @@
-import { useState } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
-import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ListOrdered, CalendarClock, BadgeCheck, Phone, UserPlus, Handshake } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { num, pct, relative, dateTime, date, label } from '../../lib/format.js';
-import { Card, PageHeader, Select, StatCard, Loading, ErrorState, EmptyState, Button, cx } from '../../components/ui.jsx';
+import { Card, PageHeader, Select, StatCard, Loading, ErrorState, EmptyState, Button, ErrorBoundary, RefreshError, cx } from '../../components/ui.jsx';
 import GettingStarted from '../../components/tour/GettingStarted.jsx';
-import { ChartBox, ThemedTooltip, useChartTheme, axisProps, shortDate, PALETTE, Legend, SERIES } from '../../components/dashboard/charts.jsx';
+import { PALETTE, Legend, SERIES } from '../../components/dashboard/palette.jsx';
+import { isChunkError, reloadForNewVersion } from '../../context/reload.js';
+
+// recharts (~100 KB gzip) loads after the numbers have painted, behind a fixed-height placeholder.
+const ActivityChart = lazy(() => import('../../components/dashboard/ActivityChart.jsx'));
+const CHART_HEIGHT = 300;
+const ChartPlaceholder = () => <div style={{ height: CHART_HEIGHT }} className="w-full animate-pulse rounded-lg bg-surface-2/60" aria-hidden />;
 
 const POSITIVE = new Set(['interested', 'converted', 'call_back', 'follow_up']);
 
 // Each call outcome keeps one color across the app: good news green/teal, neutral blue/purple, bad red/gray.
 const OUTCOME_COLOR = {
   interested: '#22c55e', converted: '#14b8a6', follow_up: '#3b82f6', call_back: '#8b5cf6', voicemail: '#f59e0b',
-  no_answer: '#94a3b8', busy: '#f97316', not_interested: '#ef4444', wrong_number: '#ec4899',
+  no_answer: '#94a3b8', busy: '#f97316', not_interested: '#ef4444', wrong_number: '#ec4899', do_not_call: '#b91c1c',
 };
 
 export default function Dashboard() {
   const [range, setRange] = useState('30');
   const [scope, setScope] = useState('mine');
-  const q = useQuery({ queryKey: ['dashboard', range, scope], queryFn: () => api.get('/api/dashboard', { range, scope }) });
-  const t = useChartTheme();
-  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  // Keep the previous range on screen while the next one loads.
+  const q = useQuery({ queryKey: ['dashboard', range, scope], queryFn: ({ signal }) => api.get('/api/dashboard', { range, scope }, { signal }), placeholderData: keepPreviousData });
+  const today = date(new Date(), { weekday: 'long', month: 'long', day: 'numeric' });
 
   return (
     <div>
@@ -43,12 +48,17 @@ export default function Dashboard() {
           </Select>
         </>}
       />
-      {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : <Body d={q.data} t={t} />}
+      {q.isLoading ? <Loading /> : !q.data ? <ErrorState error={q.error} onRetry={q.refetch} /> : (
+        <>
+          <RefreshError query={q} />
+          <Body d={q.data} />
+        </>
+      )}
     </div>
   );
 }
 
-function Body({ d, t }) {
+function Body({ d }) {
   const x = d.totals;
   const empty = x.carriers === 0;
   const maxStage = Math.max(1, ...d.pipeline.filter((s) => s.key !== 'archived').map((s) => s.count));
@@ -103,22 +113,12 @@ function Body({ d, t }) {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2" title="Calls and new leads" actions={<Legend items={[{ label: 'Calls', color: PALETTE.brand }, { label: 'New leads', color: PALETTE.purple }]} />}>
-          <ChartBox height={300} label={`Calls and new leads per day: ${x.callsCompleted} calls, ${x.newLeads} new leads`}>
-            <AreaChart data={d.series} margin={{ left: -20, right: 8, top: 8 }}>
-              <defs>
-                <linearGradient id="gCalls" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stopColor={PALETTE.brand} stopOpacity={0.35} />
-                  <stop offset="100%" stopColor={PALETTE.brand} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke={t.line} vertical={false} />
-              <XAxis dataKey="date" tickFormatter={shortDate} {...axisProps(t)} minTickGap={24} />
-              <YAxis allowDecimals={false} {...axisProps(t)} />
-              <ThemedTooltip labelFormatter={shortDate} />
-              <Line type="monotone" dataKey="leads" name="New leads" stroke={PALETTE.purple} strokeWidth={2} dot={false} />
-              <Area type="monotone" dataKey="calls" name="Calls" stroke={PALETTE.brand} fill="url(#gCalls)" strokeWidth={2} activeDot={{ r: 3 }} />
-            </AreaChart>
-          </ChartBox>
+          <ErrorBoundary onError={(e) => { if (isChunkError(e)) reloadForNewVersion(); }}
+            fallback={<div style={{ height: CHART_HEIGHT }} className="flex items-center justify-center text-sm text-muted">The chart could not load. Reload the page to try again.</div>}>
+            <Suspense fallback={<ChartPlaceholder />}>
+              <ActivityChart series={d.series} calls={x.callsCompleted} leads={x.newLeads} height={CHART_HEIGHT} />
+            </Suspense>
+          </ErrorBoundary>
         </Card>
 
         <Card title="Pipeline" actions={<Link to="/app/pipeline" className="text-xs text-fg-2 hover:text-fg">Open board</Link>}>

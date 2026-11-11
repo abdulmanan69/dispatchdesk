@@ -55,6 +55,8 @@ export async function changeStage(user, carrier, stageKey, { depth = 0, reason }
       create: { carrierId: carrier.id, ownerId: carrier.ownerId, dispatchFeePercent: opp?.dispatchFeePercent ?? null, signedAt: now },
       update: { status: 'active' },
     });
+    // A signed carrier is a truck on the fleet map (Carrier.isFleet drives the indexed fleet query).
+    if (!carrier.isFleet) await prisma.carrier.update({ where: { id: carrier.id }, data: { isFleet: true } });
   }
   if (stageKey === 'archived') {
     await prisma.sequenceEnrollment.updateMany({

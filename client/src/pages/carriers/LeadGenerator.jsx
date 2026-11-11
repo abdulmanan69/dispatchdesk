@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Crosshair, Eye, Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import { Crosshair, Eye, ListOrdered, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../../components/Toast.jsx';
 import { US_STATES, dateTime, label, relative, phoneFmt } from '../../lib/format.js';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
+import EnrollModal from '../../components/carriers/EnrollModal.jsx';
 import {
   Badge, Button, Card, Checkbox, DataTable, EmptyState, Field, Input, PageHeader, QueryState, Select, Switch, cx,
 } from '../../components/ui.jsx';
@@ -199,9 +200,18 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
 
 function RunResult({ result, onClose }) {
   const [color, text] = STATUS[result.run.status] || STATUS.ok;
+  const [enrolling, setEnrolling] = useState(false);
+  const ids = result.run.carrierIds || result.carriers.map((c) => c.id);
+  // A generator linked to a sequence enrolls its leads itself; otherwise offer it here.
+  const enrolledAlready = /Enrolled \d+ in "/.test(result.run.message || '');
   return (
     <Modal open onClose={onClose} size="lg" title={`${result.run.created} new lead${result.run.created === 1 ? '' : 's'}`}
-      footer={<>{result.run.created > 0 && <Button variant="secondary" to="/app/prospecting">Open call queue</Button>}<Button onClick={onClose}>Done</Button></>}>
+      footer={<>
+        {ids.length > 0 && !enrolledAlready && <Button variant="secondary" icon={ListOrdered} onClick={() => setEnrolling(true)}>Enroll these {ids.length} lead{ids.length === 1 ? '' : 's'}</Button>}
+        {result.run.created > 0 && <Button variant="secondary" to="/app/prospecting">Open call queue</Button>}
+        <Button onClick={onClose}>Done</Button>
+      </>}>
+      <EnrollModal open={enrolling} carrierIds={ids} onClose={() => setEnrolling(false)} />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Badge color={color}>{text}</Badge>
         <span className="text-muted">{result.run.scanned} census records scanned · {result.run.skipped} already in CRM · {result.run.belowScore} below score</span>
@@ -226,7 +236,7 @@ function GeneratorCard({ g, cargoLabels, entitlements, onEdit, onRun, running })
   const toggleAuto = useApiMutation((autoRun) => api.patch(`/api/lead-generators/${g.id}`, { autoRun }), {
     invalidate: [['lead-generators']], success: (_, v) => (v ? 'Scheduled runs on' : 'Scheduled runs off'),
   });
-  const del = useApiMutation(() => api.delete(`/api/lead-generators/${g.id}`), { invalidate: [['lead-generators'], ['billing']], success: 'Generator deleted' });
+  const del = useApiMutation(() => api.del(`/api/lead-generators/${g.id}`), { invalidate: [['lead-generators'], ['billing']], success: 'Generator deleted' });
   const last = g.lastRun;
   const [color, text] = last ? STATUS[last.status] || STATUS.ok : [];
   return (

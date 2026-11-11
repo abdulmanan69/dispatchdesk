@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { registerUser, prisma } from './helpers.js';
+import { clearCensusCache } from '../src/services/carriers/fmcsaCensus.js';
 import { scoreLead, runDueGenerators } from '../src/services/leadgen.js';
 
 const row = (dot, extra = {}) => ({
@@ -30,7 +31,7 @@ describe('lead generator', () => {
     A = await registerUser();
     B = await registerUser();
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); });
 
   it('scores leads from real fields with reasons', () => {
     const s = scoreLead({ phone: '1', email: 'a@b.c', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date(), fleetSize: 3 });
@@ -138,6 +139,35 @@ describe('lead generator', () => {
     expect(res.status).toBe(200);
     expect(res.body.run).toMatchObject({ status: 'error', created: 0 });
     expect(res.body.run.message).toMatch(/FMCSA Census error/);
+  });
+
+  it('a failed census request stops the crawl: no new state requests start, at most 3 run at once', async () => {
+    const P = await registerUser();
+    const states = ['TX', 'OK', 'AR', 'LA', 'NM', 'KS'];
+    const g = (await P.agent.post('/api/lead-generators').send({ name: 'South', criteria: { states } })).body.generator;
+    let inFlight = 0;
+    let peak = 0;
+    const asked = [];
+    const fetchMock = vi.fn(async (url) => {
+      const st = /phy_state='([A-Z]{2})'/.exec(decodeURIComponent(String(url)))?.[1];
+      asked.push(st);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, st === 'TX' ? 5 : 40));
+      inFlight--;
+      return st === 'TX'
+        ? { ok: false, status: 500, json: async () => ({ message: 'boom' }) }
+        : { ok: true, status: 200, json: async () => [] };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await P.agent.post(`/api/lead-generators/${g.id}/run`);
+    expect(res.status).toBe(200);
+    expect(res.body.run).toMatchObject({ status: 'error', created: 0 });
+    // Requests that were already running finished before the run returned; nothing new starts afterwards.
+    expect(inFlight).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect([...asked].sort()).toEqual(['AR', 'OK', 'TX']);
+    expect(peak).toBeLessThanOrEqual(3);
   });
 
   it('generated priority leads appear only in the owner call queue', async () => {

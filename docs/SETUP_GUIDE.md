@@ -86,6 +86,10 @@ Only one SPF record may exist per domain; merge `include:` entries into one reco
 
 User mailboxes for prospecting (Email → Mailboxes) are separate. Each user connects their own; see step 5.
 
+### Daily budget
+
+Free SMTP plans cap how much the whole platform can send per day, and every user shares that cap. Set **System settings → Email → Platform emails per day** to your provider's daily quota (default 300, the Brevo free tier; env `PLATFORM_MAIL_DAILY_LIMIT`). Part of it (env `PLATFORM_MAIL_AUTH_RESERVE`, default 30%) is kept for verification, password-reset and invitation mail. Notices and the daily digest use the rest. Once that part is used up, they are skipped until the next UTC day (a digest sent from the user's own connected mailbox does not count). **Admin → Setup → Platform email** shows today's count, held-back messages, failures and the last error.
+
 ---
 
 ## 4. Payments with Stripe (required to charge)
@@ -174,7 +178,19 @@ Web research for the AI: set the search provider (`tavily` or `brave`) and key.
 
 ---
 
-## 9. Backups
+## 9. Push notifications and calendar feeds (optional)
+
+Both work without setup and without any paid service.
+
+- **Push:** each user turns it on per device in **Settings → Notifications**. A VAPID key pair is generated on first use and stored encrypted in the database, so every worker signs with the same key. To bring your own pair, set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (`cd server && npx web-push generate-vapid-keys`). After a key change, people turn push on again on each device. `VAPID_SUBJECT` is the contact sent to push services: an `https://` URL or a `mailto:` address (default: `APP_URL`).
+- The server needs outbound HTTPS to the browser push services: `fcm.googleapis.com` (Chrome, Android, Opera, Samsung Internet), `*.push.services.mozilla.com` (Firefox), `web.push.apple.com` (Safari; on iPhone, iOS 16.4+ after adding the site to the home screen) and `*.notify.windows.com` (Edge). Other hosts are refused unless listed in `PUSH_EXTRA_HOSTS`.
+- **Calendar feeds:** each user creates a private feed link in **Settings → Calendar** and subscribes to it in Google Calendar, Outlook or Apple Calendar. Calendar apps refresh it on their own schedule; Google Calendar can take several hours. `CALENDAR_FEED_RATE_LIMIT` sets requests per minute per IP address (default 60).
+
+With the Coolify compose file, an environment variable reaches the app only when it is listed under `environment:` in `docker-compose.coolify.yml`. Add a line such as `VAPID_SUBJECT: ${VAPID_SUBJECT}` there before setting it in Coolify. `.env.example` lists every optional variable.
+
+---
+
+## 10. Backups
 
 All state is in the `/data` volume.
 

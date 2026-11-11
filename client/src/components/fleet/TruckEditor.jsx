@@ -27,7 +27,7 @@ export default function TruckEditor({ truck, onClose, pickMode, setPickMode, map
   useEffect(() => () => { setEditPoint(null); setPickMode(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = useApiMutation((body) => api.patch(`/api/fleet/carriers/${truck.id}`, body), {
-    success: 'Truck updated', invalidate: [['fleet']], onSuccess: onClose,
+    success: 'Truck updated', invalidate: [['fleet'], ['today']], onSuccess: onClose,
   });
   const submit = (e) => {
     e.preventDefault();

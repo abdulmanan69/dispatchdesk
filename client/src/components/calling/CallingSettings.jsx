@@ -121,7 +121,7 @@ export default function CallingSettings({ compact = false, onSaved }) {
         <div className="space-y-4">
           <Toggle checked={f.autoOpenLog} onChange={(v) => upd({ autoOpenLog: v })} label="Open the log-call form as soon as a call starts" hint="A timer runs from your click, so call length is filled in for you." />
           <Toggle checked={f.autoAdvance} onChange={(v) => upd({ autoAdvance: v })} label="Power dialer: move to the next carrier after you save" />
-          <Toggle checked={f.enforceCallingHours} onChange={(v) => upd({ enforceCallingHours: v })} label="Warn before calling outside 8 AM–7 PM carrier local time" hint="You can still call after confirming." />
+          <Toggle checked={f.enforceCallingHours} onChange={(v) => upd({ enforceCallingHours: v })} label="Warn before calling outside 8 AM–7 PM on weekdays, carrier local time" hint="You can still call after confirming." />
           <Toggle checked={f.autoLogUnanswered} onChange={(v) => upd({ autoLogUnanswered: v })} disabled={!isTwilio} label="Log unanswered and busy calls automatically" hint={isTwilio ? 'A follow-up is scheduled for the next business day.' : 'Needs the Twilio bridge, which reports how each call ended.'} />
           <p className="text-xs text-muted">Calls are never placed without your click. Do-not-call carriers are always blocked.</p>
         </div>

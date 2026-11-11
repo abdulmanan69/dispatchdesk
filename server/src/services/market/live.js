@@ -1,7 +1,10 @@
+import cluster from 'node:cluster';
 import { config } from '../../config.js';
+import { prisma } from '../../db.js';
 import { getSetting } from '../../lib/settings.js';
 import { HttpError } from '../../lib/errors.js';
 import { STATES, locate, haversineMiles, ROAD_FACTOR, stateOf } from './geo.js';
+import { decodePolyline, encodePolyline, simplifyToBudget } from '../fleet/polyline.js';
 
 /**
  * Free, public real-time data adapters. Every one is verified against the live service, cached,
@@ -43,11 +46,13 @@ export async function sourceStatuses() {
 }
 
 // ---------------------------------------------------------------------------
-// Small TTL cache + JSON fetch helper
+// Small TTL caches (per process, size-bounded), shared in-flight requests, and the JSON fetch helper
 // ---------------------------------------------------------------------------
+// Routes hold an encoded polyline (10-20 KB each), so that cache is kept smaller than the others.
+const CACHE_MAX = { route: 400 };
 const caches = new Map();
-function cacheFor(name, max = 1000) {
-  if (!caches.has(name)) caches.set(name, { max, map: new Map() });
+function cacheFor(name) {
+  if (!caches.has(name)) caches.set(name, { max: CACHE_MAX[name] || 1000, map: new Map() });
   return caches.get(name);
 }
 function cget(name, key) {
@@ -59,12 +64,114 @@ function cget(name, key) {
 }
 function cset(name, key, value, ttlMs) {
   const c = cacheFor(name);
+  c.map.delete(key);
   if (c.map.size >= c.max) c.map.delete(c.map.keys().next().value);
   c.map.set(key, { value, exp: Date.now() + ttlMs });
 }
-export function clearLiveCache() { caches.clear(); lastPhoton = 0; }
+
+// Concurrent misses for the same key share one upstream request.
+const inflight = new Map();
+function single(key, fn) {
+  if (inflight.has(key)) return inflight.get(key);
+  const p = Promise.resolve().then(fn).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
+/**
+ * Cached call that also remembers failures for `failTtlMs`, so a provider that is down or rate limiting is not asked
+ * again on every page view (the error is re-thrown from the cache until it expires).
+ */
+async function cachedCall(name, key, ttlMs, failTtlMs, fn) {
+  const hit = cget(name, key);
+  if (hit !== undefined) {
+    if (hit && hit.failed) throw hit.error;
+    return hit;
+  }
+  return single(`${name}:${key}`, async () => {
+    try {
+      const value = await fn();
+      cset(name, key, value, ttlMs);
+      return value;
+    } catch (err) {
+      cset(name, key, { failed: true, error: err }, failTtlMs);
+      throw err;
+    }
+  });
+}
+
+// Free public services ask for about one request per second, for the whole server. A single process keeps the next free
+// slot in memory. Cluster workers share one clock: the next free slot per service is one SystemSetting row
+// (`throttle.<name>`) claimed with a compare-and-set, so all workers together stay at one request per second and each
+// can use the whole budget when the others are idle. A request that would have to wait more than a few seconds is not
+// queued: the caller uses its honest fallback and nothing is reserved.
+const SLOT_GAP_MS = config.isTest ? 0 : 1000;
+const SHARED_SLOTS = cluster.isWorker;
+const nextSlot = { photon: 0, osrm: 0 };
+// A stored slot further ahead than any real reservation can be (the clock was set back): treat it as free.
+const MAX_AHEAD_MS = 60_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function reserveLocalSlot(name, gapMs, maxWaitMs, now = Date.now()) {
+  const at = Math.max(now, nextSlot[name] || 0);
+  const wait = at - now;
+  if (wait > maxWaitMs) return -1;
+  nextSlot[name] = at + gapMs;
+  return wait;
+}
+
+/**
+ * Reserve the next free request slot for `name` across every process sharing the database. Returns the milliseconds to
+ * wait before calling the service, or -1 when the wait would exceed maxWaitMs (nothing is reserved then).
+ */
+export async function reserveSharedSlot(name, { gapMs = 1000, maxWaitMs = 4000 } = {}) {
+  const key = `throttle.${name}`;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const now = Date.now();
+    const row = await prisma.systemSetting.findUnique({ where: { key }, select: { value: true } });
+    if (!row) {
+      try {
+        await prisma.systemSetting.create({ data: { key, value: String(now + gapMs), secret: false } });
+        return 0;
+      } catch (err) {
+        if (err.code === 'P2002') continue; // another process created it first: read it again
+        throw err;
+      }
+    }
+    const stored = Number(row.value) || 0;
+    const at = stored - now > MAX_AHEAD_MS ? now : Math.max(now, stored);
+    const wait = at - now;
+    if (wait > maxWaitMs) return -1;
+    const { count } = await prisma.systemSetting.updateMany({ where: { key, value: row.value }, data: { value: String(at + gapMs) } });
+    if (count === 1) return wait;
+  }
+  return -1; // lost the race every time: answer busy rather than queue
+}
+
+async function takeSlot(name, maxWaitMs = 4000) {
+  if (!SLOT_GAP_MS) return true;
+  let wait;
+  try {
+    wait = SHARED_SLOTS ? await reserveSharedSlot(name, { gapMs: SLOT_GAP_MS, maxWaitMs }) : reserveLocalSlot(name, SLOT_GAP_MS, maxWaitMs);
+  } catch (err) {
+    console.warn(`[market] ${name} throttle unavailable: ${err.message}`);
+    return false;
+  }
+  if (wait < 0) return false;
+  if (wait > 0) await sleep(wait);
+  return true;
+}
+
+export function clearLiveCache() {
+  caches.clear();
+  inflight.clear();
+  nextSlot.photon = 0;
+  nextSlot.osrm = 0;
+}
 
 async function getJson(url, { label, headers = {}, timeout = 10000 } = {}) {
+  // Tests never reach the internet: an external call only happens when the test stubs fetch.
+  if (config.isTest && typeof globalThis.fetch?.mock !== 'object') throw new HttpError(502, `${label} unreachable: network calls are disabled in tests`);
   let res;
   try {
     res = await globalThis.fetch(url, { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT, ...headers }, signal: AbortSignal.timeout(timeout) });
@@ -77,17 +184,8 @@ async function getJson(url, { label, headers = {}, timeout = 10000 } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Geocoding: Photon (OSM), US only, ~1 request/second, cached 30 days. Falls back to bundled centroids.
+// Geocoding: Photon (OSM), US only, ~1 request/second across the cluster, cached 30 days. Falls back to bundled centroids.
 // ---------------------------------------------------------------------------
-let lastPhoton = 0;
-async function photonSlot() {
-  const wait = lastPhoton + 1000 - Date.now();
-  lastPhoton = Math.max(Date.now(), lastPhoton + 1000);
-  if (wait > 4000) return false; // too busy: use the fallback rather than queue forever
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  return true;
-}
-
 const STATE_BY_NAME = Object.fromEntries(Object.entries(STATES).map(([code, [name]]) => [name.toLowerCase(), code]));
 
 function fallbackGeocode(q) {
@@ -104,9 +202,13 @@ export async function geocode(q) {
   const key = query.toLowerCase();
   const cached = cget('geocode', key);
   if (cached) return cached;
+  return single(`geocode:${key}`, () => geocodeFresh(query, key));
+}
+
+async function geocodeFresh(query, key) {
   let out;
   try {
-    if (!(await photonSlot())) throw new HttpError(503, 'Geocoder busy');
+    if (!(await takeSlot('photon'))) throw new HttpError(503, 'Geocoder busy');
     const url = new URL('https://photon.komoot.io/api/');
     url.searchParams.set('q', query);
     url.searchParams.set('limit', '8');
@@ -130,9 +232,10 @@ export async function geocode(q) {
     out = { items: items.filter((x) => (seen.has(x.label) ? false : seen.add(x.label))), source: 'photon', attribution: SOURCES.photon.attribution };
     markOk('photon');
   } catch (err) {
-    markError('photon', err.message);
+    // Our own throttle saying "busy" is not a provider error.
+    if (err.status !== 503) markError('photon', err.message);
     out = { items: fallbackGeocode(query), source: 'centroid', note: `${err.message}. Showing approximate city or state centers.` };
-    cset('geocode', key, out, 10 * 60000);
+    cset('geocode', key, out, err.status === 503 ? 60_000 : 10 * 60000);
     return out;
   }
   if (!out.items.length) {
@@ -144,35 +247,62 @@ export async function geocode(q) {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: OSRM public demo server (fair use, no SLA). Cached 7 days. Fallback: straight line × road factor.
+// Routing: OSRM public demo server (fair use, no SLA, ~1 request/second across the cluster). Full road geometry,
+// simplified to at most a few thousand points and kept as an encoded polyline. Cached 7 days; one in-flight request per
+// pair; failures are remembered for a couple of minutes. Fallback: straight line × road factor, marked as an estimate.
 // ---------------------------------------------------------------------------
 const round3 = (n) => Math.round(n * 1000) / 1000;
+/** Average truck speed assumed when no road route is available (the same 50 mph the planner has always used). */
+export const ESTIMATE_MPH = 50;
 
-export function estimateRoute(from, to) {
+function estimateEncoded(from, to) {
   const miles = Math.round(haversineMiles([from.lat, from.lng], [to.lat, to.lng]) * ROAD_FACTOR);
-  return { miles, durationHours: Math.round((miles / 50) * 10) / 10, geometry: [[from.lng, from.lat], [to.lng, to.lat]], source: 'estimate', estimate: true };
+  const minutes = Math.round((miles / ESTIMATE_MPH) * 60);
+  return { miles, minutes, durationHours: Math.round((miles / ESTIMATE_MPH) * 10) / 10, encoded: encodePolyline([[from.lng, from.lat], [to.lng, to.lat]]), source: 'estimate', estimate: true };
 }
 
-export async function route(from, to) {
+export function estimateRoute(from, to) {
+  const { encoded, ...rest } = estimateEncoded(from, to);
+  return { ...rest, geometry: [[from.lng, from.lat], [to.lng, to.lat]] };
+}
+
+/**
+ * Road route as { miles, minutes, durationHours, encoded, source: 'OSRM'|'estimate', estimate, note? }.
+ * `encoded` is a polyline string of [lng, lat] points (see services/fleet/polyline.js).
+ */
+export async function routeEncoded(from, to) {
   const key = [from.lat, from.lng, to.lat, to.lng].map(round3).join(',');
   const cached = cget('route', key);
   if (cached) return cached;
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=simplified&geometries=geojson`;
-    const body = await getJson(url, { label: 'OSRM router', timeout: 10000 });
-    const r = body?.routes?.[0];
-    if (body?.code !== 'Ok' || !r) throw new HttpError(502, `OSRM router: ${body?.message || body?.code || 'no route'}`);
-    const out = {
-      miles: Math.round(r.distance / 1609.344), durationHours: Math.round((r.duration / 3600) * 10) / 10,
-      geometry: r.geometry?.coordinates || [], source: 'OSRM', estimate: false, attribution: SOURCES.osrm.attribution,
-    };
-    markOk('osrm');
-    cset('route', key, out, 7 * 86400000);
-    return out;
-  } catch (err) {
-    markError('osrm', err.message);
-    return { ...estimateRoute(from, to), note: `${err.message}. Straight-line estimate × ${ROAD_FACTOR}.` };
-  }
+  return single(`route:${key}`, async () => {
+    try {
+      if (!(await takeSlot('osrm'))) throw new HttpError(503, 'OSRM router busy');
+      const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=polyline`;
+      const body = await getJson(url, { label: 'OSRM router', timeout: 10000 });
+      const r = body?.routes?.[0];
+      if (body?.code !== 'Ok' || !r) throw new HttpError(502, `OSRM router: ${body?.message || body?.code || 'no route'}`);
+      const raw = typeof r.geometry === 'string' ? decodePolyline(r.geometry) : (r.geometry?.coordinates || []);
+      if (raw.length < 2) throw new HttpError(502, 'OSRM router: empty route geometry');
+      const out = {
+        miles: Math.round(r.distance / 1609.344), minutes: Math.round(r.duration / 60), durationHours: Math.round((r.duration / 3600) * 10) / 10,
+        encoded: encodePolyline(simplifyToBudget(raw)), source: 'OSRM', estimate: false, attribution: SOURCES.osrm.attribution,
+      };
+      markOk('osrm');
+      cset('route', key, out, 7 * 86400000);
+      return out;
+    } catch (err) {
+      if (err.status !== 503) markError('osrm', err.message);
+      const est = { ...estimateEncoded(from, to), note: `${err.message}. Straight-line estimate × ${ROAD_FACTOR}.` };
+      cset('route', key, est, err.status === 503 ? 30_000 : 2 * 60_000);
+      return est;
+    }
+  });
+}
+
+/** Road route for the API: same as routeEncoded but with `geometry` as [[lng, lat], ...]. */
+export async function route(from, to) {
+  const { encoded, ...rest } = await routeEncoded(from, to);
+  return { ...rest, geometry: decodePolyline(encoded) };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +324,10 @@ const sortAlerts = (list) => list.sort((a, b) => (SEVERITY[a.severity] ?? 4) - (
 
 async function currentWeather(lat, lng) {
   const key = `${lat.toFixed(2)},${lng.toFixed(2)}`;
-  const hit = cget('meteo', key);
-  if (hit) return hit;
+  return cachedCall('meteo', key, 15 * 60000, 2 * 60000, () => fetchWeather(lat, lng));
+}
+
+async function fetchWeather(lat, lng) {
   const url = new URL('https://api.open-meteo.com/v1/forecast');
   url.searchParams.set('latitude', String(lat));
   url.searchParams.set('longitude', String(lng));
@@ -210,19 +342,16 @@ async function currentWeather(lat, lng) {
     tempF: c.temperature_2m, windMph: c.wind_speed_10m, gustMph: c.wind_gusts_10m ?? null, precipIn: c.precipitation ?? null,
     code: c.weather_code, description: WMO[c.weather_code] || 'Unknown', observedAt: c.time,
   };
-  cset('meteo', key, out, 15 * 60000);
   return out;
 }
 
 async function nwsAlerts(query, cacheKey) {
-  const hit = cget('nws', cacheKey);
-  if (hit) return hit;
-  const url = new URL('https://api.weather.gov/alerts/active');
-  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-  const body = await getJson(url, { label: 'National Weather Service', headers: { Accept: 'application/geo+json' }, timeout: 10000 });
-  const out = sortAlerts((body?.features || []).map(alertShape));
-  cset('nws', cacheKey, out, 5 * 60000);
-  return out;
+  return cachedCall('nws', cacheKey, 5 * 60000, 2 * 60000, async () => {
+    const url = new URL('https://api.weather.gov/alerts/active');
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    const body = await getJson(url, { label: 'National Weather Service', headers: { Accept: 'application/geo+json' }, timeout: 10000 });
+    return sortAlerts((body?.features || []).map(alertShape));
+  });
 }
 
 export async function weather(lat, lng) {
@@ -259,16 +388,14 @@ const FREIGHT_NOTE = {
   'Christmas Day': 'Most docks closed; capacity tight the week before.',
 };
 export async function holidays() {
-  const hit = cget('nager', 'US');
-  if (hit) return hit;
   try {
-    const body = await getJson('https://date.nager.at/api/v3/NextPublicHolidays/US', { label: 'Nager.Date', timeout: 8000 });
-    const items = (Array.isArray(body) ? body : []).filter((h) => h.global !== false).slice(0, 8)
-      .map((h) => ({ date: h.date, name: h.name, note: FREIGHT_NOTE[h.name] || null }));
-    const out = { items, source: 'Nager.Date', sourceUrl: SOURCES.nager.terms, fetchedAt: new Date().toISOString() };
-    markOk('nager');
-    cset('nager', 'US', out, 86400000);
-    return out;
+    return await cachedCall('nager', 'US', 86400000, 10 * 60000, async () => {
+      const body = await getJson('https://date.nager.at/api/v3/NextPublicHolidays/US', { label: 'Nager.Date', timeout: 8000 });
+      const items = (Array.isArray(body) ? body : []).filter((h) => h.global !== false).slice(0, 8)
+        .map((h) => ({ date: h.date, name: h.name, note: FREIGHT_NOTE[h.name] || null }));
+      markOk('nager');
+      return { items, source: 'Nager.Date', sourceUrl: SOURCES.nager.terms, fetchedAt: new Date().toISOString() };
+    });
   } catch (err) {
     markError('nager', err.message);
     return { items: [], source: 'Nager.Date', sourceUrl: SOURCES.nager.terms, error: err.message };

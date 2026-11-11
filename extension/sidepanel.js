@@ -1,5 +1,5 @@
 // Side panel: the call companion. Shows the current carrier, dials on click, and logs the outcome.
-import { api, dial, getConfig, prettyPhone, CALL_OUTCOMES, label, dropdown, chips } from './lib.js';
+import { api, dial, getConfig, prettyPhone, CALL_OUTCOMES, outcomeKey, label, dropdown, chips } from './lib.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { queue: [], index: 0, focus: null, carrier: null, reason: '', attemptId: null, outcome: '', saving: false, scripts: [], user: null };
@@ -63,7 +63,7 @@ function renderOutcomes() {
     b.setAttribute('aria-checked', String(state.outcome === o));
     b.innerHTML = '<span></span><kbd></kbd>';
     b.firstChild.textContent = label(o);
-    b.lastChild.textContent = String(i + 1);
+    b.lastChild.textContent = outcomeKey(i);
     b.addEventListener('click', () => setOutcome(o));
     return b;
   }));
@@ -251,7 +251,7 @@ async function init() {
     const typing = ['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.closest?.('.dd');
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); return; }
     if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (/^[1-8]$/.test(e.key) && state.carrier) setOutcome(CALL_OUTCOMES[Number(e.key) - 1]);
+    if (/^[0-9]$/.test(e.key) && state.carrier) setOutcome(CALL_OUTCOMES[e.key === '0' ? 9 : Number(e.key) - 1]);
     else if (e.key.toLowerCase() === 'c') call();
     else if (e.key.toLowerCase() === 's') nextCarrier();
   });

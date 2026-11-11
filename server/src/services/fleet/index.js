@@ -1,5 +1,6 @@
 import { haversineMiles, ROAD_FACTOR, locate, STATES, CITIES } from '../market/geo.js';
 import { trustFor } from './track.js';
+import { decodePolyline } from './polyline.js';
 
 /**
  * Fleet helpers: truck positions, distance estimates and simple place lookup.
@@ -32,7 +33,6 @@ export function crowMiles(a, b) {
   return haversineMiles([a.lat, a.lng], [b.lat, b.lng]);
 }
 
-/** Offline place search over the bundled freight-city and state-center tables (fallback for /api/market/geocode). */
 /** Nearest bundled freight city to a GPS fix (for a readable "near Dallas, TX"), within maxMiles. */
 export function nearestPlace(lat, lng, maxMiles = 75) {
   let best = null;
@@ -45,6 +45,7 @@ export function nearestPlace(lat, lng, maxMiles = 75) {
   return { city: city.replace(/\b\w/g, (c) => c.toUpperCase()), state: st.toUpperCase(), miles: Math.round(best.miles) };
 }
 
+/** Offline place search over the bundled freight-city and state-center tables (fallback for /api/market/geocode). */
 export function searchPlaces(q, limit = 8) {
   const s = String(q || '').trim().toLowerCase();
   if (s.length < 2) return [];
@@ -107,7 +108,66 @@ export function truckUpdateForTrip(prevStatus, status, load) {
     });
   }
   if (status === 'canceled' && prevStatus === 'in_transit') data.truckStatus = 'available';
+  // A truck with a status, a position or a trip belongs on the fleet map (Carrier.isFleet keeps the map query indexed).
+  if (Object.keys(data).length) data.isFleet = true;
   return data;
+}
+
+/** Pickup and delivery points of a load (exact coordinates, else the city or state center). */
+export function loadEnds(load) {
+  return {
+    from: pointFor(load.originCity, load.originState, load.originLat, load.originLng),
+    to: pointFor(load.destCity, load.destState, load.destLat, load.destLng),
+  };
+}
+
+/**
+ * True when both ends are real places: exact coordinates or a known city. A stop known only by its state (a load typed
+ * on the Loads page with a city outside the built-in table) would be routed from the state's center point, which gives
+ * made-up road miles and ETAs and false off-route alerts once the truck moves, so such loads get no road route.
+ */
+export function routable(load) {
+  const { from, to } = loadEnds(load);
+  return !!from && !!to && from.precision !== 'state' && to.precision !== 'state';
+}
+
+// First and last point of stored routes, memoized per load and route version (decoding a long route on every poll adds up).
+const endsMemo = new Map();
+const ENDS_MEMO_MAX = 4000;
+function storedRouteEnds(load) {
+  const key = `${load.id}:${new Date(load.routeComputedAt).getTime()}:${load.routeGeometry.length}`;
+  if (endsMemo.has(key)) return endsMemo.get(key);
+  const pts = decodePolyline(load.routeGeometry);
+  const v = pts.length >= 2 ? { first: pts[0], last: pts[pts.length - 1] } : null;
+  if (endsMemo.size >= ENDS_MEMO_MAX) endsMemo.delete(endsMemo.keys().next().value);
+  endsMemo.set(key, v);
+  return v;
+}
+
+/** True when the stored road route still starts at the pickup and ends at the delivery. */
+export function routeIsCurrent(load) {
+  if (!load?.routeGeometry || !load.routeComputedAt) return false;
+  const { from, to } = loadEnds(load);
+  const ends = storedRouteEnds(load);
+  if (!ends || !from || !to) return false;
+  const near = (p, q) => Math.abs(p[0] - q.lng) < 2e-5 && Math.abs(p[1] - q.lat) < 2e-5;
+  return near(ends.first, from) && near(ends.last, to);
+}
+
+/** Route summary for API views (the geometry itself is served by /api/fleet/routes). */
+export function routeMeta(load) {
+  if (!load || load.routeGeometry === undefined) return null;
+  const current = routeIsCurrent(load);
+  return {
+    miles: current && load.routeMiles != null ? Math.round(load.routeMiles) : null,
+    minutes: current ? load.routeMinutes ?? null : null,
+    source: current ? load.routeSource || 'estimate' : null,
+    estimate: !current || load.routeSource !== 'osrm',
+    computedAt: current ? load.routeComputedAt : null,
+    current,
+    // No road route will come: a stop is known only by its state (the map keeps the straight line marked Estimate).
+    stateOnly: !current && !routable(load),
+  };
 }
 
 /** Shape a carrier row (with loads) for the fleet map. */
@@ -162,6 +222,13 @@ export function tripView(l) {
     rpmAllIn: miles ? Math.round(l.rateCents / miles) / 100 : null,
     broker: l.broker ? { id: l.broker.id, companyName: l.broker.companyName } : null,
     notes: l.notes,
+    pickupWindow: l.pickupWindowStart || l.pickupWindowEnd ? { start: l.pickupWindowStart ?? null, end: l.pickupWindowEnd ?? null, tz: l.pickupTz ?? null } : null,
+    deliveryWindow: l.deliveryWindowStart || l.deliveryWindowEnd ? { start: l.deliveryWindowStart ?? null, end: l.deliveryWindowEnd ?? null, tz: l.deliveryTz ?? null } : null,
+    pickupTz: l.pickupTz ?? null,
+    deliveryTz: l.deliveryTz ?? null,
+    freeTimeHours: l.freeTimeHours ?? 2,
+    lastCheckCallAt: l.lastCheckCallAt ?? null,
+    route: routeMeta(l),
   };
 }
 

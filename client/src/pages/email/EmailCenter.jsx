@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Mail, Plus, Trash2, RefreshCw, Send, X, Plug, FileText, ShieldOff, Pencil } from 'lucide-react';
+import { Mail, Plus, Trash2, RefreshCw, Send, X, Plug, FileText, ShieldOff, Pencil, Reply, Paperclip, Inbox, BookOpen } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -9,31 +9,59 @@ import { useToast } from '../../components/Toast.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { ComposeForm } from '../../components/email/ComposeModal.jsx';
 import { ConnectMailboxModal, ReconnectSmtpModal, ProviderMark, startOAuth, useConnectOptions } from '../../components/email/ConnectMailbox.jsx';
+import { ImapSettingsModal, imapSummary } from '../../components/email/ImapSettings.jsx';
+import { TEMPLATE_CATEGORIES, categoryMeta, usesLabel } from '../../components/templates/templateApi.js';
 import {
   Badge, Button, Card, DataTable, EmptyState, Field, Input, PageHeader, Pagination, QueryState, Select, StatCard, Switch, Tabs, Textarea,
 } from '../../components/ui.jsx';
 import { dateTime, label, relative } from '../../lib/format.js';
 
 const STATUS_COLOR = { sent: 'green', scheduled: 'blue', draft: 'gray', failed: 'red', canceled: 'gray', sending: 'amber' };
+const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`);
 
 function MessageView({ email, onClose }) {
+  const markReplied = useApiMutation(() => api.post(`/api/email/messages/${email.id}/replied`), {
+    invalidate: [['emails'], ['queue']],
+    success: (r) => (r.stopped ? 'Marked as replied. The carrier\'s sequence was stopped.' : 'Marked as replied'),
+    onSuccess: onClose,
+  });
+  const attachments = Array.isArray(email?.attachments) ? email.attachments : [];
   return (
-    <Modal open={!!email} onClose={onClose} title={email?.subject || 'Email'} size="lg">
+    <Modal open={!!email} onClose={onClose} title={email?.subject || 'Email'} size="lg"
+      footer={email?.status === 'sent' && !email.repliedAt && (
+        <Button variant="secondary" icon={Reply} loading={markReplied.isPending} onClick={() => markReplied.mutate()}>Mark replied</Button>
+      )}>
       {email && (
         <div className="space-y-3 text-sm">
           <dl className="grid grid-cols-[90px_1fr] gap-x-3 gap-y-1 text-[13px]">
-            <dt className="text-muted">Status</dt><dd><Badge color={STATUS_COLOR[email.status]}>{label(email.status)}</Badge></dd>
-            <dt className="text-muted">To</dt><dd>{email.toEmail || '—'}</dd>
+            <dt className="text-muted">Status</dt>
+            <dd className="flex flex-wrap gap-1.5">
+              <Badge color={STATUS_COLOR[email.status]}>{label(email.status)}</Badge>
+              {email.repliedAt && <Badge color="violet">Replied</Badge>}
+              {email.bouncedAt && <Badge color="red">Bounced</Badge>}
+            </dd>
+            <dt className="text-muted">To</dt><dd className="break-all">{email.toEmail || '—'}</dd>
             <dt className="text-muted">From</dt><dd>{email.emailAccount?.label || 'Default mailbox'}</dd>
             {email.carrier && (<><dt className="text-muted">Carrier</dt><dd><Link className="text-brand-700 hover:underline dark:text-brand-300" to={`/app/carriers/${email.carrier.id}`}>{email.carrier.companyName}</Link></dd></>)}
             {email.broker && (<><dt className="text-muted">Broker</dt><dd><Link className="text-brand-700 hover:underline dark:text-brand-300" to={`/app/brokers/${email.broker.id}`}>{email.broker.companyName}</Link></dd></>)}
             {email.sentAt && (<><dt className="text-muted">Sent</dt><dd>{dateTime(email.sentAt)}</dd></>)}
+            {email.repliedAt && (<><dt className="text-muted">Replied</dt><dd>{dateTime(email.repliedAt)}</dd></>)}
+            {email.bouncedAt && (<><dt className="text-muted">Bounced</dt><dd>{dateTime(email.bouncedAt)}{email.bounceReason ? ` · ${email.bounceReason}` : ''}</dd></>)}
             {email.status === 'scheduled' && (<><dt className="text-muted">Sends</dt><dd>{dateTime(email.nextAttemptAt || email.scheduledAt)}</dd></>)}
             {email.attempts > 0 && (<><dt className="text-muted">Attempts</dt><dd>{email.attempts}</dd></>)}
             {email.providerMessageId && (<><dt className="text-muted">Provider id</dt><dd className="break-all font-mono text-xs">{email.providerMessageId}</dd></>)}
           </dl>
-          {email.error && <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">{email.error}</p>}
-          <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-2/50 p-3 font-sans text-sm">{email.body}</pre>
+          {email.error && <p className="rounded-md border border-c-red/30 bg-c-red-soft px-3 py-2 text-[13px] text-c-red">{email.error}</p>}
+          {attachments.length > 0 && (
+            <ul className="flex flex-wrap gap-1.5" aria-label="Attachments">
+              {attachments.map((a) => (
+                <li key={a.documentId} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2 py-1 text-xs">
+                  <Paperclip className="size-3.5 shrink-0 text-muted" /><span className="truncate">{a.name}</span><span className="shrink-0 text-muted">{kb(a.size)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface-2/50 p-3 font-sans text-sm">{email.body}</pre>
         </div>
       )}
     </Modal>
@@ -72,15 +100,16 @@ function DraftEditor({ draft, onClose }) {
   );
 }
 
-function MessageList({ status }) {
+function MessageList({ status, filter }) {
   const [page, setPage] = useState(1);
   const [q, setQ] = useState('');
   const [view, setView] = useState(null);
   const [edit, setEdit] = useState(null);
   const confirm = useConfirm();
   const toast = useToast();
-  useEffect(() => setPage(1), [status, q]);
-  const query = useQuery({ queryKey: ['emails', status, page, q], queryFn: () => api.get('/api/email/messages', { status, page, q, pageSize: 25 }) });
+  useEffect(() => setPage(1), [status, filter, q]);
+  // The search box refetches on every keystroke: the signal cancels the request a newer one replaces.
+  const query = useQuery({ queryKey: ['emails', status, filter, page, q], queryFn: ({ signal }) => api.get('/api/email/messages', { status, filter, page, q, pageSize: 25 }, { signal }) });
   const cancel = useApiMutation((id) => api.post(`/api/email/messages/${id}/cancel`), { invalidate: [['emails'], ['email', 'status']], success: 'Scheduled email canceled' });
   const remove = useApiMutation((id) => api.del(`/api/email/messages/${id}`), { invalidate: [['emails']], success: 'Deleted' });
   const retry = useApiMutation((id) => api.post(`/api/email/messages/${id}/send`), {
@@ -92,8 +121,20 @@ function MessageList({ status }) {
     { key: 'toEmail', header: 'To', render: (m) => <span className="font-medium">{m.toEmail || <span className="text-muted">No recipient</span>}</span> },
     { key: 'subject', header: 'Subject', render: (m) => <span className="line-clamp-1 max-w-[340px]">{m.subject || <span className="text-muted">(no subject)</span>}</span> },
     { key: 'about', header: 'Regarding', render: (m) => m.carrier?.companyName || m.broker?.companyName || '—' },
-    { key: 'when', header: status === 'scheduled' ? 'Sends' : status === 'sent' ? 'Sent' : 'Updated', render: (m) => <span className="whitespace-nowrap text-muted">{status === 'scheduled' ? dateTime(m.nextAttemptAt || m.scheduledAt) : status === 'sent' ? dateTime(m.sentAt) : relative(m.updatedAt)}</span> },
-    { key: 'status', header: 'Status', render: (m) => <Badge color={STATUS_COLOR[m.status]}>{label(m.status)}{m.aiGenerated ? ' · AI' : ''}</Badge> },
+    {
+      key: 'when', header: filter === 'replied' ? 'Replied' : status === 'scheduled' ? 'Sends' : status === 'sent' ? 'Sent' : 'Updated',
+      render: (m) => <span className="whitespace-nowrap text-muted">{filter === 'replied' ? dateTime(m.repliedAt) : status === 'scheduled' ? dateTime(m.nextAttemptAt || m.scheduledAt) : status === 'sent' ? dateTime(m.sentAt) : relative(m.updatedAt)}</span>,
+    },
+    {
+      key: 'status', header: 'Status', render: (m) => (
+        <span className="flex flex-wrap gap-1">
+          <Badge color={STATUS_COLOR[m.status]}>{label(m.status)}{m.aiGenerated ? ' · AI' : ''}</Badge>
+          {m.repliedAt && <Badge color="violet">Replied</Badge>}
+          {m.bouncedAt && <Badge color="red">Bounced</Badge>}
+          {m.attachments?.length > 0 && <Badge><Paperclip className="mr-0.5 inline size-3" aria-hidden />{m.attachments.length}<span className="sr-only"> attachments</span></Badge>}
+        </span>
+      ),
+    },
     {
       key: 'actions', header: '', className: 'text-right', render: (m) => (
         <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
@@ -114,7 +155,9 @@ function MessageList({ status }) {
         {(data) => (
           <>
             <DataTable columns={columns} rows={data.items} onRowClick={setView}
-              empty={<EmptyState icon={Mail} title={`No ${status} emails`}>{status === 'failed' ? 'Emails the provider rejected show up here with the reason.' : null}</EmptyState>} />
+              empty={filter === 'replied'
+                ? <EmptyState icon={Inbox} title="No replies yet">Replies show up here when reply detection is on for a mailbox (Mailboxes tab), or when you mark a sent email as replied.</EmptyState>
+                : <EmptyState icon={Mail} title={`No ${status} emails`}>{status === 'failed' ? 'Emails the provider rejected show up here with the reason.' : null}</EmptyState>} />
             <div className="px-3"><Pagination page={data.page} pages={data.pages} total={data.total} onPage={setPage} /></div>
           </>
         )}
@@ -134,23 +177,55 @@ function Templates() {
     invalidate: [['email', 'templates']], success: 'Template saved', onSuccess: () => setEditing(null),
   });
   const remove = useApiMutation((id) => api.del(`/api/email/templates/${id}`), { invalidate: [['email', 'templates']], success: 'Template deleted' });
+  const subjectRef = useRef(null);
   const bodyRef = useRef(null);
+  const lastField = useRef('body'); // merge fields go into the subject or the body, whichever was focused last
+  const startNew = () => { lastField.current = 'body'; setEditing({ name: '', subject: '', body: '', category: 'carrier' }); };
+  const openTemplate = (t) => { lastField.current = 'body'; setEditing(t); };
   const insert = (token) => {
-    const el = bodyRef.current;
-    const v = editing.body || '';
-    const pos = el ? el.selectionStart : v.length;
-    setEditing({ ...editing, body: `${v.slice(0, pos)}{{${token}}}${v.slice(pos)}` });
+    const key = lastField.current === 'subject' ? 'subject' : 'body';
+    const el = key === 'subject' ? subjectRef.current : bodyRef.current;
+    const v = editing[key] || '';
+    const start = el && typeof el.selectionStart === 'number' ? el.selectionStart : v.length;
+    const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+    const text = `{{${token}}}`;
+    setEditing({ ...editing, [key]: `${v.slice(0, start)}${text}${v.slice(end)}` });
+    // Put the cursor back right after the inserted field so several can be added in a row.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange?.(start + text.length, start + text.length);
+    });
   };
+  const usedAt = (t) => `${usesLabel(t.useCount)}${t.lastUsedAt ? `, last ${relative(t.lastUsedAt)}` : ''}`;
   return (
-    <Card title="Templates" actions={<Button size="sm" icon={Plus} onClick={() => setEditing({ name: '', subject: '', body: '', category: 'carrier' })}>New template</Button>} bodyClass="p-0">
+    <Card title="Templates" bodyClass="p-0" actions={(
+      <>
+        {/* Icon only on phones, so the header fits next to "New template" at 375 px. */}
+        <Button size="sm" variant="ghost" icon={BookOpen} to="/app/templates" aria-label="Template library" title="Template library">
+          <span className="hidden sm:inline">Template library</span>
+        </Button>
+        <Button size="sm" icon={Plus} onClick={startNew}>New template</Button>
+      </>
+    )}>
       <QueryState query={q} isEmpty={(d) => !d.items.length}
-        empty={<EmptyState icon={FileText} title="No templates yet" action={<Button size="sm" icon={Plus} onClick={() => setEditing({ name: '', subject: '', body: '', category: 'carrier' })}>Create your first template</Button>}>Reusable emails with merge fields such as {'{{company}}'} and {'{{first_name}}'}.</EmptyState>}>
+        empty={(
+          <EmptyState icon={FileText} title="No templates yet" action={(
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button size="sm" icon={Plus} onClick={startNew}>Create your first template</Button>
+              <Button size="sm" variant="secondary" to="/app/templates">Browse starter templates</Button>
+            </div>
+          )}>
+            Reusable emails with merge fields such as {'{{company}}'} and {'{{first_name}}'}. The template library also has text message templates.
+          </EmptyState>
+        )}>
         {(d) => (
-          <DataTable rows={d.items} onRowClick={(t) => setEditing(t)} columns={[
+          <DataTable rows={d.items} onRowClick={openTemplate} columns={[
             { key: 'name', header: 'Name', render: (t) => <span className="font-medium">{t.name}</span> },
-            { key: 'category', header: 'Category', render: (t) => <Badge>{label(t.category)}</Badge> },
+            { key: 'category', header: 'Category', render: (t) => { const c = categoryMeta(t.category); return <Badge color={c.color}>{c.label}</Badge>; } },
             { key: 'subject', header: 'Subject', render: (t) => <span className="line-clamp-1 max-w-sm">{t.subject}</span> },
-            { key: 'updatedAt', header: 'Updated', render: (t) => <span className="text-muted">{relative(t.updatedAt)}</span> },
+            // Not updatedAt: picking a template counts a use, which also moves updatedAt.
+            { key: 'used', header: 'Used', render: (t) => <span className="whitespace-nowrap text-muted">{usedAt(t)}</span> },
             { key: 'x', header: '', className: 'text-right', render: (t) => (
               <Button size="sm" variant="ghost" icon={Trash2} aria-label="Delete template" onClick={async (e) => { e.stopPropagation(); if (await confirm({ title: `Delete "${t.name}"?`, message: 'Sequence steps using it will keep working only if they have their own text.', danger: true })) remove.mutate(t.id); }} />
             ) },
@@ -165,17 +240,21 @@ function Templates() {
               <Field label="Name" required><Input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
               <Field label="Category">
                 <Select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
-                  {['carrier', 'broker', 'follow_up', 'other'].map((c) => <option key={c} value={c}>{label(c)}</option>)}
+                  {TEMPLATE_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </Select>
               </Field>
             </div>
-            <Field label="Subject" required><Input value={editing.subject} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} /></Field>
-            <Field label="Body" required><Textarea ref={bodyRef} rows={12} value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} /></Field>
+            <Field label="Subject" required>
+              <Input ref={subjectRef} value={editing.subject} onFocus={() => { lastField.current = 'subject'; }} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} />
+            </Field>
+            <Field label="Body" required>
+              <Textarea ref={bodyRef} rows={12} value={editing.body} onFocus={() => { lastField.current = 'body'; }} onChange={(e) => setEditing({ ...editing, body: e.target.value })} />
+            </Field>
             <div>
-              <p className="mb-1.5 text-xs text-muted">Insert merge field at cursor:</p>
+              <p className="mb-1.5 text-xs text-muted">Insert a merge field at the cursor in the subject or body:</p>
               <div className="flex flex-wrap gap-1.5">
                 {Object.entries(fields.data?.fields || {}).map(([k, desc]) => (
-                  <button key={k} type="button" title={desc} onClick={() => insert(k)} className="rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[11.5px] hover:border-brand-400">{`{{${k}}}`}</button>
+                  <button key={k} type="button" title={desc} aria-label={`Insert ${desc}`} onClick={() => insert(k)} className="max-w-full truncate rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[11.5px] hover:border-brand-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/30">{`{{${k}}}`}</button>
                 ))}
               </div>
             </div>
@@ -199,6 +278,7 @@ function Mailboxes() {
   const [connect, setConnect] = useState(null); // null | { start }
   const [limits, setLimits] = useState(null);
   const [reconnect, setReconnect] = useState(null);
+  const [imapFor, setImapFor] = useState(null); // mailbox id whose reply-detection settings are open
   const accounts = useQuery({ queryKey: ['email', 'accounts'], queryFn: () => api.get('/api/email/accounts') });
   const options = useConnectOptions();
   const inv = [['email', 'accounts'], ['email', 'status']];
@@ -262,6 +342,13 @@ function Mailboxes() {
                   <div><dt className="text-muted">Between sends</dt><dd className="mt-0.5 text-sm font-medium tabular">{a.cooldownSeconds}s</dd></div>
                   <div><dt className="text-muted">Last send</dt><dd className="mt-0.5 text-sm font-medium">{a.lastSentAt ? relative(a.lastSentAt) : 'Never'}</dd></div>
                 </dl>
+                {a.status !== 'disconnected' && (
+                  <div className="mt-3 flex items-center gap-2 rounded-lg border border-line px-3 py-2">
+                    <Inbox aria-hidden className={`size-4 shrink-0 ${a.imapEnabled ? (a.imapError ? 'text-c-red' : 'text-c-green') : 'text-muted'}`} />
+                    <span className={`min-w-0 flex-1 truncate text-xs ${a.imapError && a.imapEnabled ? 'text-c-red' : 'text-fg-2'}`}>{imapSummary(a)}</span>
+                    <Button size="sm" variant="ghost" onClick={() => setImapFor(a.id)}>{a.imapEnabled ? 'Settings' : a.imapSupported ? 'Set up' : 'Why'}</Button>
+                  </div>
+                )}
                 <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3">
                   {a.status === 'connected' ? (
                     <Switch checked={a.isDefault} disabled={a.isDefault || patch.isPending} onChange={() => patch.mutate({ id: a.id, isDefault: true })}
@@ -285,6 +372,7 @@ function Mailboxes() {
 
       <ConnectMailboxModal open={!!connect} start={connect?.start} onClose={() => setConnect(null)} />
       {reconnect && <ReconnectSmtpModal account={reconnect} onClose={() => setReconnect(null)} />}
+      <ImapSettingsModal account={imapFor ? accounts.data?.items.find((x) => x.id === imapFor) || null : null} onClose={() => setImapFor(null)} />
       <Modal open={!!limits} onClose={() => setLimits(null)} title="Sending limits" size="sm"
         footer={<Button loading={patch.isPending} onClick={() => patch.mutate({ id: limits.id, label: limits.label, dailyLimit: Number(limits.dailyLimit), cooldownSeconds: Number(limits.cooldownSeconds) })}>Save</Button>}>
         {limits && (
@@ -303,19 +391,21 @@ function Suppressions() {
   const [page, setPage] = useState(1);
   const [q, setQ] = useState('');
   const [email, setEmail] = useState('');
-  const query = useQuery({ queryKey: ['email', 'suppressions', page, q], queryFn: () => api.get('/api/email/suppressions', { page, q }) });
+  const query = useQuery({ queryKey: ['email', 'suppressions', page, q], queryFn: ({ signal }) => api.get('/api/email/suppressions', { page, q }, { signal }) });
   const add = useApiMutation((v) => api.post('/api/email/suppressions', v), { invalidate: [['email', 'suppressions']], success: 'Added to do-not-email list', onSuccess: () => setEmail('') });
   const remove = useApiMutation((id) => api.del(`/api/email/suppressions/${id}`), { invalidate: [['email', 'suppressions']], success: (r) => r.note });
   return (
-    <Card title="Do-not-email list" bodyClass="p-0" actions={
-      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); add.mutate({ email }); }}>
-        <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@company.com" className="w-56" aria-label="Email to suppress" />
-        <Button type="submit" size="md" icon={Plus} loading={add.isPending}>Add</Button>
-      </form>
-    }>
-      <div className="border-b border-line px-4 py-2.5">
+    <Card title="Do-not-email list" bodyClass="p-0">
+      {/* The add form sits in the body, not the header, so it can wrap on a phone. */}
+      <div className="space-y-2 border-b border-line px-4 py-2.5">
         <p className="text-xs text-muted">Addresses here are never emailed — manually added, unsubscribed through your email footer, or bounced. Scheduled emails to them are canceled.</p>
-        <Input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} placeholder="Search" className="mt-2 max-w-xs" aria-label="Search suppressed emails" />
+        <div className="flex flex-wrap items-center gap-2">
+          <form className="flex min-w-0 flex-1 gap-2 sm:flex-none" onSubmit={(e) => { e.preventDefault(); add.mutate({ email }); }}>
+            <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@company.com" className="min-w-0 flex-1 sm:w-56 sm:flex-none" aria-label="Email to suppress" />
+            <Button type="submit" size="md" icon={Plus} loading={add.isPending}>Add</Button>
+          </form>
+          <Input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} placeholder="Search" className="w-full sm:ml-auto sm:max-w-xs" aria-label="Search suppressed emails" />
+        </div>
       </div>
       <QueryState query={query}>
         {(d) => (
@@ -346,7 +436,7 @@ function Signature() {
   );
 }
 
-const TABS = ['compose', 'sent', 'scheduled', 'drafts', 'failed', 'templates', 'mailboxes', 'suppression', 'signature'];
+const TABS = ['compose', 'sent', 'replies', 'scheduled', 'drafts', 'failed', 'templates', 'mailboxes', 'suppression', 'signature'];
 
 export default function EmailCenter() {
   const [params, setParams] = useSearchParams();
@@ -377,6 +467,7 @@ export default function EmailCenter() {
       <Tabs className="mb-4" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ value: t, label: label(t) }))} />
       {tab === 'compose' && <Card title="New email"><ComposeForm /></Card>}
       {tab === 'sent' && <MessageList status="sent" />}
+      {tab === 'replies' && <MessageList status="sent" filter="replied" />}
       {tab === 'scheduled' && <MessageList status="scheduled" />}
       {tab === 'drafts' && <MessageList status="draft" />}
       {tab === 'failed' && <MessageList status="failed" />}

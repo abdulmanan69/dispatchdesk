@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { prisma } from '../db.js';
@@ -7,10 +6,14 @@ import { ah, badRequest, forbidden, notFound, conflict } from '../lib/errors.js'
 import { parse, z, pageQuery, paginate, pageResult, optStr, optInt, clean } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
 import { requirePermission, invalidateUserSessions } from '../middleware/auth.js';
+import { hashPassword } from '../middleware/passwordHash.js';
+import { invalidatePlans } from '../lib/plans.js';
+import { LockBusyError } from '../lib/locks.js';
 import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
-import { deleteUserFiles } from './settings.js';
+import { assertAccountDeletable, deleteAccount } from './settings.js';
+import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
 import { config } from '../config.js';
 
 const r = Router();
@@ -129,7 +132,11 @@ r.patch('/users/:id', requirePermission('admin.users'), ah(async (req, res) => {
   if (body.emailVerified !== undefined) data.emailVerifiedAt = body.emailVerified ? (target.emailVerifiedAt || new Date()) : null;
   const user = await prisma.user.update({ where: { id: target.id }, data, include: { role: true } });
   invalidateUserSessions(target.id);
-  if (body.status === 'suspended') await prisma.session.deleteMany({ where: { userId: target.id } });
+  if (body.status === 'suspended') {
+    await prisma.session.deleteMany({ where: { userId: target.id } });
+    // Public tracking pages are cached for a minute per process; drop them so the account's links stop at once.
+    invalidateLoadTrack();
+  }
   await audit(req, 'admin.user_updated', { entityType: 'user', entityId: target.id, details: body });
   res.json({ user: { id: user.id, role: user.role.key, status: user.status, emailVerified: !!user.emailVerifiedAt } });
 }));
@@ -143,7 +150,7 @@ r.post('/users/:id/temp-password', requirePermission('admin.users'), ah(async (r
   if (!target) throw notFound('User not found');
   if (ADMIN_ROLES.includes(target.role.key) && target.id !== req.user.id && !req.permissions.has('admin.roles')) throw forbidden('Only a super admin can reset administrator accounts');
   const password = `Tmp-${randomBytes(9).toString('base64url')}7`;
-  await prisma.user.update({ where: { id: target.id }, data: { passwordHash: await bcrypt.hash(password, 12) } });
+  await prisma.user.update({ where: { id: target.id }, data: { passwordHash: await hashPassword(password) } });
   await prisma.session.deleteMany({ where: { userId: target.id } });
   invalidateUserSessions(target.id);
   await audit(req, 'admin.user_temp_password', { entityType: 'user', entityId: target.id });
@@ -155,18 +162,14 @@ r.delete('/users/:id', requirePermission('admin.users'), ah(async (req, res) => 
   if (!target) throw notFound('User not found');
   if (target.id === req.user.id) throw forbidden('Use Settings → Data to delete your own account');
   if (ADMIN_ROLES.includes(target.role.key) && !req.permissions.has('admin.roles')) throw forbidden('Only a super admin can delete administrator accounts');
-  if (target.teamMembership?.role === 'owner') {
-    const others = await prisma.teamMember.count({ where: { teamId: target.teamMembership.teamId, NOT: { userId: target.id } } });
-    if (others) throw conflict('This user owns a team with other members. Transfer ownership first.');
-    await prisma.team.delete({ where: { id: target.teamMembership.teamId } });
+  // Every check runs before anything is deleted. Only Stripe subscriptions block; admin-granted plans end with the account.
+  await assertAccountDeletable(target, { self: false });
+  try {
+    await deleteAccount(target);
+  } catch (err) {
+    if (err instanceof LockBusyError) throw conflict('This account is already being deleted.');
+    throw err;
   }
-  const live = await prisma.subscription.count({ where: { userId: target.id, status: { in: ['active', 'trialing', 'past_due'] } } });
-  if (live) throw conflict('This user has a live Stripe subscription. Cancel it in Stripe first.');
-  await prisma.team.deleteMany({ where: { ownerId: target.id } });
-  await deleteUserFiles(target.id);
-  await prisma.systemSetting.deleteMany({ where: { key: { startsWith: `user.${target.id}.` } } }); // per-user settings (e.g. spot rates)
-  await prisma.user.delete({ where: { id: target.id } });
-  invalidateUserSessions(target.id);
   await audit(req, 'admin.user_deleted', { entityType: 'user', entityId: target.id, details: { email: target.email } });
   res.json({ ok: true });
 }));
@@ -215,6 +218,7 @@ r.post('/subscriptions/grant', requirePermission('admin.billing'), ah(async (req
   const sub = existing
     ? await prisma.subscription.update({ where: { id: existing.id }, data })
     : await prisma.subscription.create({ data: { ...data, userId: user.id } });
+  invalidatePlans();
   await audit(req, 'admin.plan_granted', { entityType: 'subscription', entityId: sub.id, details: { userId: user.id, plan: plan.key, months: body.months ?? null, seats } });
   res.status(existing ? 200 : 201).json({ subscription: { id: sub.id, planKey: plan.key, status: sub.status, currentPeriodEnd: sub.currentPeriodEnd, seats } });
 }));
@@ -224,6 +228,7 @@ r.post('/subscriptions/:id/revoke', requirePermission('admin.billing'), ah(async
   if (!sub) throw notFound('Subscription not found');
   if (sub.stripeSubscriptionId) throw badRequest('This plan is paid through Stripe. Cancel it in Stripe or from their billing page.');
   await prisma.subscription.update({ where: { id: sub.id }, data: { status: 'canceled', currentPeriodEnd: new Date() } });
+  invalidatePlans();
   await audit(req, 'admin.plan_revoked', { entityType: 'subscription', entityId: sub.id });
   res.json({ ok: true });
 }));
@@ -259,6 +264,7 @@ r.patch('/plans/:id', requirePermission('admin.billing', 'admin.settings'), ah(a
   for (const k of Object.keys(data)) if (data[k] === null && k !== 'description' && k !== 'stripePriceId') delete data[k];
   if (data.stripePriceId && !/^price_[A-Za-z0-9]+$/.test(data.stripePriceId)) throw badRequest('Stripe price IDs look like price_123…');
   const updated = await prisma.plan.update({ where: { id: plan.id }, data });
+  invalidatePlans();
   await audit(req, 'admin.plan_updated', { entityType: 'plan', entityId: String(plan.id), details: data });
   res.json({ plan: updated, note: 'Price changes here update what the app displays. Stripe charges the amount of the linked Stripe price — create a new Stripe price and link it to change what customers pay.' });
 }));
@@ -277,22 +283,25 @@ r.get('/reports', requirePermission('admin.moderate'), ah(async (req, res) => {
         resolvedBy: { select: { name: true } },
         listing: { select: { id: true, title: true, description: true, status: true, seller: { select: { id: true, name: true } } } },
         post: { select: { id: true, title: true, body: true, status: true, author: { select: { id: true, name: true } } } },
-        comment: { select: { id: true, body: true, status: true, postId: true, author: { select: { id: true, name: true } } } },
+        comment: { select: { id: true, body: true, status: true, postId: true, author: { select: { id: true, name: true } }, post: { select: { title: true } } } },
       },
     }),
     prisma.contentReport.count({ where }),
   ]);
   res.json(pageResult(rows.map((x) => {
-    const kind = x.listing ? 'listing' : x.post ? 'post' : x.comment ? 'comment' : 'deleted';
-    const t = x.listing || x.post || x.comment;
+    // A comment report also stores its post (for the link): the comment is the reported content, so check it first.
+    const isComment = !!x.commentId;
+    const kind = isComment ? (x.comment ? 'comment' : 'deleted') : x.listing ? 'listing' : x.post ? 'post' : 'deleted';
+    const t = isComment ? x.comment : x.listing || x.post;
     return {
       id: x.id, reason: x.reason, details: x.details, status: x.status, createdAt: x.createdAt, resolvedAt: x.resolvedAt, resolvedBy: x.resolvedBy?.name,
       reporter: x.reporter, kind,
       target: t ? {
-        id: t.id, status: t.status, title: x.listing?.title || x.post?.title || null,
-        excerpt: String(x.listing?.description || x.post?.body || x.comment?.body || '').slice(0, 280),
-        author: (x.listing?.seller || x.post?.author || x.comment?.author) ?? null,
-        link: x.listing ? `/marketplace/${t.id}` : x.post ? `/community/${t.id}` : `/community/${x.comment.postId}`,
+        id: t.id, status: t.status, title: isComment ? null : x.listing?.title || x.post?.title || null,
+        context: isComment && x.comment.post?.title ? `Comment on "${x.comment.post.title}"` : null,
+        excerpt: String(isComment ? x.comment.body : x.listing?.description || x.post?.body || '').slice(0, 280),
+        author: (isComment ? x.comment.author : x.listing?.seller || x.post?.author) ?? null,
+        link: isComment ? `/community/${x.comment.postId}#c-${x.comment.id}` : x.listing ? `/marketplace/${t.id}` : `/community/${t.id}`,
       } : null,
     };
   }), total, q));
@@ -305,11 +314,12 @@ r.post('/reports/:id/resolve', requirePermission('admin.moderate'), ah(async (re
   if (action !== 'dismiss') {
     const status = action === 'hide_content' ? 'hidden' : action === 'remove_content' ? 'removed' : null;
     const s = (published) => status ?? published;
-    if (report.listingId) await prisma.marketplaceListing.update({ where: { id: report.listingId }, data: { status: s('active') } });
+    // Comment reports also carry the post id: act on the comment only, never on the whole post.
+    if (report.commentId) await prisma.communityComment.update({ where: { id: report.commentId }, data: { status: s('published') } });
+    else if (report.listingId) await prisma.marketplaceListing.update({ where: { id: report.listingId }, data: { status: s('active') } });
     else if (report.postId) await prisma.communityPost.update({ where: { id: report.postId }, data: { status: s('published') } });
-    else if (report.commentId) await prisma.communityComment.update({ where: { id: report.commentId }, data: { status: s('published') } });
-    // Close every other open report on the same content.
-    const same = report.listingId ? { listingId: report.listingId } : report.postId ? { postId: report.postId } : { commentId: report.commentId };
+    // Close every other open report on the same content (for a post: post reports only, not reports on its comments).
+    const same = report.commentId ? { commentId: report.commentId } : report.listingId ? { listingId: report.listingId } : { postId: report.postId, commentId: null };
     if (action !== 'restore_content') await prisma.contentReport.updateMany({ where: { ...same, status: 'open' }, data: { status: 'resolved', resolvedById: req.user.id, resolvedAt: new Date() } });
   }
   const updated = await prisma.contentReport.update({
@@ -335,22 +345,28 @@ r.get('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
 
 r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
   const body = parse(z.object({ values: z.record(z.string(), z.union([z.string().max(4000), z.boolean(), z.number()])).default({}), clear: z.array(z.string()).default([]) }), req.body);
-  const changed = [];
+  // Validate every value first, so one bad field never leaves a group half saved.
+  const writes = [];
   for (const [key, raw] of Object.entries(body.values)) {
     const def = SETTING_DEFS[key];
     if (!def) throw badRequest(`Unknown setting ${key}`);
-    let value = typeof raw === 'string' ? raw.trim() : String(raw);
+    const value = typeof raw === 'string' ? raw.trim() : String(raw);
     if (def.secret && value === '') continue; // blank secret field = keep existing value
     if (def.type === 'bool' && !['true', 'false'].includes(value)) throw badRequest(`${key} must be true or false`);
     if (key === 'smtp.port' && !/^\d{1,5}$/.test(value)) throw badRequest('SMTP port must be a number');
+    // Empty = use PLATFORM_MAIL_DAILY_LIMIT or 300 (services/email/system.js).
+    if (key === 'smtp.dailyLimit' && value && !/^[1-9]\d{0,6}$/.test(value)) throw badRequest('Platform emails per day must be a whole number of at least 1');
     if ((key === 'ai.baseUrl') && value && !/^https?:\/\//.test(value)) throw badRequest('AI base URL must start with http(s)://');
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
-    await setSetting(key, value, req.user.id);
-    changed.push(key);
+    writes.push([key, value]);
   }
   for (const key of body.clear) {
     if (!SETTING_DEFS[key]) throw badRequest(`Unknown setting ${key}`);
-    await setSetting(key, '', req.user.id);
+    writes.push([key, '']);
+  }
+  const changed = [];
+  for (const [key, value] of writes) {
+    await setSetting(key, value, req.user.id);
     changed.push(key);
   }
   await audit(req, 'admin.settings_updated', { details: { keys: changed } }); // values are never logged

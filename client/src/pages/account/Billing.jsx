@@ -12,14 +12,23 @@ import PlanCard from '../../components/billing/PlanCard.jsx';
 
 const STATUS_COLOR = { active: 'green', trialing: 'blue', past_due: 'amber', incomplete: 'amber', unpaid: 'red', canceled: 'gray' };
 
-function Meter({ label: name, used, limit }) {
+const count = (v) => v.toLocaleString('en-US');
+/** Bytes as KB / MB / GB (storage meter). */
+function storageText(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(v >= 10 * 1024 ** 3 ? 0 : 1).replace(/\.0$/, '')} GB`;
+  if (v >= 1024 ** 2) return `${(v / 1024 ** 2).toFixed(v >= 10 * 1024 ** 2 ? 0 : 1).replace(/\.0$/, '')} MB`;
+  return `${Math.ceil(v / 1024)} KB`;
+}
+
+function Meter({ label: name, used, limit, format = count }) {
   const unlimited = limit < 0;
   const ratio = unlimited || !limit ? 0 : Math.min(1, used / limit);
   return (
     <div>
-      <div className="flex justify-between text-sm">
-        <span>{name}</span>
-        <span className="tabular text-muted">{used.toLocaleString('en-US')} / {unlimited ? '∞' : limit.toLocaleString('en-US')}</span>
+      <div className="flex justify-between gap-3 text-sm">
+        <span className="min-w-0">{name}</span>
+        <span className="tabular shrink-0 text-muted">{format(used)} / {unlimited ? '∞' : format(limit)}</span>
       </div>
       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-label={name} aria-valuenow={used} aria-valuemin={0} aria-valuemax={unlimited ? undefined : limit}>
         <div className={cx('h-full rounded-full', ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.7 ? 'bg-signal-500' : 'bg-brand-500')} style={{ width: `${ratio * 100}%` }} />
@@ -87,7 +96,7 @@ export default function Billing() {
       {checkout === 'success' && (
         <div className={cx('flex items-start gap-2 rounded-lg border px-4 py-3 text-sm', activated ? 'border-green-200 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-950/40 dark:text-green-200' : 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200')}>
           <Info className="mt-0.5 size-4 shrink-0" />
-          <div className="flex-1">{activated ? 'Your subscription is active. Thank you!' : polls >= 10 ? 'Stripe has not confirmed the subscription yet. It activates automatically as soon as Stripe sends confirmation — check back in a few minutes.' : 'Checkout finished. Waiting for Stripe to confirm your subscription…'}</div>
+          <div className="flex-1">{activated ? 'Your subscription is active. Thank you.' : polls >= 10 ? 'Stripe has not confirmed the subscription yet. It activates automatically as soon as Stripe sends confirmation — check back in a few minutes.' : 'Checkout finished. Waiting for Stripe to confirm your subscription…'}</div>
           <button type="button" className="text-xs underline" onClick={() => setParams({})}>Dismiss</button>
         </div>
       )}
@@ -129,7 +138,7 @@ export default function Billing() {
           </div>
         </Card>
 
-        <Card title="Usage" className="lg:col-span-2" actions={<span className="text-xs text-muted">Resets daily / monthly where noted</span>}>
+        <Card title="Usage" className="lg:col-span-2" actions={<span className="text-xs text-muted">Daily and monthly limits reset at midnight in your time zone{user?.timezone ? ` (${user.timezone.split('/').pop().replace(/_/g, ' ')})` : ''}</span>}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Meter label="Carrier records" used={d.usage.carriers} limit={d.plan.limits.maxCarriers} />
             <Meter label="Emails sent today" used={d.usage.emailsToday} limit={d.plan.limits.dailyEmailLimit} />
@@ -139,7 +148,13 @@ export default function Billing() {
             <Meter label="Lead generator profiles" used={d.usage.leadGenerators} limit={d.plan.limits.maxLeadGenerators} />
             <Meter label="Sequences" used={d.usage.sequences} limit={d.plan.limits.maxSequences} />
             <Meter label="Automations" used={d.usage.automations} limit={d.plan.limits.maxAutomations} />
+            {d.storage && (
+              <Meter label={d.storage.scope === 'team' ? 'File storage (shared by your team)' : 'File storage'} used={d.storage.usedBytes} limit={d.storage.limitBytes} format={storageText} />
+            )}
           </div>
+          {d.storage && d.storage.limitBytes > 0 && d.storage.usedBytes / d.storage.limitBytes >= 0.9 && (
+            <p className="mt-3 text-xs text-muted">Storage is almost full. Documents, avatars, AI knowledge files and listing images all count. Delete files you no longer need, or upgrade for more space.</p>
+          )}
         </Card>
       </div>
 

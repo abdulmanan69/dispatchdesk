@@ -7,7 +7,9 @@ import { audit } from '../lib/audit.js';
 import { requirePermission } from '../middleware/auth.js';
 import { getSettings, setSetting } from '../lib/settings.js';
 import { OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
+import { platformMailStatus } from '../services/email/system.js';
 import { getStripe } from '../services/stripe.js';
+import { invalidatePlans } from '../lib/plans.js';
 import { listBackups, runBackup, backupPath } from '../services/backup.js';
 import { JOBS, jobStatuses, runJob } from '../jobs/maintenance.js';
 
@@ -17,14 +19,16 @@ import { JOBS, jobStatuses, runJob } from '../jobs/maintenance.js';
  */
 const r = Router();
 
-/** Webhook events the billing webhook (routes/billing.js) handles. Keep in sync with its switch statement. */
+/**
+ * Webhook events the billing webhook (routes/billing.js) handles. Keep in sync with its switch statement.
+ * invoice.payment_succeeded is not subscribed: it duplicates invoice.paid (the handler still accepts it from older endpoints).
+ */
 export const STRIPE_WEBHOOK_EVENTS = [
   'checkout.session.completed',
   'customer.subscription.created',
   'customer.subscription.updated',
   'customer.subscription.deleted',
   'invoice.paid',
-  'invoice.payment_succeeded',
   'invoice.payment_failed',
 ];
 
@@ -70,12 +74,18 @@ export async function buildChecklist(req) {
   // 2. Platform email
   const smtpReady = set('smtp.host') && set('smtp.from');
   const domain = mailDomain(s['smtp.from']);
+  // Today's platform mail use (UTC day, all processes): failing sends show here instead of only in the logs.
+  const mail = await platformMailStatus().catch(() => null);
+  const mailToday = mail && smtpReady
+    ? ` Today: ${mail.sent} of ${mail.limit} sent (${mail.reserve} kept for sign-in and reset mail)${mail.refused ? `, ${mail.refused} held back by the daily budget` : ''}${mail.failed ? `, ${mail.failed} failed${mail.lastError ? ` (last error: ${mail.lastError})` : ''}` : ''}.`
+    : '';
   items.push(item('platform_email', 'Platform email (verification, password reset, invites)',
-    smtpReady ? (set('smtp.user') && set('smtp.pass') ? 'done' : 'partial') : 'todo',
+    smtpReady ? (set('smtp.user') && set('smtp.pass') && !(mail?.failed && !mail?.sent) ? 'done' : 'partial') : 'todo',
     smtpReady
-      ? `Sending as ${s['smtp.from']} through ${s['smtp.host']}. Email verification is ${s['app.requireEmailVerification'] === 'true' ? 'required' : 'optional'} for new accounts.`
+      ? `Sending as ${s['smtp.from']} through ${s['smtp.host']}. Email verification is ${s['app.requireEmailVerification'] === 'true' ? 'required: unverified accounts can sign in and look around, but cannot make changes until they verify' : 'optional'}.${mailToday}`
       : 'Not configured. Accounts work, but verification, password-reset and team-invite emails cannot be sent (admins can set temporary passwords in Users).', {
       required: true,
+      mail,
       testService: 'smtp',
       settingsGroup: 'email',
       steps: [
@@ -362,6 +372,7 @@ r.post('/stripe/provision', requirePermission('admin.billing', 'admin.settings')
     };
   }
 
+  invalidatePlans(); // cached plans carry the Stripe price ids
   await audit(req, 'admin.stripe_provisioned', { details: { mode: report.mode, plans: report.plans.map((p) => `${p.plan}:${p.action}`), webhook: report.webhook?.action } });
   res.json(report);
 }));

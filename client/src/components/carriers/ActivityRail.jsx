@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronRight, Mail, MessageSquare, Phone, StickyNote, ArrowRightLeft, Activity as ActivityIcon } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { relative, dateTime } from '../../lib/format.js';
@@ -54,17 +54,27 @@ function LogMenu({ onCall, onEmail, onText, emailDisabled }) {
   );
 }
 
-/** Activity history for a carrier: counts, filter chips, the log menu and a paged timeline. */
+const PAGE = 15;
+const MAX_ITEMS = 150;
+
+/**
+ * Activity history for a carrier: counts, filter chips, the log menu and a timeline.
+ * "Show more" grows one request (the newest N items) instead of keeping a page list, so a refresh after logging a
+ * call is always a single request however far the user scrolled.
+ */
 export default function ActivityRail({ carrier, canWrite, onLogCall, onEmail, onText }) {
   const [type, setType] = useState('');
+  const [limit, setLimit] = useState(PAGE);
   const counts = carrier.activityCounts || { calls: carrier.calls?.length || 0, emails: carrier._count?.emails || 0, texts: 0 };
-  const q = useInfiniteQuery({
-    queryKey: ['carrier', carrier.id, 'activities', 'rail', type],
-    queryFn: ({ pageParam = 1 }) => api.get(`/api/carriers/${carrier.id}/activities`, { page: pageParam, pageSize: 15, ...(type ? { type } : {}) }),
-    getNextPageParam: (last) => (last.page < last.pages ? last.page + 1 : undefined),
-    initialPageParam: 1,
+  const q = useQuery({
+    queryKey: ['carrier', carrier.id, 'activities', 'rail', type, limit],
+    queryFn: ({ signal }) => api.get(`/api/carriers/${carrier.id}/activities`, { page: 1, pageSize: limit, ...(type ? { type } : {}) }, { signal }),
+    // While "Show more" loads, keep the items on screen; a different filter starts fresh.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey?.[4] === type ? keepPreviousData(prev) : undefined),
   });
-  const items = q.data?.pages.flatMap((p) => p.items) || [];
+  const items = q.data?.items || [];
+  const hasMore = !!q.data && q.data.total > items.length && limit < MAX_ITEMS;
+  const pickType = (v) => { setType(v); setLimit(PAGE); };
   return (
     <section className="rounded-xl border border-line bg-surface">
       <header className="flex flex-wrap items-baseline justify-between gap-2 px-4 pb-2 pt-3">
@@ -73,7 +83,7 @@ export default function ActivityRail({ carrier, canWrite, onLogCall, onEmail, on
       </header>
       <div className="flex flex-wrap gap-1.5 px-4 pb-3" role="tablist" aria-label="Activity type">
         {FILTERS.map((f) => (
-          <button key={f.value || 'all'} type="button" role="tab" aria-selected={type === f.value} onClick={() => setType(f.value)}
+          <button key={f.value || 'all'} type="button" role="tab" aria-selected={type === f.value} onClick={() => pickType(f.value)}
             className={cx('rounded-full border px-2.5 py-1 text-xs transition-ui', type === f.value ? 'border-fg bg-fg text-bg' : 'border-line text-fg-2 hover:bg-surface-2')}>
             {f.label}{f.count ? <span className="ml-1 tabular opacity-70">{counts[f.count]}</span> : null}
           </button>
@@ -99,7 +109,8 @@ export default function ActivityRail({ carrier, canWrite, onLogCall, onEmail, on
                 })}
               </ol>
             )}
-        {q.hasNextPage && <div className="border-t border-line p-2 text-center"><Button size="sm" variant="ghost" loading={q.isFetchingNextPage} onClick={() => q.fetchNextPage()}>Show more</Button></div>}
+        {hasMore && <div className="border-t border-line p-2 text-center"><Button size="sm" variant="ghost" loading={q.isPlaceholderData && q.isFetching} onClick={() => setLimit((n) => Math.min(MAX_ITEMS, n + PAGE))}>Show more</Button></div>}
+        {!hasMore && q.data && q.data.total > items.length && <p className="border-t border-line px-4 py-2 text-center text-xs text-muted">Showing the latest {items.length} of {q.data.total}.</p>}
       </div>
     </section>
   );

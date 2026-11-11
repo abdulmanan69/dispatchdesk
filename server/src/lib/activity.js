@@ -1,4 +1,5 @@
 import { prisma } from '../db.js';
+import { enqueuePush } from '../services/push.js';
 
 /**
  * Record an activity on the user's timeline (and the carrier's, when given).
@@ -18,6 +19,12 @@ export async function logActivity(user, { type, summary, carrierId = null, metad
   });
 }
 
+/**
+ * Create an in-app notification and queue a Web Push to the user's subscribed devices (when User.notifyPush is on).
+ * The push is fire-and-forget: it never delays or fails the caller (see services/push.js).
+ */
 export async function notify(userId, { type, title, body = null, link = null }, tx = prisma) {
-  return tx.notification.create({ data: { userId, type, title: title.slice(0, 200), body, link } });
+  const row = await tx.notification.create({ data: { userId, type, title: title.slice(0, 200), body, link } });
+  enqueuePush(row, { inTx: tx !== prisma });
+  return row;
 }

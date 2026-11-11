@@ -1,7 +1,7 @@
-import { forwardRef, useId, isValidElement, cloneElement } from 'react';
+import { Component, forwardRef, memo, useId, useMemo, isValidElement, cloneElement } from 'react';
 import { Link } from 'react-router';
-import { Loader2, AlertTriangle, Inbox, ChevronLeft, ChevronRight, ArrowUp, ArrowDown } from 'lucide-react';
-import { initials } from '../lib/format.js';
+import { Loader2, AlertTriangle, Inbox, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, RefreshCw } from 'lucide-react';
+import { initials, zoneClock } from '../lib/format.js';
 
 export const cx = (...c) => c.filter(Boolean).join(' ');
 
@@ -20,17 +20,29 @@ const BTN = {
 };
 const SIZES = { sm: 'h-8 px-3 text-[13px] gap-1.5', md: 'h-9 px-4 text-sm gap-2', lg: 'h-12 px-5 text-[15px] gap-2' };
 
-export const Button = forwardRef(function Button({ variant = 'primary', size = 'md', loading, icon: Icon, className, children, to, href, ...props }, ref) {
-  const cls = cx('inline-flex items-center justify-center rounded-lg font-medium whitespace-nowrap transition-ui active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:active:scale-100', BTN[variant], variant !== 'link' && SIZES[size], className);
+/**
+ * Button, or a link styled as one (`to` for in-app routes, `href` for others).
+ * While `loading`, the button is disabled whatever `disabled` says, so a second click or Enter cannot submit twice.
+ */
+export const Button = forwardRef(function Button({ variant = 'primary', size = 'md', loading, icon: Icon, className, children, to, href, disabled, type, onClick, ...props }, ref) {
+  const blocked = !!(loading || disabled);
+  const cls = cx('inline-flex items-center justify-center rounded-lg font-medium whitespace-nowrap transition-ui active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:active:scale-100', BTN[variant], variant !== 'link' && SIZES[size], (to || href) && blocked && 'pointer-events-none opacity-60', className);
   const inner = (
     <>
       {loading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : Icon ? <Icon className="size-4 shrink-0" aria-hidden /> : null}
       {children}
     </>
   );
-  if (to) return <Link ref={ref} to={to} className={cls} {...props}>{inner}</Link>;
-  if (href) return <a ref={ref} href={href} className={cls} {...props}>{inner}</a>;
-  return <button ref={ref} type={props.type || 'button'} className={cls} disabled={loading || props.disabled} {...props}>{inner}</button>;
+  if (to || href) {
+    const linkClick = (e) => { if (blocked) { e.preventDefault(); return; } onClick?.(e); };
+    const linkProps = { ...props, ref, className: cls, onClick: linkClick, 'aria-disabled': blocked || undefined, tabIndex: blocked ? -1 : props.tabIndex };
+    return to ? <Link to={to} {...linkProps}>{inner}</Link> : <a href={href} {...linkProps}>{inner}</a>;
+  }
+  return (
+    <button ref={ref} {...props} type={type || 'button'} className={cls} onClick={onClick} disabled={blocked} aria-busy={loading ? true : undefined}>
+      {inner}
+    </button>
+  );
 });
 
 export function IconButton({ icon: Icon, label, className, ...props }) {
@@ -68,10 +80,13 @@ export function Field({ label, hint, error, children, className, required }) {
   );
 }
 
+// Native checkbox drawn in the brand color (accent-color follows light and dark themes).
+const CHECK = 'dd-check size-4 shrink-0 cursor-pointer rounded accent-brand-600 disabled:cursor-not-allowed disabled:opacity-50';
+
 export function Checkbox({ label, className, ...props }) {
   return (
     <label className={cx('inline-flex cursor-pointer items-center gap-2 text-sm', className)}>
-      <input type="checkbox" className="dd-check" {...props} />
+      <input type="checkbox" className={CHECK} {...props} />
       {label}
     </label>
   );
@@ -102,8 +117,9 @@ const BADGE = {
   pink: 'bg-c-pink-soft text-c-pink border-c-pink/30',
   orange: 'bg-c-orange-soft text-c-orange border-c-orange/30',
 };
-export function Badge({ color = 'gray', children, className, style }) {
-  return <span style={style} className={cx('inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11.5px] font-medium leading-none whitespace-nowrap', BADGE[color], className)}>{children}</span>;
+/** Extra props (title, aria-label, ...) go to the <span>, so a badge can carry hover text or an accessible label. */
+export function Badge({ color = 'gray', children, className, style, ...rest }) {
+  return <span {...rest} style={style} className={cx('inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11.5px] font-medium leading-none whitespace-nowrap', BADGE[color], className)}>{children}</span>;
 }
 
 export function Card({ title, actions, children, className, bodyClass, footer }) {
@@ -155,12 +171,61 @@ export function ErrorState({ error, onRetry, title = 'Could not load this' }) {
   );
 }
 
-/** Standard query renderer: loading / error / content. */
-export function QueryState({ query, children, empty, isEmpty, loadingLabel }) {
+/** Small inline notice shown above data that is still on screen after a background refresh failed. */
+export function RefreshError({ query, className }) {
+  if (!query?.isRefetchError) return null;
+  return (
+    <div role="status" className={cx('mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-[13px] text-fg-2', className)}>
+      <AlertTriangle className="size-4 shrink-0 text-c-amber" aria-hidden />
+      <span className="min-w-0 flex-1">Couldn't refresh. Showing what was loaded before.</span>
+      <button type="button" onClick={() => query.refetch()} disabled={query.isFetching}
+        className="inline-flex items-center gap-1 font-medium text-fg hover:underline disabled:opacity-60">
+        <RefreshCw className={cx('size-3.5', query.isFetching && 'animate-spin')} aria-hidden />Retry
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Standard query renderer: loading / error / content.
+ * An error replaces the content only when nothing was loaded yet; when a background refetch fails, the loaded data
+ * stays on screen with a small notice (so polled pages and maps do not unmount).
+ */
+export function QueryState({ query, children, empty, isEmpty, loadingLabel, refreshNotice = true }) {
   if (query.isLoading) return <Loading label={loadingLabel} />;
-  if (query.isError) return <ErrorState error={query.error} onRetry={() => query.refetch()} />;
-  if (isEmpty && isEmpty(query.data)) return empty ?? <EmptyState title="Nothing here yet" />;
-  return children(query.data);
+  if (query.isError && query.data === undefined) return <ErrorState error={query.error} onRetry={() => query.refetch()} />;
+  if (query.data === undefined) return <Loading label={loadingLabel} />; // pending (not fetched yet)
+  const content = isEmpty && isEmpty(query.data) ? (empty ?? <EmptyState title="Nothing here yet" />) : children(query.data);
+  if (refreshNotice && query.isRefetchError) return <><RefreshError query={query} />{content}</>;
+  return content;
+}
+
+/**
+ * Error boundary for one part of a page (a chart, a lazily loaded panel), so a crash there leaves the rest usable.
+ * `resetKey`: when it changes, the boundary tries again. `fallback`: node or (error, reset) => node.
+ */
+export class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, key: props.resetKey };
+  }
+  static getDerivedStateFromError(error) { return { error }; }
+  static getDerivedStateFromProps(props, state) {
+    return props.resetKey !== state.key ? { error: null, key: props.resetKey } : null;
+  }
+  componentDidCatch(error, info) {
+    this.props.onError?.(error, info);
+    if (import.meta.env?.DEV) console.error('[boundary]', error, info?.componentStack);
+  }
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const reset = () => this.setState({ error: null });
+    const { fallback } = this.props;
+    if (typeof fallback === 'function') return fallback(error, reset);
+    if (fallback !== undefined) return fallback;
+    return <ErrorState title="This part of the page could not load" error={error} onRetry={reset} />;
+  }
 }
 
 export function PageHeader({ title, subtitle, actions, breadcrumb }) {
@@ -209,7 +274,8 @@ export function Pagination({ page, pages, total, onPage }) {
 
 export function Avatar({ name, src, size = 32, className }) {
   const style = { width: size, height: size, fontSize: Math.max(10, size * 0.38) };
-  if (src) return <img src={src} alt="" style={style} className={cx('shrink-0 rounded-full object-cover', className)} />;
+  // Avatar URLs are versioned and cached for a year; lazy decoding keeps long lists (community, team) smooth.
+  if (src) return <img src={src} alt="" width={size} height={size} loading="lazy" decoding="async" style={style} className={cx('shrink-0 rounded-full object-cover', className)} />;
   const hue = HUES[hashString(name || '') % HUES.length];
   return <span style={style} className={cx('inline-flex shrink-0 items-center justify-center rounded-full font-medium', HUE_SOFT[hue], className)} aria-hidden>{initials(name)}</span>;
 }
@@ -255,10 +321,8 @@ export function LocalClock({ timezone, className }) {
   if (!timezone) return null;
   let text;
   try {
-    const now = new Date();
-    const time = now.toLocaleTimeString('en-US', { timeZone: timezone, hour: 'numeric', minute: '2-digit' }).replace(' ', ' ');
-    const abbr = now.toLocaleTimeString('en-US', { timeZone: timezone, timeZoneName: 'short' }).split(' ').pop().replace(/[SD]T$/, 'T');
-    text = `${time} local · ${abbr}`;
+    const c = zoneClock(new Date(), timezone);
+    text = `${c.time} ${c.ampm.toUpperCase()} local · ${c.abbr.replace(/[SD]T$/, 'T')}`;
   } catch { return null; }
   return <span className={cx('dd-clock', className)}>{text}</span>;
 }
@@ -266,8 +330,10 @@ export function LocalClock({ timezone, className }) {
 /**
  * Table with optional sortable headers and row selection.
  * columns: [{ key, header, render?(row), sortable?, className? }]
+ * mobileRow?(row, { selected, toggle }): on phones (below sm) render each row as a card instead of a wide table, so
+ * the status and actions in the last columns stay on screen.
  */
-export function DataTable({ columns, rows, rowKey = 'id', sort, onSort, selected, onSelect, onRowClick, empty, dense }) {
+export function DataTable({ columns, rows, rowKey = 'id', sort, onSort, selected, onSelect, onRowClick, empty, dense, mobileRow }) {
   const allSelected = selected && rows.length > 0 && rows.every((r) => selected.has(r[rowKey]));
   const toggleAll = () => {
     const next = new Set(selected);
@@ -282,52 +348,68 @@ export function DataTable({ columns, rows, rowKey = 'id', sort, onSort, selected
   };
   if (!rows.length) return empty ?? <EmptyState title="No records" />;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="border-b border-line text-xs text-muted">
-            {selected && (
-              <th className="w-10 px-3 py-2"><input type="checkbox" aria-label="Select all" checked={allSelected} onChange={toggleAll} className="size-4 accent-brand-600" /></th>
-            )}
-            {columns.map((c) => {
-              const active = sort?.field === c.key;
-              return (
-                <th key={c.key} className={cx('px-3 py-2 font-medium whitespace-nowrap', c.className)}>
-                  {c.sortable && onSort ? (
-                    <button type="button" className="inline-flex items-center gap-1 hover:text-fg" onClick={() => onSort({ field: c.key, dir: active && sort.dir === 'asc' ? 'desc' : 'asc' })}>
-                      {c.header}
-                      {active && (sort.dir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />)}
-                    </button>
-                  ) : c.header}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody>
+    <>
+      {mobileRow && (
+        <ul className="divide-y divide-line sm:hidden">
           {rows.map((row) => (
-            <tr key={row[rowKey]} onClick={onRowClick ? () => onRowClick(row) : undefined}
-              className={cx('border-b border-line last:border-0', onRowClick && 'cursor-pointer transition-ui hover:bg-surface-2/70', selected?.has(row[rowKey]) && 'bg-surface-2')}>
-              {selected && (
-                <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                  <input type="checkbox" aria-label="Select row" checked={selected.has(row[rowKey])} onChange={() => toggle(row[rowKey])} className="size-4 accent-brand-600" />
-                </td>
-              )}
-              {columns.map((c) => (
-                <td key={c.key} className={cx('px-3 align-middle', dense ? 'py-1.5' : 'py-2.5', c.className)}>{c.render ? c.render(row) : row[c.key] ?? '—'}</td>
-              ))}
-            </tr>
+            <li key={row[rowKey]} onClick={onRowClick ? () => onRowClick(row) : undefined}
+              className={cx('px-3 py-3', onRowClick && 'cursor-pointer active:bg-surface-2', selected?.has(row[rowKey]) && 'bg-surface-2')}>
+              {mobileRow(row, { selected: !!selected?.has(row[rowKey]), toggle: () => toggle(row[rowKey]) })}
+            </li>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </ul>
+      )}
+      <div className={cx('overflow-x-auto', mobileRow && 'hidden sm:block')}>
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-line text-xs text-muted">
+              {selected && (
+                <th className="w-10 px-3 py-2"><input type="checkbox" aria-label="Select all" checked={allSelected} onChange={toggleAll} className={CHECK} /></th>
+              )}
+              {columns.map((c) => {
+                const active = sort?.field === c.key;
+                return (
+                  <th key={c.key} className={cx('px-3 py-2 font-medium whitespace-nowrap', c.className)} aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+                    {c.sortable && onSort ? (
+                      <button type="button" className="inline-flex items-center gap-1 hover:text-fg" onClick={() => onSort({ field: c.key, dir: active && sort.dir === 'asc' ? 'desc' : 'asc' })}>
+                        {c.header}
+                        {active && (sort.dir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />)}
+                      </button>
+                    ) : c.header}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row[rowKey]} onClick={onRowClick ? () => onRowClick(row) : undefined}
+                className={cx('border-b border-line last:border-0', onRowClick && 'cursor-pointer transition-ui hover:bg-surface-2/70', selected?.has(row[rowKey]) && 'bg-surface-2')}>
+                {selected && (
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" aria-label="Select row" checked={selected.has(row[rowKey])} onChange={() => toggle(row[rowKey])} className={CHECK} />
+                  </td>
+                )}
+                {columns.map((c) => (
+                  <td key={c.key} className={cx('px-3 align-middle', dense ? 'py-1.5' : 'py-2.5', c.className)}>{c.render ? c.render(row) : row[c.key] ?? '—'}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
-/** Very small, safe markdown renderer (escapes HTML first). Supports headings, lists, bold, italics, code, links. */
-export function Markdown({ text, className }) {
-  return <div className={cx('prose-dd text-sm', className)} dangerouslySetInnerHTML={{ __html: renderMarkdown(text || '') }} />;
-}
+/**
+ * Very small, safe markdown renderer (escapes HTML first). Supports headings, lists, bold, italics, code, links.
+ * Memoized: re-rendering a parent (typing in a chat box) does not re-parse unchanged text.
+ */
+export const Markdown = memo(function Markdown({ text, className }) {
+  const html = useMemo(() => renderMarkdown(text || ''), [text]);
+  return <div className={cx('prose-dd text-sm', className)} dangerouslySetInnerHTML={{ __html: html }} />;
+});
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 function inline(s) {

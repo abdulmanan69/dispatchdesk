@@ -1,6 +1,6 @@
 import { prisma } from '../db.js';
 import { HttpError } from '../lib/errors.js';
-import { effectivePlan, remaining } from '../lib/plans.js';
+import { effectivePlan, remainingMany } from '../lib/plans.js';
 import { logActivity, notify } from '../lib/activity.js';
 import { stageByKey } from './pipeline.js';
 import { runAutomations } from './automation.js';
@@ -17,6 +17,11 @@ import { withLock, LockBusyError } from '../lib/locks.js';
 
 const PAGE = 200;
 const PAGES_PER_STATE = 3; // at most 600 census rows scanned per state per run
+// Census requests in flight at once for one crawl (the public API throttles per IP; each request has a 20 s timeout).
+const STATE_CONCURRENCY = 3;
+// Wall-clock budget per crawl: a run stops starting new census requests after this and saves what it found.
+const RUN_BUDGET_MS = 2 * 60_000;
+const PREVIEW_BUDGET_MS = 25_000;
 
 const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
 
@@ -73,28 +78,47 @@ async function existingKeys(userId, recs) {
 
 /**
  * Walk census pages round-robin across states and yield fresh candidates (not in the user's CRM, at or above minScore).
- * Stops when `want` candidates are found or every state is exhausted.
+ * Stops when `want` candidates are found, every state is exhausted, or the wall-clock budget is spent (timedOut).
+ * At most STATE_CONCURRENCY census requests run at once. The first failed request (a 429, a timeout) stops the crawl:
+ * no new request starts, the ones already in flight are awaited, and then the error is thrown, so nothing from this
+ * crawl keeps calling FMCSA after collect() has returned and the generator lock is released.
  */
-async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STATE } = {}) {
+async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STATE, cacheMs = 0, budgetMs = RUN_BUDGET_MS } = {}) {
   const states = criteria.states || [];
   const open = new Set(states);
   const stats = { scanned: 0, skipped: 0, belowScore: 0 };
   const picked = [];
   const seen = new Set();
+  const deadline = Date.now() + budgetMs;
   let notes = null;
+  let timedOut = false;
   for (let p = 0; p < pages && open.size && picked.length < want; p++) {
+    if (Date.now() >= deadline) { timedOut = true; break; }
     // Fetch this page for every open state, then interleave so one state cannot fill the whole batch.
-    const perState = [];
-    for (const state of states) {
-      if (!open.has(state)) continue;
-      const res = await census.search({ ...censusFilters(criteria, state), offset: p * PAGE });
-      if (res.note) notes = res.note;
-      if (res.items.length < PAGE) open.delete(state);
-      stats.scanned += res.items.length;
-      perState.push(res.items);
-    }
+    const todo = states.filter((s) => open.has(s));
+    const perState = new Array(todo.length).fill(null);
+    let next = 0;
+    let failure = null;
+    const worker = async () => {
+      while (!failure && next < todo.length) {
+        const i = next++;
+        if (Date.now() >= deadline) { timedOut = true; continue; }
+        try {
+          const res = await census.search({ ...censusFilters(criteria, todo[i]), offset: p * PAGE }, undefined, { cacheMs });
+          if (res.note) notes = res.note;
+          if (res.items.length < PAGE) open.delete(todo[i]);
+          stats.scanned += res.items.length;
+          perState[i] = res.items;
+        } catch (err) {
+          failure ??= err;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(STATE_CONCURRENCY, todo.length) }, worker));
+    if (failure) throw failure;
+    const lists = perState.filter(Boolean);
     const page = [];
-    for (let i = 0; perState.some((l) => i < l.length); i++) for (const l of perState) if (i < l.length) page.push(l[i]);
+    for (let i = 0; lists.some((l) => i < l.length); i++) for (const l of lists) if (i < l.length) page.push(l[i]);
     {
       const have = await existingKeys(userId, page);
       for (const rec of page) {
@@ -108,12 +132,15 @@ async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STA
       }
     }
   }
-  return { picked, stats, exhausted: open.size === 0, note: notes };
+  return { picked, stats, exhausted: open.size === 0, timedOut, note: notes };
 }
+
+/** Census pages a preview may reuse (runs always read fresh data). */
+const PREVIEW_CACHE_MS = 10 * 60_000;
 
 /** Preview matches without creating anything or using quota. */
 export async function previewLeads(user, criteria, minScore = 0, size = 25) {
-  const { picked, stats, exhausted, note } = await collect(user.id, criteria, minScore, size, { pages: 1 });
+  const { picked, stats, exhausted, note } = await collect(user.id, criteria, minScore, size, { pages: 1, cacheMs: PREVIEW_CACHE_MS, budgetMs: PREVIEW_BUDGET_MS });
   return {
     items: picked.map(({ _extra, ...r }) => ({ ...r, cargo: _extra?.cargo || [] })),
     ...stats,
@@ -142,7 +169,8 @@ export async function runGenerator(user, gen, opts = {}) {
 async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
   {
     const criteria = parseCriteria(gen.criteria);
-    const budget = Math.min(gen.batchSize, await remaining(user, 'leadGenMonth'), await remaining(user, 'carriers'));
+    const left = await remainingMany(user, ['leadGenMonth', 'carriers']);
+    const budget = Math.min(gen.batchSize, left.leadGenMonth, left.carriers);
     const run = { trigger, status: 'ok', scanned: 0, created: 0, skipped: 0, belowScore: 0, message: null };
     const ids = [];
     const createdCarriers = [];
@@ -154,7 +182,7 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
       run.message = `Your ${plan?.name || 'current'} plan's monthly lead limit is used up. Upgrade for more leads.`;
     } else {
       try {
-        const { picked, stats, exhausted, note } = await collect(user.id, criteria, gen.minScore, budget);
+        const { picked, stats, timedOut, note } = await collect(user.id, criteria, gen.minScore, budget);
         Object.assign(run, stats);
         const stage = await stageByKey(gen.stageKey || 'lead');
         const list = gen.listId ? await prisma.prospectList.findFirst({ where: { id: gen.listId, ownerId: user.id } }) : null;
@@ -178,7 +206,9 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
             else throw err;
           }
         }
-        if (run.created < budget) {
+        if (run.created < budget && timedOut) {
+          run.message = `Found ${run.created} new lead(s) before this run's time limit. Run it again to continue.`;
+        } else if (run.created < budget) {
           run.status = 'exhausted';
           run.message = `Found ${run.created} new lead(s); no more matches in the first ${PAGES_PER_STATE * PAGE} census records per state. Widen the criteria for more.`;
         } else if (budget < gen.batchSize) {

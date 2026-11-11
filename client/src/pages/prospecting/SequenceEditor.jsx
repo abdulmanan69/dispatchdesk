@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Trash2, ArrowUp, ArrowDown, Phone, Mail, ClipboardCheck, Save, MessageSquare, Play } from 'lucide-react';
+import { Plus, Trash2, ArrowUp, ArrowDown, Phone, Mail, ClipboardCheck, Save, MessageSquare, Play, UserPlus, X } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { dateTime, label } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Badge, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, Loading, PageHeader, Pagination, Select, Tabs, Textarea } from '../../components/ui.jsx';
-import { useConfirm } from '../../components/Modal.jsx';
+import { Modal, useConfirm } from '../../components/Modal.jsx';
+import { useToast } from '../../components/Toast.jsx';
+import CarrierPicker from '../../components/followups/CarrierPicker.jsx';
 
 const DEFAULT_STEPS = [
   { dayOffset: 0, type: 'call', instructions: 'Intro call — confirm equipment, lanes and whether they need a dispatcher.' },
@@ -17,6 +19,24 @@ const DEFAULT_STEPS = [
   { dayOffset: 6, type: 'task', instructions: 'Final follow-up — text or call, then archive if no reply.' },
 ];
 const ICON = { call: Phone, email: Mail, text: MessageSquare, task: ClipboardCheck };
+// Settings that re-time the upcoming steps of carriers already in the sequence (PUT /api/sequences/:id).
+const TIMING = ['respectBusinessHours', 'windowStartHour', 'windowEndHour', 'skipWeekends'];
+
+/** Step fields as the editor holds them; `id` is kept so carriers mid-sequence stay on the same step after an edit. */
+const editable = ({ id, dayOffset, type, templateId, subject, body, instructions }) => ({
+  ...(id ? { id } : {}), dayOffset: Number(dayOffset), type, templateId: templateId || '', subject: subject || '', body: body || '', instructions: instructions || '',
+});
+
+/** "Sequence saved" plus what happened to carriers already in it (PUT returns remapped { moved, completed, retimed }). */
+function savedMessage(d) {
+  const r = d?.remapped;
+  const parts = [
+    r?.moved && `${r.moved} moved with their step`,
+    r?.completed && `${r.completed} finished (their remaining steps were removed)`,
+    r?.retimed && `${r.retimed} re-timed`,
+  ].filter(Boolean);
+  return parts.length ? `Sequence saved. Carriers in it: ${parts.join(', ')}.` : 'Sequence saved';
+}
 
 export default function SequenceEditor() {
   const { id } = useParams();
@@ -34,12 +54,12 @@ export default function SequenceEditor() {
     if (isNew) setForm({ name: '', description: '', active: true, respectBusinessHours: true, windowStartHour: 9, windowEndHour: 17, skipWeekends: true, maxEmailsPerDay: 50, steps: DEFAULT_STEPS });
     else if (q.data) {
       const s = q.data.sequence;
-      setForm({ ...s, description: s.description || '', steps: s.steps.map(({ dayOffset, type, templateId, subject, body, instructions }) => ({ dayOffset, type, templateId: templateId || '', subject: subject || '', body: body || '', instructions: instructions || '' })) });
+      setForm({ ...s, description: s.description || '', steps: s.steps.map(editable) });
     }
   }, [isNew, q.data]);
 
   const save = useApiMutation((body) => (isNew ? api.post('/api/sequences', body) : api.put(`/api/sequences/${id}`, body)), {
-    success: 'Sequence saved',
+    success: savedMessage,
     invalidate: [['sequences'], ['queue']],
     onSuccess: (d) => { if (isNew) navigate(`/app/sequences/${d.sequence.id}`, { replace: true }); },
   });
@@ -62,9 +82,20 @@ export default function SequenceEditor() {
   });
   const addStep = () => setForm((f) => ({ ...f, steps: [...f.steps, { dayOffset: (f.steps.at(-1)?.dayOffset ?? -1) + 1, type: 'call', instructions: '', subject: '', body: '', templateId: '' }] }));
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     const steps = form.steps.map((s) => ({ ...s, dayOffset: Number(s.dayOffset), templateId: s.type === 'email' ? s.templateId || null : null }));
+    // Carriers already in the sequence keep their place; say so before changing the steps or send hours under them.
+    const mid = isNew ? 0 : q.data?.midSequence || 0;
+    const stepsChanged = !isNew && JSON.stringify(form.steps.map(editable)) !== JSON.stringify(q.data.sequence.steps.map(editable));
+    const timingChanged = !isNew && TIMING.some((k) => String(form[k]) !== String(q.data.sequence[k]));
+    if (mid > 0 && (stepsChanged || timingChanged) && !(await confirm({
+      title: stepsChanged ? 'Change the steps of a running sequence?' : 'Change the timing of a running sequence?',
+      message: `${mid.toLocaleString('en-US')} ${mid === 1 ? 'carrier is' : 'carriers are'} mid-sequence. ${stepsChanged
+        ? 'Each stays on the step it is on; a removed step moves it to the next one, and new days and hours apply to its upcoming steps.'
+        : 'The new hours and weekend setting apply to their upcoming steps.'}`,
+      confirmLabel: 'Save changes',
+    }))) return;
     save.mutate({
       name: form.name, description: form.description, active: form.active, respectBusinessHours: form.respectBusinessHours,
       windowStartHour: Number(form.windowStartHour), windowEndHour: Number(form.windowEndHour), skipWeekends: form.skipWeekends, maxEmailsPerDay: Number(form.maxEmailsPerDay), steps,
@@ -167,16 +198,20 @@ function Enrollments({ id, stats }) {
   const [status, setStatus] = useState('active');
   const [page, setPage] = useState(1);
   const q = useQuery({ queryKey: ['sequences', id, 'enrollments', status, page], queryFn: () => api.get(`/api/sequences/${id}/enrollments`, { status, page, pageSize: 25 }) });
-  const act = useApiMutation(({ eid, action }) => api.post(`/api/sequences/enrollments/${eid}/${action}`), { success: 'Updated', invalidate: [['sequences'], ['queue']] });
+  // stepIndex = the step on screen, so a stale click gets 409 instead of completing the next step.
+  const act = useApiMutation(({ eid, action, stepIndex }) => api.post(`/api/sequences/enrollments/${eid}/${action}`, stepIndex != null ? { stepIndex } : undefined), { success: 'Updated', invalidate: [['sequences'], ['queue']] });
+  const [enrolling, setEnrolling] = useState(false);
   const color = { active: 'green', paused: 'amber', completed: 'brand', stopped: 'gray' };
   return (
     <Card bodyClass="p-0" title={<div className="flex flex-wrap items-center gap-2 text-xs text-muted">
       {Object.keys(stats.emails).length > 0 && <span>Emails: {Object.entries(stats.emails).map(([k, v]) => `${v} ${k}`).join(' · ')}</span>}
-    </div>} actions={
+    </div>} actions={<div className="flex flex-wrap items-center gap-2">
+      {stats.sequence?.active && <Button size="sm" variant="secondary" icon={UserPlus} onClick={() => setEnrolling(true)}>Enroll carriers</Button>}
       <Select aria-label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-36">
         {['active', 'paused', 'completed', 'stopped'].map((s) => <option key={s} value={s}>{label(s)} ({stats.enrollments[s] || 0})</option>)}
-      </Select>}>
-      {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} /> : !q.data.items.length ? <EmptyState title={`No ${status} enrollments`}>Enroll carriers from the carrier list (bulk action) or a carrier's page.</EmptyState> : (
+      </Select>
+    </div>}>
+      {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} /> : !q.data.items.length ? <EmptyState title={`No ${status} enrollments`}>Enroll carriers here, from the carrier list (bulk action) or from a carrier's page.</EmptyState> : (
         <ul className="divide-y divide-line">
           {q.data.items.map((e) => (
             <li key={e.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
@@ -184,7 +219,7 @@ function Enrollments({ id, stats }) {
               <Badge color={color[e.status]}>{label(e.status)}</Badge>
               <span className="text-muted">{e.step ? `Step ${e.step.order}: ${label(e.step.type)} · ${dateTime(e.nextStepAt)}` : e.stopReason ? label(e.stopReason) : 'Finished'}</span>
               {e.status === 'active' && <>
-                {e.step?.type !== 'email' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ eid: e.id, action: 'complete-step' })}>Step done</Button>}
+                {e.step?.type !== 'email' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ eid: e.id, action: 'complete-step', stepIndex: e.currentStep })}>Step done</Button>}
                 <Button size="sm" variant="ghost" onClick={() => act.mutate({ eid: e.id, action: 'pause' })}>Pause</Button>
               </>}
               {e.status === 'paused' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ eid: e.id, action: 'resume' })}>Resume</Button>}
@@ -194,6 +229,46 @@ function Enrollments({ id, stats }) {
         </ul>
       )}
       {q.data && <div className="px-3"><Pagination page={q.data.page} pages={q.data.pages} total={q.data.total} onPage={setPage} /></div>}
+      <EnrollCarriersModal open={enrolling} sequenceId={id} onClose={() => setEnrolling(false)} />
     </Card>
+  );
+}
+
+const ENROLL_PICK_MAX = 50;
+
+/** Pick carriers one by one and enroll them; bulk enrollment stays in the carrier list. */
+function EnrollCarriersModal({ open, sequenceId, onClose }) {
+  const toast = useToast();
+  const [picked, setPicked] = useState([]);
+  const close = () => { setPicked([]); onClose(); };
+  const enroll = useApiMutation(() => api.post(`/api/sequences/${sequenceId}/enroll`, { carrierIds: picked.map((c) => c.id) }), {
+    invalidate: [['sequences'], ['queue'], ['carrier'], ['carriers'], ['pipeline']],
+    onSuccess: (d) => {
+      const skipped = (d.skipped || 0) + (d.inaccessible || 0);
+      toast.success(`Enrolled ${d.enrolled}${skipped ? `, ${skipped} skipped (already enrolled or read-only)` : ''}`,
+        d.enrolled ? { action: { label: 'Start dialer', href: `/app/dialer?sequenceId=${sequenceId}` } } : undefined);
+      close();
+    },
+  });
+  const add = (c) => { if (c) setPicked((p) => (p.some((x) => x.id === c.id) ? p : [...p, c].slice(0, ENROLL_PICK_MAX))); };
+  return (
+    <Modal open={open} onClose={close} title="Enroll carriers" size="sm"
+      footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!picked.length} loading={enroll.isPending} onClick={() => enroll.mutate()}>Enroll {picked.length || ''}</Button></>}>
+      <div className="space-y-3">
+        <Field label="Find a carrier" hint={`Add up to ${ENROLL_PICK_MAX}. To enroll many at once, select them in the carrier list and choose Enroll in sequence.`}>
+          {(fid) => <CarrierPicker key={picked.length} id={fid} value={null} onChange={add} autoFocus />}
+        </Field>
+        {picked.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Carriers to enroll">
+            {picked.map((c) => (
+              <li key={c.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-surface-2 py-0.5 pl-2.5 pr-1 text-xs">
+                <span className="truncate">{c.companyName}</span>
+                <button type="button" aria-label={`Remove ${c.companyName}`} onClick={() => setPicked((p) => p.filter((x) => x.id !== c.id))} className="rounded-full p-0.5 text-muted hover:bg-surface hover:text-fg"><X className="size-3.5" /></button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
   );
 }

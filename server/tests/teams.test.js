@@ -95,6 +95,45 @@ describe('teams', () => {
     expect(full.status).toBe(402);
   });
 
+  it('stops sequences and scheduled emails that cross between a removed member and the team', async () => {
+    const owner = await registerUser();
+    await owner.agent.post('/api/teams').send({ name: 'Cross Team' });
+    const email = `x${Date.now()}@example.test`;
+    const inv = await owner.agent.post('/api/teams/invitations').send({ email });
+    const member = await registerUser({ email });
+    await member.agent.post(`/api/teams/invitations/${inv.body.devToken}/accept`);
+
+    const stage = await prisma.pipelineStage.findUnique({ where: { key: 'lead' } });
+    const ownersCarrier = await prisma.carrier.create({ data: { ownerId: owner.user.id, stageId: stage.id, companyName: 'Owner Freight', assignedToId: member.user.id } });
+    const membersCarrier = await prisma.carrier.create({ data: { ownerId: member.user.id, stageId: stage.id, companyName: 'Member Freight', assignedToId: owner.user.id } });
+    const ownSeq = await prisma.emailSequence.create({ data: { ownerId: owner.user.id, name: 'Owner seq' } });
+    const memSeq = await prisma.emailSequence.create({ data: { ownerId: member.user.id, name: 'Member seq' } });
+    const soon = new Date(Date.now() + 3600_000);
+    // Member works the owner's carrier; owner works the member's carrier; each also works their own.
+    const crossA = await prisma.sequenceEnrollment.create({ data: { sequenceId: memSeq.id, carrierId: ownersCarrier.id, userId: member.user.id, nextStepAt: soon } });
+    const crossB = await prisma.sequenceEnrollment.create({ data: { sequenceId: ownSeq.id, carrierId: membersCarrier.id, userId: owner.user.id, status: 'paused', nextStepAt: soon } });
+    const ownA = await prisma.sequenceEnrollment.create({ data: { sequenceId: memSeq.id, carrierId: membersCarrier.id, userId: member.user.id, nextStepAt: soon } });
+    const ownB = await prisma.sequenceEnrollment.create({ data: { sequenceId: ownSeq.id, carrierId: ownersCarrier.id, userId: owner.user.id, nextStepAt: soon } });
+    const mail = (userId, carrierId) => prisma.email.create({ data: { userId, carrierId, toEmail: 'c@example.test', subject: 's', body: 'b', status: 'scheduled', scheduledAt: soon } });
+    const crossMail = await mail(member.user.id, ownersCarrier.id);
+    const ownMail = await mail(member.user.id, membersCarrier.id);
+
+    expect((await owner.agent.delete(`/api/teams/members/${member.user.id}`)).status).toBe(200);
+
+    const status = async (id) => prisma.sequenceEnrollment.findUnique({ where: { id }, select: { status: true, stopReason: true } });
+    expect(await status(crossA.id)).toEqual({ status: 'stopped', stopReason: 'left_team' });
+    expect(await status(crossB.id)).toEqual({ status: 'stopped', stopReason: 'left_team' });
+    expect((await status(ownA.id)).status).toBe('active');
+    expect((await status(ownB.id)).status).toBe('active');
+    expect((await prisma.email.findUnique({ where: { id: crossMail.id } })).status).toBe('canceled');
+    expect((await prisma.email.findUnique({ where: { id: ownMail.id } })).status).toBe('scheduled');
+    // Assignments in both directions are cleared, so neither side keeps access through them.
+    expect((await prisma.carrier.findUnique({ where: { id: ownersCarrier.id } })).assignedToId).toBeNull();
+    expect((await prisma.carrier.findUnique({ where: { id: membersCarrier.id } })).assignedToId).toBeNull();
+    expect((await owner.agent.get(`/api/carriers/${membersCarrier.id}`)).status).toBe(404);
+    expect((await member.agent.get(`/api/carriers/${ownersCarrier.id}`)).status).toBe(404);
+  });
+
   it('requires a session for team management', async () => {
     const a = await agent();
     expect((await a.get('/api/teams/mine')).status).toBe(401);

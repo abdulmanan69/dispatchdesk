@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Plus, Trash2, Send, Globe, BookOpen, MessageSquare, PenLine, Phone, ShieldQuestion, Calculator, Copy, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -32,7 +32,8 @@ function SourceChips({ sources }) {
   );
 }
 
-function Message({ m }) {
+// Memoized: typing in the composer re-renders Chat, but unchanged messages (and their Markdown) are skipped.
+const Message = memo(function Message({ m }) {
   const toast = useToast();
   const mine = m.role === 'user';
   return (
@@ -51,7 +52,10 @@ function Message({ m }) {
       </div>
     </div>
   );
-}
+});
+
+// AI answers with web research can take a while; the server gives up after about 2 minutes.
+const AI_TIMEOUT = { timeoutMs: 180_000 };
 
 function Chat({ status }) {
   const qc = useQueryClient();
@@ -64,8 +68,8 @@ function Chat({ status }) {
   const [notes, setNotes] = useState([]);
   const endRef = useRef(null);
 
-  const convs = useQuery({ queryKey: ['ai', 'conversations'], queryFn: () => api.get('/api/ai/conversations') });
-  const conv = useQuery({ queryKey: ['ai', 'conversation', activeId], queryFn: () => api.get(`/api/ai/conversations/${activeId}`), enabled: !!activeId });
+  const convs = useQuery({ queryKey: ['ai', 'conversations'], queryFn: ({ signal }) => api.get('/api/ai/conversations', undefined, { signal }) });
+  const conv = useQuery({ queryKey: ['ai', 'conversation', activeId], queryFn: ({ signal }) => api.get(`/api/ai/conversations/${activeId}`, undefined, { signal }), enabled: !!activeId });
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [conv.data, pending]);
 
   const remove = useApiMutation((id) => api.del(`/api/ai/conversations/${id}`), {
@@ -79,7 +83,7 @@ function Chat({ status }) {
       id = conversation.id;
       setActiveId(id);
     }
-    return api.post(`/api/ai/conversations/${id}/messages`, { content, useWeb, useKnowledge }).then((r) => ({ ...r, id }));
+    return api.post(`/api/ai/conversations/${id}/messages`, { content, useWeb, useKnowledge }, AI_TIMEOUT).then((r) => ({ ...r, id }));
   }, {
     onSuccess: async (r) => {
       setPending(null);
@@ -102,6 +106,7 @@ function Chat({ status }) {
   };
 
   const messages = activeId ? conv.data?.messages || [] : [];
+  const pendingMessage = useMemo(() => (pending ? { role: 'user', content: pending } : null), [pending]);
 
   return (
     <div className="grid min-h-[70vh] gap-4 lg:grid-cols-[260px_1fr]">
@@ -140,7 +145,7 @@ function Chat({ status }) {
           {messages.map((m) => <Message key={m.id} m={m} />)}
           {pending && (
             <>
-              <Message m={{ role: 'user', content: pending }} />
+              <Message m={pendingMessage} />
               <div className="flex items-center gap-2 pl-10 text-sm text-muted"><span className="size-1.5 rounded-full bg-brand-600" aria-hidden /> Thinking{useWeb ? ' and researching the web' : ''}…</div>
             </>
           )}
@@ -169,7 +174,7 @@ function ToolResult({ children }) {
 function EmailTool() {
   const toast = useToast();
   const [f, setF] = useState({ purpose: 'carrier_intro', tone: 'professional', notes: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/draft-email', v));
+  const m = useApiMutation((v) => api.post('/api/ai/draft-email', v, AI_TIMEOUT));
   return (
     <div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -206,7 +211,7 @@ function EmailTool() {
 
 function ScriptTool() {
   const [f, setF] = useState({ scenario: 'cold_call', notes: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/call-script', v));
+  const m = useApiMutation((v) => api.post('/api/ai/call-script', v, AI_TIMEOUT));
   return (
     <div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -226,7 +231,7 @@ function ScriptTool() {
 
 function ObjectionTool() {
   const [objection, setObjection] = useState('');
-  const m = useApiMutation((v) => api.post('/api/ai/objection', v));
+  const m = useApiMutation((v) => api.post('/api/ai/objection', v, AI_TIMEOUT));
   const examples = ['I already have a dispatcher.', 'Your percentage is too high.', 'I only use load boards myself.', 'Call me next month.'];
   return (
     <div>
@@ -242,7 +247,7 @@ function ObjectionTool() {
 
 function LoadTool() {
   const [f, setF] = useState({ origin: '', destination: '', equipment: '', rate: '', loadedMiles: '', deadheadMiles: '', mpg: '6.5', fuelPricePerGallon: '', dispatchFeePercent: '', detentionHours: '', detentionRate: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/analyze-load', v));
+  const m = useApiMutation((v) => api.post('/api/ai/analyze-load', v, AI_TIMEOUT));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const n = m.data?.numbers;
   return (
@@ -284,7 +289,7 @@ function LoadTool() {
 
 export default function AiDispatcher() {
   const [tab, setTab] = useState('chat');
-  const status = useQuery({ queryKey: ['ai', 'status'], queryFn: () => api.get('/api/ai/status') });
+  const status = useQuery({ queryKey: ['ai', 'status'], queryFn: ({ signal }) => api.get('/api/ai/status', undefined, { signal }) });
   const s = status.data;
   return (
     <div>

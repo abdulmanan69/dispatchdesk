@@ -1,10 +1,18 @@
+import { createHash } from 'node:crypto';
 import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { sha256, randomToken } from '../lib/crypto.js';
 import { unauthorized, forbidden } from '../lib/errors.js';
 import { broadcast, onBroadcast } from '../lib/broadcast.js';
+import { getBool } from '../lib/settings.js';
+import { systemMailConfigured } from '../services/email/system.js';
 
 export const SESSION_COOKIE = 'dd_session';
+
+/** Short fingerprint of the stored avatar file name: it changes only when the picture changes. */
+export const avatarVersion = (avatarPath) => createHash('sha256').update(String(avatarPath)).digest('base64url').slice(0, 10);
+/** Versioned avatar URL (served with a one-year immutable cache), or null without a picture. */
+export const avatarUrl = (u) => (u?.avatarPath && u?.id ? `/api/profile/avatar/${u.id}?v=${avatarVersion(u.avatarPath)}` : null);
 
 // Short-lived cache of session → user/permissions so each request does not re-join user, role and permissions.
 // Entries live 10 s and are dropped immediately when a user is signed out, suspended, deleted or changes role/password.
@@ -53,7 +61,20 @@ export async function destroySession(req, res) {
 }
 
 // Routes a personal API token (browser extension / integrations) may never reach.
-const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^\/api\/auth\/(change-password|sessions|logout|resend-verification)/, /^\/api\/billing\/(checkout|portal|cancel|resume|change-plan)/, /^\/api\/teams/];
+const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^\/api\/auth\/(change-password|sessions|logout|resend-verification)/, /^\/api\/billing\/(checkout|portal|cancel|resume|change-plan)/, /^\/api\/teams/,
+  // Device push subscriptions and the private calendar link are account secrets (both routers also refuse tokens).
+  /^\/api\/push/, /^\/api\/calendar/,
+  // Long-lived public links (carrier portal, broker tracking, driver location) and bulk exports or sends of financial
+  // data. The handlers refuse tokens as well, so a router change cannot silently drop the guard.
+  /^\/api\/customers\/[^/]+\/(portal|statements\/[^/]+\/send)(\/|$)/,
+  /^\/api\/fleet\/(trips\/[^/]+\/tracking-links|carriers\/[^/]+\/share)(\/|$)/,
+  /^\/api\/invoices\/(export\.csv|[^/]+\/send)(\/|$)/,
+  /^\/api\/carriers\/export\.csv(\/|$)/];
+
+/** Throw 403 when the request uses a personal API token (for routes that mint public links or export in bulk). */
+export function refuseApiToken(req, what = 'this') {
+  if (req.apiToken) throw forbidden(`API tokens cannot ${what}`);
+}
 
 /** Authenticate `Authorization: Bearer ddk_…` personal access tokens. */
 async function loadApiToken(req, res, next, raw) {
@@ -120,6 +141,53 @@ export function requireAuth(req, res, next) {
   next();
 }
 
+// Writes an unverified account may still make while verification is required: signing in and out, verifying, the
+// profile, deleting the account, stopping payments, its own UI state, and secret-link / signed provider endpoints.
+const VERIFY_EXEMPT = [
+  /^\/api\/auth\//, /^\/api\/profile(\/|$)/, /^\/api\/public\//, /^\/api\/telephony\/twilio\//,
+  /^\/api\/billing\/(webhook|portal|cancel)$/, /^\/api\/settings\/account$/,
+  /^\/api\/tours(\/|$)/, /^\/api\/notifications(\/|$)/, /^\/api\/push(\/|$)/,
+];
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Enforce "Require email verification" (System settings → app.requireEmailVerification).
+ * Only when the setting is on AND platform email is configured (otherwise nobody could verify): unverified accounts can
+ * sign in and read everything, but API writes return 403 { code: 'EMAIL_UNVERIFIED' } until the email is verified.
+ * Admins are never locked out. Runs after loadSession, for every /api request.
+ */
+export async function requireVerifiedEmail(req, res, next) {
+  try {
+    if (!req.user || req.user.emailVerifiedAt || READ_METHODS.has(req.method)) return next();
+    const p = `${req.baseUrl || ''}${req.path || ''}`.toLowerCase().replace(/\/{2,}/g, '/');
+    if (!p.startsWith('/api/') || VERIFY_EXEMPT.some((r) => r.test(p))) return next();
+    if (req.permissions?.has('admin.access')) return next();
+    if (!(await getBool('app.requireEmailVerification')) || !(await systemMailConfigured())) return next();
+    res.status(403).json({
+      error: 'Verify your email address to continue. Open the link we emailed you, or use "Resend link" at the top of the page.',
+      code: 'EMAIL_UNVERIFIED',
+      details: { code: 'EMAIL_UNVERIFIED' },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** True when the platform requires verified emails and can send the verification email. */
+export async function emailVerificationRequired() {
+  return (await getBool('app.requireEmailVerification')) && (await systemMailConfigured());
+}
+
+/**
+ * Flags sent next to the user wherever the client receives its account (/api/auth/me, sign-in, profile updates), so
+ * the verification banner keeps its state after a profile change. mailConfigured: platform email can be sent;
+ * verificationRequired: unverified accounts cannot make changes yet.
+ */
+export async function mailFlags() {
+  const [mailConfigured, verificationRequired] = await Promise.all([systemMailConfigured(), emailVerificationRequired()]);
+  return { mailConfigured, verificationRequired };
+}
+
 export const hasPermission = (req, key) => !!req.permissions?.has(key);
 
 /** Require every listed permission (checked on the server, independent of UI). */
@@ -139,7 +207,7 @@ export function publicUser(user, permissions) {
     name: user.name,
     phone: user.phone,
     bio: user.bio,
-    avatarUrl: user.avatarPath ? `/api/profile/avatar/${user.id}?v=${user.updatedAt?.getTime?.() ?? ''}` : null,
+    avatarUrl: avatarUrl(user),
     role: user.role?.key,
     roleName: user.role?.name,
     permissions: permissions ? [...permissions] : [],
@@ -151,6 +219,8 @@ export function publicUser(user, permissions) {
     notifyInApp: user.notifyInApp,
     notifyFollowUps: user.notifyFollowUps,
     notifyCommunity: user.notifyCommunity,
+    notifyPush: user.notifyPush,
+    notifyDigest: user.notifyDigest,
     team: user.teamMembership
       ? { id: user.teamMembership.teamId, name: user.teamMembership.team?.name, role: user.teamMembership.role, canViewTeamData: user.teamMembership.canViewTeamData, canManageMembers: user.teamMembership.canManageMembers }
       : null,

@@ -8,6 +8,26 @@ import { label, money, pct, relative } from '../../lib/format.js';
 import { Badge, Button, Card, DataTable, EmptyState, Input, PageHeader, Pagination, QueryState, Select, StatCard, Tabs } from '../../components/ui.jsx';
 import { NewOpportunityModal, OpportunityModal, OPP_COLOR } from '../../components/deals/OpportunityModal.jsx';
 
+const isPast = (d) => !!d && new Date(d) < new Date();
+
+/** Phone layout of an opportunity: carrier, stage, value and the next follow-up stay on screen. */
+function OpportunityMobileRow({ o }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-start justify-between gap-2">
+        <span className="min-w-0 truncate text-sm font-medium">{o.carrier.companyName}</span>
+        <Badge color={OPP_COLOR[o.status]}>{label(o.status)}</Badge>
+      </div>
+      <p className="text-xs text-muted tabular">
+        {[`${money(o.estimatedValueCents, { digits: 0 })}/mo`, `${o.probability}%`, o.dispatchFeePercent != null && `fee ${o.dispatchFeePercent}%`, o.carrier.mcNumber && `MC ${o.carrier.mcNumber}`].filter(Boolean).join(' · ')}
+      </p>
+      <p className={isPast(o.nextFollowUpAt) ? 'text-xs text-red-600' : 'text-xs text-muted'}>
+        {o.nextFollowUpAt ? `Next follow-up ${relative(o.nextFollowUpAt)}` : 'No follow-up set'}
+      </p>
+    </div>
+  );
+}
+
 export default function Opportunities() {
   const { user } = useAuth();
   const [sp, setSp] = useSearchParams();
@@ -39,7 +59,7 @@ export default function Opportunities() {
       <Tabs className="mb-3" tabs={tabs} value={filters.status} onChange={(v) => setF({ status: v })} />
       <Card bodyClass="p-0" title={
         <div className="flex flex-wrap gap-2">
-          <Input type="search" className="h-8 w-56" placeholder="Search carrier, MC, DOT" aria-label="Search opportunities" defaultValue={filters.q || ''}
+          <Input type="search" className="h-8 w-full sm:w-56" placeholder="Search carrier, MC, DOT" aria-label="Search opportunities" defaultValue={filters.q || ''}
             onKeyDown={(e) => { if (e.key === 'Enter') setF({ q: e.target.value }); }} onBlur={(e) => e.target.value !== (filters.q || '') && setF({ q: e.target.value })} />
           <Select aria-label="Sort" className="h-8 w-44" value={filters.sort} onChange={(e) => setF({ sort: e.target.value })}>
             <option value="updated">Recently updated</option><option value="value">Highest value</option><option value="followup">Next follow-up</option>
@@ -55,7 +75,7 @@ export default function Opportunities() {
         <QueryState query={q}>
           {(data) => (
             <>
-              <DataTable rows={data.items} onRowClick={(o) => setOpenId(o.id)}
+              <DataTable rows={data.items} onRowClick={(o) => setOpenId(o.id)} mobileRow={(o) => <OpportunityMobileRow o={o} />}
                 empty={<EmptyState icon={Handshake} title="No opportunities here" action={<Button icon={Plus} onClick={() => setCreating(true)}>New opportunity</Button>}>Move an interested carrier into Opportunities from its profile, the pipeline, or here.</EmptyState>}
                 columns={[
                   { key: 'carrier', header: 'Carrier', render: (o) => <div><div className="font-medium">{o.carrier.companyName}</div><div className="text-xs text-muted">{[o.carrier.mcNumber && `MC ${o.carrier.mcNumber}`, o.carrier.state, o.carrier.fleetSize && `${o.carrier.fleetSize} trucks`].filter(Boolean).join(' · ') || '—'}</div></div> },
@@ -63,7 +83,7 @@ export default function Opportunities() {
                   { key: 'value', header: 'Value / mo', className: 'text-right', render: (o) => <span className="tabular">{money(o.estimatedValueCents, { digits: 0 })}</span> },
                   { key: 'prob', header: 'Prob.', className: 'text-right', render: (o) => <span className="tabular">{o.probability}%</span> },
                   { key: 'fee', header: 'Fee', className: 'text-right', render: (o) => <span className="tabular">{o.dispatchFeePercent != null ? `${o.dispatchFeePercent}%` : '—'}</span> },
-                  { key: 'next', header: 'Next follow-up', render: (o) => (o.nextFollowUpAt ? <span className={new Date(o.nextFollowUpAt) < new Date() ? 'text-red-600' : ''}>{relative(o.nextFollowUpAt)}</span> : <span className="text-muted">—</span>) },
+                  { key: 'next', header: 'Next follow-up', render: (o) => (o.nextFollowUpAt ? <span className={isPast(o.nextFollowUpAt) ? 'text-red-600' : ''}>{relative(o.nextFollowUpAt)}</span> : <span className="text-muted">—</span>) },
                   { key: 'owner', header: 'Owner', render: (o) => <span className="text-sm text-muted">{o.carrier.assignedTo?.name || o.owner?.name}</span> },
                   { key: 'updated', header: 'Updated', render: (o) => <span className="text-sm text-muted">{relative(o.updatedAt)}</span> },
                 ]} />

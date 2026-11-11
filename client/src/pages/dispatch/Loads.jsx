@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Calculator, Pencil, Trash2, Package, Paperclip } from 'lucide-react';
+import { Plus, Calculator, Pencil, Trash2, Package, Paperclip, FileUp, AlertTriangle, MessageSquare } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -9,26 +9,40 @@ import { date, dollars, label, money, num, relative, US_STATES } from '../../lib
 import { Badge, Button, Card, DataTable, EmptyState, IconButton, Input, PageHeader, Pagination, QueryState, Select, StatCard, Tabs } from '../../components/ui.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
+import { LOAD_DOC_TYPES } from '../../components/documents/docTypes.js';
+import TextLogModal from '../../components/carriers/TextLogModal.jsx';
 import LoadFormModal from '../../components/dispatch/LoadForm.jsx';
+import LoadDetailModal from '../../components/dispatch/LoadDetail.jsx';
+import { LoadStatusSelect } from '../../components/dispatch/LoadStatus.jsx';
 import { LOAD_STATUSES, LOAD_STATUS_COLOR } from '../../components/dispatch/calc.js';
 
-export function LoadStatusSelect({ load }) {
-  const update = useApiMutation((status) => api.patch(`/api/loads/${load.id}`, { status }), { success: (d) => `Load marked ${label(d.load.status)}`, invalidate: [['loads'], ['broker'], ['customer']] });
-  return (
-    <Select aria-label="Load status" value={load.status} disabled={update.isPending} onClick={(e) => e.stopPropagation()} onChange={(e) => update.mutate(e.target.value)}
-      className="h-7 w-32 text-xs">
-      {LOAD_STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}
-    </Select>
+export { LoadStatusSelect };
+
+/** RC / BOL / POD chips: filled when the file is on the load, outlined when it is missing. */
+export function DocChips({ docs }) {
+  if (!docs) return null;
+  const chip = (on, text, title) => (
+    <span key={text} title={`${title}: ${on ? 'on file' : 'missing'}`}
+      className={on ? 'rounded border border-c-green/30 bg-c-green-soft px-1 text-[10.5px] font-medium leading-4 text-c-green' : 'rounded border border-dashed border-line-strong px-1 text-[10.5px] leading-4 text-muted'}>
+      {text}<span className="sr-only">{on ? ' on file' : ' missing'}</span>
+    </span>
   );
+  return <span className="inline-flex gap-1">{[chip(docs.rateCon, 'RC', 'Rate con'), chip(docs.bol, 'BOL', 'BOL'), chip(docs.pod, 'POD', 'POD')]}</span>;
 }
 
-export function loadColumns({ onEdit, onDelete, onDocs, showBroker = true, showCarrier = true, editableStatus = true }) {
+function FitFlag({ load }) {
+  const n = load.fit?.warnings?.length || 0;
+  if (!n || load.fit.acknowledgedAt) return null;
+  return <span title={load.fit.warnings.map((w) => w.message).join('\n')} className="inline-flex items-center gap-0.5 text-xs text-c-amber"><AlertTriangle className="size-3.5" aria-hidden />{n}<span className="sr-only"> carrier-rules warning{n === 1 ? '' : 's'}</span></span>;
+}
+
+export function loadColumns({ onEdit, onDelete, onDocs, onText, showBroker = true, showCarrier = true, editableStatus = true }) {
   return [
     {
       key: 'lane', header: 'Lane',
       render: (l) => (
         <div className="min-w-44">
-          <div className="font-medium">{l.originCity}, {l.originState} → {l.destCity}, {l.destState}</div>
+          <div className="flex items-center gap-1.5 font-medium">{l.originCity}, {l.originState} → {l.destCity}, {l.destState} <FitFlag load={l} /></div>
           <div className="text-xs text-muted">{[l.referenceNumber && `#${l.referenceNumber}`, l.equipment && label(l.equipment), l.commodity].filter(Boolean).join(' · ') || '—'}</div>
         </div>
       ),
@@ -39,11 +53,13 @@ export function loadColumns({ onEdit, onDelete, onDocs, showBroker = true, showC
     { key: 'rate', header: 'Rate', className: 'text-right', render: (l) => <span className="tabular font-medium">{money(l.rateCents, { digits: 0 })}</span> },
     { key: 'miles', header: 'Miles', className: 'text-right', render: (l) => <span className="tabular">{num(l.loadedMiles)}{l.deadheadMiles ? <span className="text-xs text-muted"> +{l.deadheadMiles} DH</span> : null}</span> },
     { key: 'rpm', header: 'RPM', className: 'text-right', render: (l) => <span className="tabular font-medium">{l.calc?.ratePerMile != null ? dollars(l.calc.ratePerMile) : '—'}</span> },
+    { key: 'docs', header: 'Paperwork', render: (l) => (l.docs ? <DocChips docs={l.docs} /> : <span className="text-muted">—</span>) },
     { key: 'status', header: 'Status', render: (l) => (editableStatus ? <LoadStatusSelect load={l} /> : <Badge color={LOAD_STATUS_COLOR[l.status]}>{label(l.status)}</Badge>) },
-    (onEdit || onDelete || onDocs) && {
+    (onEdit || onDelete || onDocs || onText) && {
       key: 'actions', header: <span className="sr-only">Actions</span>, className: 'text-right',
       render: (l) => (
         <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+          {onText && l.carrier && <IconButton icon={MessageSquare} label="Text carrier" onClick={() => onText(l)} />}
           {onDocs && <IconButton icon={Paperclip} label="Documents" onClick={() => onDocs(l)} />}
           {onEdit && <IconButton icon={Pencil} label="Edit load" onClick={() => onEdit(l)} />}
           {onDelete && <IconButton icon={Trash2} label="Delete load" onClick={() => onDelete(l)} className="hover:text-red-600" />}
@@ -53,15 +69,40 @@ export function loadColumns({ onEdit, onDelete, onDocs, showBroker = true, showC
   ].filter(Boolean);
 }
 
-function LoadsTab() {
+/** Phone layout of a load row: lane, money, paperwork and status stay on screen. */
+export function loadMobileRow({ onEdit, onDocs, onText }) {
+  return (l) => (
+    <div className="space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 truncate text-sm font-medium">{l.originCity}, {l.originState} → {l.destCity}, {l.destState} <FitFlag load={l} /></p>
+          <p className="truncate text-xs text-muted">{[l.referenceNumber && `#${l.referenceNumber}`, l.pickupDate && date(l.pickupDate, { month: 'short', day: 'numeric' }), l.broker?.companyName].filter(Boolean).join(' · ') || '—'}</p>
+        </div>
+        <span className="shrink-0 text-right text-sm tabular font-medium">{money(l.rateCents, { digits: 0 })}<span className="block text-xs font-normal text-muted">{l.calc?.ratePerMile != null ? `${dollars(l.calc.ratePerMile)}/mi` : ''}</span></span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <LoadStatusSelect load={l} />
+        <DocChips docs={l.docs} />
+        <span className="ml-auto flex">
+          {onText && l.carrier && <IconButton icon={MessageSquare} label="Text carrier" onClick={() => onText(l)} />}
+          {onDocs && <IconButton icon={Paperclip} label="Documents" onClick={() => onDocs(l)} />}
+          {onEdit && <IconButton icon={Pencil} label="Edit load" onClick={() => onEdit(l)} />}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LoadsTab({ onOpen }) {
   const { user } = useAuth();
   const [sp, setSp] = useSearchParams();
-  const params = Object.fromEntries(sp.entries());
+  const params = Object.fromEntries([...sp.entries()].filter(([k]) => !['load', 'tab', 'new', 'import'].includes(k)));
   const filters = { status: 'all', page: 1, sort: 'pickup', scope: 'mine', ...params };
   const setF = (patch) => setSp({ ...filters, page: 1, ...patch }, { replace: true });
   const q = useQuery({ queryKey: ['loads', 'list', filters], queryFn: () => api.get('/api/loads', { ...filters, pageSize: 25 }) });
   const [editing, setEditing] = useState(null);
   const [docsFor, setDocsFor] = useState(null);
+  const [texting, setTexting] = useState(null);
   const confirm = useConfirm();
   const remove = useApiMutation((id) => api.del(`/api/loads/${id}`), { success: 'Load deleted', invalidate: [['loads']] });
   const onDelete = async (l) => {
@@ -77,12 +118,15 @@ function LoadsTab() {
         <StatCard label="Average RPM" value={s?.avgRatePerMile != null ? dollars(s.avgRatePerMile) : '—'} tone="signal" />
       </div>
       <Card bodyClass="p-0" title={
-        <div className="flex flex-wrap items-center gap-2">
-          <Input type="search" placeholder="Search ref, city, commodity" defaultValue={filters.q || ''} className="h-8 w-52" aria-label="Search loads"
+        <div className="flex flex-wrap items-center gap-2 py-1">
+          <Input type="search" placeholder="Search ref, city, commodity" defaultValue={filters.q || ''} className="h-8 w-full sm:w-52" aria-label="Search loads"
             onKeyDown={(e) => { if (e.key === 'Enter') setF({ q: e.target.value }); }} onBlur={(e) => e.target.value !== (filters.q || '') && setF({ q: e.target.value })} />
           <Select aria-label="Status" className="h-8 w-36" value={filters.status} onChange={(e) => setF({ status: e.target.value })}>
             <option value="all">All statuses</option><option value="active">Active</option>
             {LOAD_STATUSES.map((st) => <option key={st} value={st}>{label(st)}</option>)}
+          </Select>
+          <Select aria-label="Paperwork" className="h-8 w-40" value={filters.missing || ''} onChange={(e) => setF({ missing: e.target.value })}>
+            <option value="">Any paperwork</option><option value="rate_confirmation">Missing rate con</option><option value="pod">Missing POD</option>
           </Select>
           <Select aria-label="Origin state" className="h-8 w-28" value={filters.originState || ''} onChange={(e) => setF({ originState: e.target.value })}>
             <option value="">Origin: any</option>{US_STATES.map((st) => <option key={st}>{st}</option>)}
@@ -105,8 +149,9 @@ function LoadsTab() {
         <QueryState query={q}>
           {(data) => (
             <>
-              <DataTable rows={data.items} columns={loadColumns({ onEdit: setEditing, onDelete, onDocs: setDocsFor })} onRowClick={setEditing}
-                empty={<EmptyState icon={Package} title="No loads match" action={<Button icon={Plus} onClick={() => setEditing({})}>Add a load</Button>}>Record booked loads to track revenue, rate per mile and lane history.</EmptyState>} />
+              <DataTable rows={data.items} columns={loadColumns({ onEdit: setEditing, onDelete, onDocs: setDocsFor, onText: setTexting })} onRowClick={(l) => onOpen(l.id)}
+                mobileRow={loadMobileRow({ onEdit: setEditing, onDocs: setDocsFor, onText: setTexting })}
+                empty={<EmptyState icon={Package} title="No loads match" action={<Button icon={Plus} onClick={() => setEditing({})}>Add a load</Button>}>Record booked loads to track revenue, rate per mile, paperwork and lane history.</EmptyState>} />
               <div className="border-t border-line px-3"><Pagination page={data.page} pages={data.pages} total={data.total} onPage={(p) => setSp({ ...filters, page: p })} /></div>
             </>
           )}
@@ -114,8 +159,11 @@ function LoadsTab() {
       </Card>
       <LoadFormModal open={!!editing} load={editing?.id ? editing : null} onClose={() => setEditing(null)} />
       <Modal open={!!docsFor} onClose={() => setDocsFor(null)} title={docsFor ? `Documents · ${docsFor.originCity} → ${docsFor.destCity}` : ''} size="lg">
-        {docsFor && <DocumentsPanel loadId={docsFor.id} types={['rate_confirmation', 'bol', 'pod', 'other']} />}
+        {docsFor && <DocumentsPanel loadId={docsFor.id} types={LOAD_DOC_TYPES} />}
       </Modal>
+      {texting?.carrier && (
+        <TextLogModal carrier={texting.carrier} loadId={texting.id} category="driver" title={`Text ${texting.carrier.companyName}`} onClose={() => setTexting(null)} />
+      )}
     </div>
   );
 }
@@ -130,6 +178,12 @@ function LanesTab() {
             <p className="border-b border-line px-4 py-2.5 text-xs text-muted">{data.note}</p>
             <DataTable rows={data.items.map((l) => ({ ...l, id: `${l.originState}-${l.destState}` }))}
               empty={<EmptyState title="No lane history yet">Lanes appear as you record loads.</EmptyState>}
+              mobileRow={(l) => (
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-medium">{l.originState} → {l.destState}<span className="block text-xs font-normal text-muted">{l.loads} load{l.loads === 1 ? '' : 's'} · last {relative(l.lastLoadAt)}</span></span>
+                  <span className="text-right tabular">{dollars(l.avgRatePerMile)}<span className="block text-xs text-muted">{dollars(l.minRatePerMile)} – {dollars(l.maxRatePerMile)}</span></span>
+                </div>
+              )}
               columns={[
                 { key: 'lane', header: 'Lane', render: (l) => <span className="font-medium">{l.originState} → {l.destState}</span> },
                 { key: 'loads', header: 'Loads', className: 'text-right', render: (l) => <span className="tabular">{l.loads}</span> },
@@ -146,19 +200,27 @@ function LanesTab() {
 }
 
 export default function Loads() {
-  const [newParam] = useSearchParams();
+  const [sp, setSp] = useSearchParams();
   const [tab, setTab] = useState('loads');
-  const [creating, setCreating] = useState(() => newParam.get('new') === '1');
+  const [creating, setCreating] = useState(() => (sp.get('new') === '1' ? 'new' : sp.get('import') === '1' ? 'import' : null));
+  const openId = sp.get('load');
+  const setOpen = (id, detailTab) => {
+    const next = new URLSearchParams(sp);
+    if (id) { next.set('load', id); if (detailTab) next.set('tab', detailTab); else next.delete('tab'); } else { next.delete('load'); next.delete('tab'); }
+    setSp(next, { replace: !id });
+  };
   return (
     <div>
-      <PageHeader title="Loads" subtitle="Booked freight, rate per mile, paperwork and lane history."
+      <PageHeader title="Loads" subtitle="Booked freight, rate per mile, paperwork, detention and lane history."
         actions={<>
           <Button variant="secondary" icon={Calculator} to="/app/loads/calculator">Rate calculator</Button>
-          <Button icon={Plus} onClick={() => setCreating(true)}>New load</Button>
+          <Button variant="secondary" icon={FileUp} onClick={() => setCreating('import')}>Import rate con</Button>
+          <Button icon={Plus} onClick={() => setCreating('new')}>New load</Button>
         </>} />
       <Tabs className="mb-4" value={tab} onChange={setTab} tabs={[{ value: 'loads', label: 'Loads' }, { value: 'lanes', label: 'Lane history' }]} />
-      {tab === 'loads' ? <LoadsTab /> : <LanesTab />}
-      <LoadFormModal open={creating} onClose={() => setCreating(false)} />
+      {tab === 'loads' ? <LoadsTab onOpen={(id) => setOpen(id)} /> : <LanesTab />}
+      <LoadFormModal open={!!creating} importOpen={creating === 'import'} onClose={() => setCreating(null)} onSaved={(l) => l?.id && setOpen(l.id)} />
+      <LoadDetailModal id={openId} initialTab={sp.get('tab') || 'overview'} onClose={() => setOpen(null)} />
     </div>
   );
 }

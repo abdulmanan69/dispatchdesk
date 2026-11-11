@@ -6,23 +6,44 @@ import { parse, z, reqStr, optStr, reqEmail, pageQuery, paginate, pageResult, cl
 import { encrypt, signPayload, verifyPayload, randomToken } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { assertLimit, effectivePlan } from '../lib/plans.js';
-import { loadCarrier, loadOwned } from '../lib/access.js';
+import { loadCarrier, loadOwned, readableOwnerIds } from '../lib/access.js';
+import { accessChecker, chunks } from '../services/carriers/query.js';
+import { startOfUserDay } from '../lib/timezones.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
-import { SMTP_PRESETS, SMTP_PROVIDERS, SMTP_PROVIDER_KEYS, verifySmtp } from '../services/email/smtp.js';
-import { sendWithAccount, pickAccount, blockedReason, deliverEmail } from '../services/email/index.js';
+import { onlySent } from '../services/carriers/normalize.js';
+import { SMTP_PRESETS, SMTP_PROVIDERS, SMTP_PROVIDER_KEYS, SMTP_PORTS, verifySmtp, smtpErrorMessage } from '../services/email/smtp.js';
+import { sendWithAccount, pickAccount, blockedReason, deliverEmail, mailboxSentToday } from '../services/email/index.js';
 import { renderContent, MERGE_FIELDS } from '../services/email/render.js';
 import { OAUTH_PROVIDERS, buildAuthUrl, exchangeCode, oauthAvailability } from '../services/email/oauth.js';
+import { resolveAttachments, parseAttachments, MAX_ATTACHMENTS } from '../services/email/attachments.js';
+import { imapSupport, imapSettings, testImap, assertPublicHost } from '../services/email/imap.js';
+import { recordReply } from '../services/email/replies.js';
 
 const r = Router();
-const startOfDay = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 
-const serializeAccount = (a) => ({
-  id: a.id, provider: a.provider, label: a.label, fromEmail: a.fromEmail, fromName: a.fromName,
-  smtpHost: a.smtpHost, smtpPort: a.smtpPort, smtpSecure: a.smtpSecure, smtpUser: a.smtpUser,
-  status: a.status, lastError: a.lastError, lastVerifiedAt: a.lastVerifiedAt, dailyLimit: a.dailyLimit,
-  cooldownSeconds: a.cooldownSeconds, lastSentAt: a.lastSentAt, isDefault: a.isDefault, createdAt: a.createdAt,
-  hasCredentials: !!a.secretEnc,
-});
+const serializeAccount = (a, tz) => {
+  const imap = imapSupport(a);
+  const s = imapSettings(a);
+  return {
+    id: a.id, provider: a.provider, label: a.label, fromEmail: a.fromEmail, fromName: a.fromName,
+    smtpHost: a.smtpHost, smtpPort: a.smtpPort, smtpSecure: a.smtpSecure, smtpUser: a.smtpUser,
+    status: a.status, lastError: a.lastError, lastVerifiedAt: a.lastVerifiedAt, dailyLimit: a.dailyLimit,
+    cooldownSeconds: a.cooldownSeconds, lastSentAt: a.lastSentAt, isDefault: a.isDefault, createdAt: a.createdAt,
+    hasCredentials: !!a.secretEnc,
+    sentToday: mailboxSentToday(a, tz),
+    // Reply and bounce detection (IMAP, opt-in).
+    imapSupported: imap.supported, imapNote: imap.note, imapEnabled: !!a.imapEnabled && imap.supported,
+    imapHost: s.host || null, imapPort: s.port, imapSecure: !!s.secure, imapCheckedAt: a.imapCheckedAt, imapError: a.imapError,
+  };
+};
+
+/** A mailbox id from the client must be one of the caller's mailboxes (any status: drafts keep their choice). */
+async function ownMailboxId(req, accountId) {
+  if (!accountId) return null;
+  const a = await prisma.emailAccount.findFirst({ where: { id: String(accountId), userId: req.user.id }, select: { id: true } });
+  if (!a) throw badRequest('Selected mailbox is not connected');
+  return a.id;
+}
 
 // ---------------------------------------------------------------------------
 // OAuth callback (reached by browser redirect from Google / Microsoft).
@@ -71,7 +92,7 @@ r.use(requireAuth, requirePermission('email.use'));
 r.get('/status', ah(async (req, res) => {
   const [mailboxes, sentToday, scheduled, { plan }, oauth] = await Promise.all([
     prisma.emailAccount.count({ where: { userId: req.user.id, status: 'connected' } }),
-    prisma.email.count({ where: { userId: req.user.id, status: 'sent', sentAt: { gte: startOfDay() } } }),
+    prisma.email.count({ where: { userId: req.user.id, status: 'sent', sentAt: { gte: startOfUserDay(req.user.timezone) } } }),
     prisma.email.count({ where: { userId: req.user.id, status: 'scheduled' } }),
     effectivePlan(req.user),
     oauthAvailability(),
@@ -98,18 +119,26 @@ r.get('/connect-options', ah(async (req, res) => {
 // ---------------------------------------------------------------------------
 r.get('/accounts', ah(async (req, res) => {
   const rows = await prisma.emailAccount.findMany({ where: { userId: req.user.id }, orderBy: { createdAt: 'asc' } });
-  const sent = await prisma.email.groupBy({ by: ['emailAccountId'], where: { userId: req.user.id, status: 'sent', sentAt: { gte: startOfDay() } }, _count: true });
-  const byId = Object.fromEntries(sent.map((s) => [s.emailAccountId, s._count]));
-  res.json({ items: rows.map((a) => ({ ...serializeAccount(a), sentToday: byId[a.id] || 0 })) });
+  res.json({ items: rows.map((a) => serializeAccount(a, req.user.timezone)) });
 }));
 
+const IMAP_PORTS = [993, 143];
+const hostName = z.preprocess((v) => (v === '' ? null : v), z.string().trim().toLowerCase().max(200).regex(/^[a-z0-9.-]+$/, 'Enter a server name such as imap.example.com').nullable().optional());
+const imapFields = {
+  imapEnabled: z.boolean().optional(),
+  imapHost: hostName,
+  imapPort: z.coerce.number().int().refine((p) => IMAP_PORTS.includes(p), 'IMAP uses port 993 (SSL) or 143').optional(),
+  imapSecure: z.boolean().optional(),
+};
+
 const smtpSchema = z.object({
+  ...imapFields,
   provider: z.enum(SMTP_PROVIDER_KEYS).default('smtp'),
   label: optStr(100),
   fromEmail: reqEmail,
   fromName: optStr(100),
   host: optStr(200),
-  port: z.coerce.number().int().min(1).max(65535).optional(),
+  port: z.coerce.number().int().refine((p) => SMTP_PORTS.includes(p), `SMTP uses port ${SMTP_PORTS.join(', ')}`).optional(),
   secure: z.boolean().optional(),
   user: optStr(200),
   password: z.string().min(1, 'Password is required').max(500),
@@ -133,7 +162,9 @@ async function verifyOrThrow({ host, port, secure, user }, pass) {
   try {
     await verifySmtp({ host, port, secure, user, pass });
   } catch (err) {
-    throw badRequest(`Could not sign in to ${host}:${port}: ${err.message}`);
+    // Fixed text for connection and sign-in failures: a server banner, or refused versus timed out, must not reach
+    // the user (that would turn this form into a port scanner).
+    throw badRequest(`Could not sign in to ${host}:${port}. ${smtpErrorMessage(err)}`);
   }
 }
 
@@ -149,6 +180,9 @@ r.post('/accounts/smtp', ah(async (req, res) => {
   const b = parse(smtpSchema, req.body);
   const { preset, host, port, secure, user } = smtpConfig(b);
   await verifyOrThrow({ host, port, secure, user }, b.password);
+  const imap = b.imapEnabled ? imapSettings({ provider: b.provider }, { host: b.imapHost, port: b.imapPort, secure: b.imapSecure }) : null;
+  if (imap && !imap.host) throw badRequest('Enter the IMAP server to detect replies and bounces');
+  if (imap) await assertPublicHost(imap.host);
   const count = await prisma.emailAccount.count({ where: { userId: req.user.id, status: 'connected' } });
   const account = await prisma.emailAccount.create({
     data: {
@@ -156,10 +190,11 @@ r.post('/accounts/smtp', ah(async (req, res) => {
       fromEmail: b.fromEmail, fromName: b.fromName || req.user.name, smtpHost: host, smtpPort: port, smtpSecure: secure, smtpUser: user,
       secretEnc: encrypt(b.password), status: 'connected', lastVerifiedAt: new Date(), dailyLimit: b.dailyLimit,
       cooldownSeconds: b.cooldownSeconds, isDefault: count === 0,
+      ...(imap ? { imapEnabled: true, imapHost: imap.host, imapPort: imap.port, imapSecure: !!imap.secure } : {}),
     },
   });
-  await audit(req, 'email.account_connected', { entityType: 'email_account', entityId: account.id, details: { provider: b.provider, host } });
-  res.status(201).json({ account: serializeAccount(account) });
+  await audit(req, 'email.account_connected', { entityType: 'email_account', entityId: account.id, details: { provider: b.provider, host, imap: !!imap } });
+  res.status(201).json({ account: serializeAccount(account, req.user.timezone) });
 }));
 
 async function ownAccount(req) {
@@ -167,6 +202,24 @@ async function ownAccount(req) {
   if (!a) throw notFound('Mailbox not found');
   return a;
 }
+
+/**
+ * Sign in to the mailbox's IMAP server and open the inbox (read-only). Body may override { imapHost, imapPort,
+ * imapSecure } to test settings before saving them. Nothing is stored except the result on success when asked.
+ */
+r.post('/accounts/:id/imap/test', ah(async (req, res) => {
+  const a = await ownAccount(req);
+  const sup = imapSupport(a);
+  if (!sup.supported) throw badRequest(sup.note);
+  const b = parse(z.object(imapFields), req.body || {});
+  const settings = imapSettings(a, { host: b.imapHost, port: b.imapPort, secure: b.imapSecure });
+  if (!settings.host) throw badRequest('Enter the IMAP server for this mailbox');
+  if (!IMAP_PORTS.includes(settings.port)) throw badRequest('IMAP uses port 993 (SSL) or 143');
+  await assertPublicHost(settings.host);
+  const out = await testImap(a, settings);
+  if (!out.ok) throw badRequest(out.message);
+  res.json({ ok: true, message: out.message, settings: { host: settings.host, port: settings.port, secure: !!settings.secure } });
+}));
 
 r.post('/accounts/:id/test', ah(async (req, res) => {
   const a = await ownAccount(req);
@@ -180,8 +233,9 @@ r.post('/accounts/:id/test', ah(async (req, res) => {
     await prisma.emailAccount.update({ where: { id: a.id }, data: { status: 'connected', lastError: null, lastVerifiedAt: new Date() } });
     res.json({ ok: true, to: req.user.email, providerMessageId: result.providerMessageId });
   } catch (err) {
-    await prisma.emailAccount.update({ where: { id: a.id }, data: { status: 'error', lastError: err.message.slice(0, 500) } });
-    throw badRequest(`Test failed: ${err.message}`);
+    const message = a.smtpHost ? smtpErrorMessage(err) : String(err.message || 'Sending failed');
+    await prisma.emailAccount.update({ where: { id: a.id }, data: { status: 'error', lastError: message.slice(0, 500) } });
+    throw badRequest(`Test failed: ${message}`);
   }
 }));
 
@@ -194,24 +248,42 @@ r.post('/accounts/:id/credentials', ah(async (req, res) => {
   await verifyOrThrow({ host: a.smtpHost, port: a.smtpPort, secure: a.smtpSecure, user: a.smtpUser || a.fromEmail }, b.password);
   const row = await prisma.emailAccount.update({
     where: { id: a.id },
-    data: { secretEnc: encrypt(b.password), status: 'connected', lastError: null, lastVerifiedAt: new Date() },
+    // A new password may unlock IMAP again: clear the last IMAP error so the next poll retries right away.
+    data: { secretEnc: encrypt(b.password), status: 'connected', lastError: null, lastVerifiedAt: new Date(), imapError: null },
   });
   await audit(req, 'email.account_reconnected', { entityType: 'email_account', entityId: a.id });
-  res.json({ account: serializeAccount(row) });
+  res.json({ account: serializeAccount(row, req.user.timezone) });
 }));
 
 r.patch('/accounts/:id', ah(async (req, res) => {
   const a = await ownAccount(req);
-  const b = parse(z.object({
+  // Only fields the client sent are written (no schema defaults sneak into a partial update).
+  const b = onlySent(parse(z.object({
     label: z.string().trim().min(1).max(100).optional(),
     fromName: optStr(100),
     dailyLimit: z.coerce.number().int().min(1).max(5000).optional(),
     cooldownSeconds: z.coerce.number().int().min(0).max(3600).optional(),
     isDefault: z.boolean().optional(),
-  }), req.body);
-  if (b.isDefault) await prisma.emailAccount.updateMany({ where: { userId: req.user.id }, data: { isDefault: false } });
-  const row = await prisma.emailAccount.update({ where: { id: a.id }, data: clean(b) });
-  res.json({ account: serializeAccount(row) });
+    ...imapFields,
+  }), req.body), req.body);
+  const data = clean(b);
+  const serverChanged = ['imapHost', 'imapPort', 'imapSecure'].some((k) => k in data && data[k] !== a[k]);
+  if (data.imapEnabled || (a.imapEnabled && serverChanged)) {
+    const sup = imapSupport(a);
+    if (!sup.supported) throw badRequest(sup.note);
+    const s = imapSettings(a, { host: data.imapHost, port: data.imapPort, secure: data.imapSecure });
+    if (!s.host) throw badRequest('Enter the IMAP server to detect replies and bounces');
+    await assertPublicHost(s.host);
+    Object.assign(data, { imapHost: s.host, imapPort: s.port, imapSecure: !!s.secure });
+  }
+  // Turning detection on, or pointing it at another server, starts fresh from the newest messages.
+  if ((data.imapEnabled && !a.imapEnabled) || serverChanged) Object.assign(data, { imapLastUid: null, imapError: null, imapCheckedAt: null });
+  if (data.isDefault) await prisma.emailAccount.updateMany({ where: { userId: req.user.id }, data: { isDefault: false } });
+  const row = await prisma.emailAccount.update({ where: { id: a.id }, data });
+  if ('imapEnabled' in data && data.imapEnabled !== a.imapEnabled) {
+    await audit(req, data.imapEnabled ? 'email.imap_enabled' : 'email.imap_disabled', { entityType: 'email_account', entityId: a.id });
+  }
+  res.json({ account: serializeAccount(row, req.user.timezone) });
 }));
 
 /** First DELETE disconnects (wipes credentials); deleting a disconnected mailbox removes it. */
@@ -225,7 +297,7 @@ r.delete('/accounts/:id', ah(async (req, res) => {
   }
   await prisma.emailAccount.update({
     where: { id: a.id },
-    data: { status: 'disconnected', secretEnc: null, accessTokenEnc: null, tokenExpiresAt: null, isDefault: false },
+    data: { status: 'disconnected', secretEnc: null, accessTokenEnc: null, tokenExpiresAt: null, isDefault: false, imapEnabled: false },
   });
   await audit(req, 'email.account_disconnected', { entityType: 'email_account', entityId: a.id });
   res.json({ disconnected: true });
@@ -243,17 +315,23 @@ r.get('/oauth/:provider/start', ah(async (req, res) => {
 // ---------------------------------------------------------------------------
 // Templates
 // ---------------------------------------------------------------------------
+export const EMAIL_TEMPLATE_CATEGORIES = ['carrier', 'broker', 'driver', 'follow_up', 'other'];
+// Per-user cap, the same as text templates (routes/templates.js): keeps the list and the picker bounded.
+const MAX_EMAIL_TEMPLATES = 500;
+
 const templateSchema = z.object({
   name: reqStr(120), subject: reqStr(300), body: reqStr(20000),
-  category: z.enum(['carrier', 'broker', 'follow_up', 'other']).default('carrier'),
+  category: z.enum(EMAIL_TEMPLATE_CATEGORIES).default('carrier'),
 });
 
 r.get('/templates', ah(async (req, res) => {
   const where = { ownerId: req.user.id, ...(req.query.category ? { category: String(req.query.category) } : {}) };
-  res.json({ items: await prisma.emailTemplate.findMany({ where, orderBy: { updatedAt: 'desc' } }) });
+  res.json({ items: await prisma.emailTemplate.findMany({ where, orderBy: { updatedAt: 'desc' }, take: MAX_EMAIL_TEMPLATES }) });
 }));
 r.post('/templates', ah(async (req, res) => {
   const b = parse(templateSchema, req.body);
+  const count = await prisma.emailTemplate.count({ where: { ownerId: req.user.id } });
+  if (count >= MAX_EMAIL_TEMPLATES) throw badRequest(`You can keep up to ${MAX_EMAIL_TEMPLATES} email templates. Delete some you no longer use first.`);
   res.status(201).json({ template: await prisma.emailTemplate.create({ data: { ...b, ownerId: req.user.id } }) });
 }));
 async function ownTemplate(req, id = req.params.id) {
@@ -263,7 +341,8 @@ async function ownTemplate(req, id = req.params.id) {
 }
 r.patch('/templates/:id', ah(async (req, res) => {
   const t = await ownTemplate(req);
-  const b = parse(templateSchema.partial(), req.body);
+  // onlySent: .partial() keeps .default('carrier'), which would reset the category on every partial edit.
+  const b = onlySent(parse(templateSchema.partial(), req.body), req.body);
   res.json({ template: await prisma.emailTemplate.update({ where: { id: t.id }, data: clean(b) }) });
 }));
 r.delete('/templates/:id', ah(async (req, res) => {
@@ -285,6 +364,7 @@ r.get('/messages', ah(async (req, res) => {
   const q = parse(z.object({
     ...pageQuery,
     status: z.enum(['draft', 'scheduled', 'sending', 'sent', 'failed', 'canceled']).optional(),
+    filter: z.enum(['replied', 'bounced']).optional(), // emails that got a reply / bounced (reply detection)
     carrierId: z.string().optional(), brokerId: z.string().optional(), q: z.string().max(200).optional(),
   }), req.query);
   let where;
@@ -296,13 +376,20 @@ r.get('/messages', ah(async (req, res) => {
     where = { brokerId: q.brokerId };
   } else where = { userId: req.user.id };
   if (q.status) where.status = q.status;
+  if (q.filter === 'replied') where.repliedAt = { not: null };
+  if (q.filter === 'bounced') where.bouncedAt = { not: null };
   if (q.q) where.OR = [{ subject: { contains: q.q } }, { toEmail: { contains: q.q } }];
   const [items, total] = await Promise.all([
-    prisma.email.findMany({ where, include: messageInclude, orderBy: [{ updatedAt: 'desc' }], ...paginate(q) }),
+    prisma.email.findMany({ where, include: messageInclude, orderBy: [q.filter === 'replied' ? { repliedAt: 'desc' } : { updatedAt: 'desc' }], ...paginate(q) }),
     prisma.email.count({ where }),
   ]);
-  res.json(pageResult(items, total, q));
+  res.json(pageResult(items.map(shapeMessage), total, q));
 }));
+
+/** Email row for the client: attachments as a parsed list. */
+function shapeMessage(m) {
+  return { ...m, attachments: parseAttachments(m.attachments) };
+}
 
 async function ownMessage(req) {
   const m = await prisma.email.findFirst({ where: { id: String(req.params.id), userId: req.user.id }, include: messageInclude });
@@ -310,10 +397,13 @@ async function ownMessage(req) {
   return m;
 }
 
-r.get('/messages/:id', ah(async (req, res) => res.json({ email: await ownMessage(req) })));
+r.get('/messages/:id', ah(async (req, res) => res.json({ email: shapeMessage(await ownMessage(req)) })));
+
+const documentIds = z.array(z.string().trim().min(1).max(40)).max(MAX_ATTACHMENTS, `Attach at most ${MAX_ATTACHMENTS} files per email`).optional();
 
 const composeSchema = z.object({
   accountId: optStr(60),
+  documentIds, // stored Documents to attach (≤5, ≤10 MB total, access-checked)
   toEmail: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().toLowerCase().email().max(254).optional()),
   subject: z.string().trim().max(300).optional(),
   body: z.string().max(50000).optional(),
@@ -347,14 +437,16 @@ r.post('/messages', ah(async (req, res) => {
     body: b.body ?? template?.body ?? '',
     carrier, broker, user: req.user,
   });
+  const attachments = await resolveAttachments(req.user, b.documentIds);
   const base = {
     userId: req.user.id, carrierId: carrier?.id ?? null, brokerId: broker?.id ?? null, templateId: template?.id ?? null,
-    toEmail: toEmail || '', subject: rendered.subject, body: rendered.body, aiGenerated: !!b.aiGenerated,
+    toEmail: toEmail || '', subject: rendered.subject, body: rendered.body, aiGenerated: !!b.aiGenerated, attachments,
   };
 
   if (b.mode === 'draft') {
-    const email = await prisma.email.create({ data: { ...base, status: 'draft', emailAccountId: b.accountId || null } });
-    return res.status(201).json({ email, outcome: 'draft', message: 'Draft saved' });
+    // The mailbox must be the caller's (otherwise its label and address would be readable through the draft).
+    const email = await prisma.email.create({ data: { ...base, status: 'draft', emailAccountId: await ownMailboxId(req, b.accountId) } });
+    return res.status(201).json({ email: shapeMessage(email), outcome: 'draft', message: 'Draft saved' });
   }
 
   if (!toEmail) throw badRequest('Recipient email is required');
@@ -367,13 +459,13 @@ r.post('/messages', ah(async (req, res) => {
   if (b.mode === 'schedule') {
     if (!b.scheduledAt || b.scheduledAt.getTime() < Date.now() - 60000) throw badRequest('Pick a future send time');
     const email = await prisma.email.create({ data: { ...base, status: 'scheduled', scheduledAt: b.scheduledAt, emailAccountId: account.id } });
-    return res.status(201).json({ email, outcome: 'scheduled', message: `Scheduled for ${b.scheduledAt.toISOString()}` });
+    return res.status(201).json({ email: shapeMessage(email), outcome: 'scheduled', message: `Scheduled for ${b.scheduledAt.toISOString()}` });
   }
 
   await assertLimit(req.user, 'emailsToday');
   const created = await prisma.email.create({ data: { ...base, status: 'scheduled', scheduledAt: new Date(), emailAccountId: account.id } });
   const result = await deliverEmail(created.id, { retry: false });
-  res.status(201).json({ email: result.email, outcome: result.outcome, message: result.message });
+  res.status(201).json({ email: shapeMessage(result.email), outcome: result.outcome, message: result.message });
 }));
 
 r.post('/messages/bulk', ah(async (req, res) => {
@@ -391,26 +483,55 @@ r.post('/messages/bulk', ah(async (req, res) => {
   const body = b.body || template?.body;
   if (!subject || !body) throw badRequest('Choose a template or provide a subject and body');
   const account = await requireMailbox(req, b.accountId);
+
+  // Recipients are loaded and access-checked in one query per kind (same rules as loadCarrier / loadOwned:
+  // any id the caller may not read makes the whole request 404, so nothing is half-queued).
+  const carrierIds = [...new Set((b.carrierIds || []).map(String))];
+  const brokerIds = [...new Set((b.brokerIds || []).map(String))];
   const recipients = [];
-  for (const id of b.carrierIds || []) recipients.push({ carrier: await loadCarrier(req.user, id, { include: { contacts: true } }) });
-  for (const id of b.brokerIds || []) recipients.push({ broker: await loadOwned('broker', req.user, id) });
+  if (carrierIds.length) {
+    const { readable } = await accessChecker(req.user);
+    const rows = await prisma.carrier.findMany({ where: { id: { in: carrierIds } }, include: { contacts: true } });
+    const byId = new Map(rows.filter(readable).map((c) => [c.id, c]));
+    if (byId.size !== carrierIds.length) throw notFound('Carrier not found');
+    for (const id of carrierIds) recipients.push({ carrier: byId.get(id) });
+  }
+  if (brokerIds.length) {
+    const owners = await readableOwnerIds(req.user, 'team');
+    const rows = await prisma.broker.findMany({ where: { id: { in: brokerIds }, ownerId: { in: owners } } });
+    const byId = new Map(rows.map((x) => [x.id, x]));
+    if (byId.size !== brokerIds.length) throw notFound();
+    for (const id of brokerIds) recipients.push({ broker: byId.get(id) });
+  }
   if (!recipients.length) throw badRequest('Select at least one recipient');
+
+  // Do-not-email list: one lookup for every address instead of one per recipient.
+  const addresses = [...new Set(recipients.map((x) => String((x.carrier || x.broker).email || '').trim().toLowerCase()).filter(Boolean))];
+  const suppressed = new Map((addresses.length
+    ? await prisma.emailSuppression.findMany({ where: { ownerId: req.user.id, email: { in: addresses } }, select: { email: true, reason: true } })
+    : []).map((s) => [s.email, s.reason]));
+
   const when = b.scheduledAt && b.scheduledAt > new Date() ? b.scheduledAt : new Date();
-  let queued = 0;
+  const rows = [];
   const skipped = [];
   for (const rcp of recipients) {
     const entity = rcp.carrier || rcp.broker;
-    if (!entity.email) { skipped.push({ name: entity.companyName, reason: 'No email address' }); continue; }
-    const blocked = await blockedReason(req.user.id, entity.email, rcp.carrier?.id);
-    if (blocked) { skipped.push({ name: entity.companyName, reason: blocked }); continue; }
+    const email = String(entity.email || '').trim().toLowerCase();
+    if (!email) { skipped.push({ name: entity.companyName, reason: 'No email address' }); continue; }
+    if (suppressed.has(email)) { skipped.push({ name: entity.companyName, reason: `${email} is on your do-not-email list (${suppressed.get(email)})` }); continue; }
+    if (rcp.carrier?.doNotEmail) { skipped.push({ name: entity.companyName, reason: 'Carrier is marked do-not-email' }); continue; }
     const rendered = renderContent({ subject, body, carrier: rcp.carrier, broker: rcp.broker, user: req.user });
-    await prisma.email.create({
-      data: {
-        userId: req.user.id, carrierId: rcp.carrier?.id ?? null, brokerId: rcp.broker?.id ?? null, templateId: template?.id ?? null,
-        toEmail: entity.email, subject: rendered.subject, body: rendered.body, status: 'scheduled', scheduledAt: when, emailAccountId: account.id,
-      },
+    rows.push({
+      userId: req.user.id, carrierId: rcp.carrier?.id ?? null, brokerId: rcp.broker?.id ?? null, templateId: template?.id ?? null,
+      toEmail: entity.email, subject: rendered.subject, body: rendered.body, status: 'scheduled', scheduledAt: when, emailAccountId: account.id,
     });
-    queued++;
+  }
+  for (const part of chunks(rows, 100)) await prisma.email.createMany({ data: part });
+  const queued = rows.length;
+  // One use per bulk send, the same as the carrier list's bulk email and the template picker (POST /api/templates/render
+  // with use: true). Text the caller sent for both parts came from the picker, which already counted it, or was typed.
+  if (template && queued && (!b.subject || !b.body)) {
+    await prisma.emailTemplate.updateMany({ where: { id: template.id, ownerId: req.user.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date() } });
   }
   res.status(201).json({ queued, skipped, message: `${queued} email(s) queued. They send in the background, respecting your mailbox cooldown and daily limits.` });
 }));
@@ -423,12 +544,13 @@ r.patch('/messages/:id', ah(async (req, res) => {
     subject: z.string().trim().max(300).optional(),
     body: z.string().max(50000).optional(),
     accountId: optStr(60),
+    documentIds,
   }), req.body);
-  const email = await prisma.email.update({
-    where: { id: m.id },
-    data: clean({ toEmail: b.toEmail === null ? '' : b.toEmail, subject: b.subject, body: b.body, emailAccountId: b.accountId }),
-  });
-  res.json({ email });
+  const data = clean({ toEmail: b.toEmail === null ? '' : b.toEmail, subject: b.subject, body: b.body });
+  if (b.accountId !== undefined) data.emailAccountId = await ownMailboxId(req, b.accountId);
+  if (b.documentIds !== undefined) data.attachments = await resolveAttachments(req.user, b.documentIds);
+  const email = await prisma.email.update({ where: { id: m.id }, data });
+  res.json({ email: shapeMessage(email) });
 }));
 
 r.post('/messages/:id/send', ah(async (req, res) => {
@@ -440,16 +562,30 @@ r.post('/messages/:id/send', ah(async (req, res) => {
   if (blocked) throw badRequest(blocked);
   await requireMailbox(req, m.emailAccountId);
   await assertLimit(req.user, 'emailsToday');
-  if (m.status === 'failed') await prisma.email.update({ where: { id: m.id }, data: { attempts: 0 } });
+  if (m.status === 'failed') await prisma.email.updateMany({ where: { id: m.id, status: 'failed' }, data: { attempts: 0 } });
   const result = await deliverEmail(m.id, { retry: false });
-  res.json({ email: result.email, outcome: result.outcome, message: result.message });
+  res.json({ email: shapeMessage(result.email), outcome: result.outcome, message: result.message });
 }));
 
 r.post('/messages/:id/cancel', ah(async (req, res) => {
   const m = await ownMessage(req);
   if (m.status !== 'scheduled') throw badRequest('Only scheduled emails can be canceled');
-  const email = await prisma.email.update({ where: { id: m.id }, data: { status: 'canceled', nextAttemptAt: null } });
-  res.json({ email });
+  // Compare-and-set: an email the scheduler already claimed (sending) or sent cannot be canceled any more.
+  const res0 = await prisma.email.updateMany({ where: { id: m.id, status: 'scheduled' }, data: { status: 'canceled', nextAttemptAt: null } });
+  if (!res0.count) throw badRequest('This email is already being sent');
+  res.json({ email: shapeMessage(await prisma.email.findUnique({ where: { id: m.id } })) });
+}));
+
+/**
+ * Mark a sent email as replied by hand (when reply detection is off or the reply came another way).
+ * Stops the carrier's running sequences, logs the reply and creates a "Reply from" follow-up. Idempotent.
+ */
+r.post('/messages/:id/replied', ah(async (req, res) => {
+  const m = await ownMessage(req);
+  if (m.status !== 'sent') throw badRequest('Only sent emails can be marked as replied');
+  if (m.repliedAt) return res.json({ email: shapeMessage(m), stopped: 0, already: true });
+  const out = await recordReply({ user: req.user, email: m, fromEmail: m.toEmail, subject: `Re: ${m.subject}`, source: 'manual' });
+  res.json({ email: shapeMessage(await prisma.email.findUnique({ where: { id: m.id }, include: messageInclude })), stopped: out.stopped });
 }));
 
 r.delete('/messages/:id', ah(async (req, res) => {

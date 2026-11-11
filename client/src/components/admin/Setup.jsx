@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, Copy, DatabaseBackup, Download, ExternalLink, FlaskConical, Play, Settings2, Wand2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
+import { dateTime } from '../../lib/format.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../Toast.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
@@ -106,8 +107,13 @@ function JobsPanel({ initial }) {
           {(q.data?.items || []).map((j) => (
             <tr key={j.name}>
               <td className="px-3 py-2"><div className="font-medium">{j.label}</div><div className="font-mono text-[11px] text-muted">{j.name}</div></td>
-              <td className="whitespace-nowrap px-3 py-2 text-muted">{j.schedule}</td>
-              <td className="whitespace-nowrap px-3 py-2 text-muted">{j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : 'Not yet'}{j.durationMs != null && <span className="block text-[11px]">{j.durationMs} ms</span>}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-muted">{j.schedule}{j.lane === 'priority' && <span className="block text-[11px]">Priority lane</span>}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-muted">
+                {j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : 'Not yet'}
+                {j.durationMs != null && <span className="block text-[11px]">{j.durationMs} ms</span>}
+                {/* How late the last run started after it was due: a growing number means the lane is starved. */}
+                {j.lagMs != null && j.lagMs >= 60_000 && <span className="block text-[11px] text-c-amber">Started {Math.round(j.lagMs / 60_000)} min late</span>}
+              </td>
               <td className="px-3 py-2">
                 {j.lastOk == null ? <Badge>Waiting</Badge> : j.lastOk ? <Badge color="green">OK</Badge> : <Badge color="red" title={j.lastError || ''}>Failed</Badge>}
                 {j.result && <span className="mt-1 block max-w-xs truncate font-mono text-[11px] text-muted" title={JSON.stringify(j.result)}>{JSON.stringify(j.result)}</span>}
@@ -117,6 +123,33 @@ function JobsPanel({ initial }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** Today's platform mail use (UTC day, counted across all servers). */
+function PlatformMailPanel({ mail }) {
+  const cells = [
+    ['Sent today', `${mail.sent ?? 0} of ${mail.limit}`],
+    ['Kept for sign-in and reset', mail.reserve],
+    ['Digests and notices', `${mail.other ?? 0} of ${mail.otherLimit ?? Math.max(0, mail.limit - mail.reserve)}`],
+    ['Held back by the budget', mail.refused ?? 0],
+    ['Failed', mail.failed ?? 0],
+  ];
+  return (
+    <div className="space-y-2 rounded-md bg-surface-2 p-3 text-sm">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+        {cells.map(([k, v]) => (
+          <div key={k} className="min-w-0">
+            <dt className="text-xs text-muted">{k}</dt>
+            <dd className="tabular font-medium">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {mail.lastError && (
+        <p className="break-words text-xs text-red-600 dark:text-red-400">Last error{mail.lastErrorAt ? ` (${dateTime(mail.lastErrorAt)})` : ''}: {mail.lastError}</p>
+      )}
+      <p className="text-xs text-muted">Change the daily limit in System settings → Email (Platform emails per day).</p>
     </div>
   );
 }
@@ -164,6 +197,7 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
           )}
           {it.key === 'backups' && <BackupPanel initial={it.backups} />}
           {it.key === 'jobs' && <JobsPanel initial={it.jobs} />}
+          {it.key === 'platform_email' && it.mail && <PlatformMailPanel mail={it.mail} />}
           {it.values.length > 0 && <div className="grid gap-2 md:grid-cols-2">{it.values.map((v) => <CopyValue key={v.label} v={v} />)}</div>}
           <div className="flex flex-wrap items-center gap-2">
             {it.testService && <Button size="sm" variant="secondary" icon={FlaskConical} loading={test.isPending} onClick={() => test.mutate()}>Test</Button>}

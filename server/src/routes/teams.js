@@ -7,13 +7,17 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { logActivity, notify } from '../lib/activity.js';
 import { canViewTeam } from '../lib/access.js';
-import { requireAuth, requirePermission, invalidateUserSessions } from '../middleware/auth.js';
+import { requireAuth, requirePermission, invalidateUserSessions, avatarUrl } from '../middleware/auth.js';
+import { invalidatePlans } from '../lib/plans.js';
 import { sendSystemMail } from '../services/email/system.js';
 import { getSetting } from '../lib/settings.js';
+import { invalidateQueueCount } from '../services/sequenceEngine.js';
+import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
 
 const r = Router();
-// Membership/role changes alter what users can see: drop cached sessions after any team write.
-r.use((req, res, next) => { if (req.method !== 'GET') res.on('finish', () => invalidateUserSessions()); next(); });
+// Membership/role changes alter what users can see and which plan applies (team plans): drop cached sessions and
+// cached plans after any team write.
+r.use((req, res, next) => { if (req.method !== 'GET') res.on('finish', () => { invalidateUserSessions(); invalidatePlans(); }); next(); });
 const DAY = 86400000;
 
 const memberInclude = { user: { select: { id: true, name: true, email: true, avatarPath: true, updatedAt: true, lastLoginAt: true, role: { select: { key: true, name: true } } } } };
@@ -26,6 +30,45 @@ async function requireMembership(req) {
   const m = await myMembership(req.user.id);
   if (!m) throw notFound('You are not a member of a team');
   return m;
+}
+
+/**
+ * When `userId` stops sharing a team with `otherIds`, clear carrier assignments between them and stop the sequences
+ * and scheduled emails that cross between them:
+ * the user's own enrollments on the others' carriers (they would keep emailing from the user's mailbox) and the
+ * others' enrollments on the user's carriers (they no longer have access to them). Paused ones are stopped too.
+ */
+async function stopCrossMemberWork(userId, otherIds) {
+  if (!otherIds.length) return { enrollments: 0, emails: 0 };
+  // An assignment grants access to a carrier on its own (lib/access.js), so clear assignments in both directions.
+  await prisma.carrier.updateMany({ where: { assignedToId: userId, ownerId: { in: otherIds } }, data: { assignedToId: null } });
+  await prisma.carrier.updateMany({ where: { ownerId: userId, assignedToId: { in: otherIds } }, data: { assignedToId: null } });
+  const crosses = [
+    { userId, carrier: { ownerId: { in: otherIds } } },
+    { userId: { in: otherIds }, carrier: { ownerId: userId } },
+  ];
+  const stopped = await prisma.sequenceEnrollment.updateMany({
+    where: { status: { in: ['active', 'paused'] }, OR: crosses },
+    data: { status: 'stopped', stopReason: 'left_team', nextStepAt: null },
+  });
+  const canceled = await prisma.email.updateMany({
+    where: { status: 'scheduled', OR: crosses },
+    data: { status: 'canceled', nextAttemptAt: null },
+  });
+  // Broker tracking links show the truck: revoke links one side made on a load hauled by the other side's carrier.
+  const links = await prisma.loadShare.updateMany({
+    where: {
+      revokedAt: null,
+      OR: [
+        { ownerId: userId, load: { carrier: { ownerId: { in: otherIds } } } },
+        { ownerId: { in: otherIds }, load: { carrier: { ownerId: userId } } },
+      ],
+    },
+    data: { revokedAt: new Date() },
+  });
+  if (links.count) invalidateLoadTrack();
+  for (const id of [userId, ...otherIds]) invalidateQueueCount(id);
+  return { enrollments: stopped.count, emails: canceled.count };
 }
 
 const isLead = (m) => m.role === 'owner' || m.role === 'manager';
@@ -56,7 +99,7 @@ function serializeMember(m) {
   return {
     id: m.id, userId: m.userId, role: m.role, canViewTeamData: m.canViewTeamData, canManageMembers: m.canManageMembers, joinedAt: m.joinedAt,
     name: m.user.name, email: m.user.email, lastLoginAt: m.user.lastLoginAt, platformRole: m.user.role?.name,
-    avatarUrl: m.user.avatarPath ? `/api/profile/avatar/${m.user.id}?v=${m.user.updatedAt.getTime()}` : null,
+    avatarUrl: avatarUrl(m.user),
   };
 }
 
@@ -134,7 +177,11 @@ r.delete('/mine', ah(async (req, res) => {
   if (confirm !== m.team.name) throw badRequest('Type the team name to confirm deletion');
   const live = await prisma.subscription.count({ where: { teamId: m.teamId, status: { in: ['active', 'trialing', 'past_due'] } } });
   if (live) throw conflict('Cancel the team subscription in Billing before deleting the team');
+  const memberIds = (await prisma.teamMember.findMany({ where: { teamId: m.teamId }, select: { userId: true } })).map((x) => x.userId);
   await prisma.team.delete({ where: { id: m.teamId } });
+  // Members no longer see each other's carriers: clear assignments and stop sequences and scheduled emails that
+  // cross between them.
+  for (const uid of memberIds) await stopCrossMemberWork(uid, memberIds.filter((x) => x !== uid));
   await audit(req, 'team.deleted', { entityType: 'team', entityId: m.teamId });
   res.json({ ok: true });
 }));
@@ -262,11 +309,12 @@ r.delete('/members/:userId', ah(async (req, res) => {
     if (target.role === 'manager' && m.role !== 'owner') throw forbidden('Only the owner can remove a manager');
   }
   await prisma.teamMember.delete({ where: { id: target.id } });
-  // Unassign carriers of other members that were assigned to the departing user.
+  // Unassign carriers between the departing user and the team (both directions), and stop the sequences and
+  // scheduled emails that cross between them.
   const memberIds = (await prisma.teamMember.findMany({ where: { teamId: m.teamId }, select: { userId: true } })).map((x) => x.userId);
-  await prisma.carrier.updateMany({ where: { assignedToId: targetId, ownerId: { in: memberIds } }, data: { assignedToId: null } });
+  const stopped = await stopCrossMemberWork(targetId, memberIds);
   if (targetId !== req.user.id) await notify(targetId, { type: 'team', title: `You were removed from ${m.team.name}` });
-  await audit(req, targetId === req.user.id ? 'team.left' : 'team.member_removed', { entityType: 'team', entityId: m.teamId, details: { userId: targetId } });
+  await audit(req, targetId === req.user.id ? 'team.left' : 'team.member_removed', { entityType: 'team', entityId: m.teamId, details: { userId: targetId, sequencesStopped: stopped.enrollments, emailsCanceled: stopped.emails } });
   res.json({ ok: true });
 }));
 

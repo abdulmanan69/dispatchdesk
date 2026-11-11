@@ -5,7 +5,7 @@ import { prisma } from '../db.js';
 import { ah, notFound, badRequest, conflict } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, reqEmail, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { TRAINING_CATEGORIES } from '../lib/constants.js';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, avatarUrl } from '../middleware/auth.js';
 import { publicFormLimiter } from '../middleware/security.js';
 import { uploader, verifyFileSignature, removeFile, filePath } from '../middleware/upload.js';
 import { audit } from '../lib/audit.js';
@@ -218,17 +218,18 @@ r.post('/requests', publicFormLimiter, ah(async (req, res) => {
 // Trainer messaging (student side)
 // ---------------------------------------------------------------------------
 
-const msgOut = (m) => ({ id: m.id, body: m.body, fromTrainer: m.fromTrainer, readAt: m.readAt, createdAt: m.createdAt, author: m.author ? { id: m.author.id, name: m.author.name, avatarUrl: m.author.avatarPath ? `/api/profile/avatar/${m.author.id}` : null } : null });
+const authorSelect = { id: true, name: true, avatarPath: true };
+const msgOut = (m) => ({ id: m.id, body: m.body, fromTrainer: m.fromTrainer, readAt: m.readAt, createdAt: m.createdAt, author: m.author ? { id: m.author.id, name: m.author.name, avatarUrl: avatarUrl(m.author) } : null });
 
 r.get('/messages', requireAuth, ah(async (req, res) => {
-  const rows = await prisma.trainerMessage.findMany({ where: { threadUserId: req.user.id }, include: { author: true }, orderBy: { createdAt: 'asc' }, take: 500 });
+  const rows = await prisma.trainerMessage.findMany({ where: { threadUserId: req.user.id }, include: { author: { select: authorSelect } }, orderBy: { createdAt: 'asc' }, take: 500 });
   await prisma.trainerMessage.updateMany({ where: { threadUserId: req.user.id, fromTrainer: true, readAt: null }, data: { readAt: new Date() } });
   res.json({ items: rows.map(msgOut) });
 }));
 
 r.post('/messages', requireAuth, ah(async (req, res) => {
   const { body } = parse(z.object({ body: reqStr(4000) }), req.body);
-  const m = await prisma.trainerMessage.create({ data: { threadUserId: req.user.id, authorId: req.user.id, fromTrainer: false, body }, include: { author: true } });
+  const m = await prisma.trainerMessage.create({ data: { threadUserId: req.user.id, authorId: req.user.id, fromTrainer: false, body }, include: { author: { select: authorSelect } } });
   for (const id of await trainerIds()) {
     if (id !== req.user.id) await notify(id, { type: 'trainer_message', title: `Training question from ${req.user.name}`, body: body.slice(0, 140), link: `/app/admin/training?tab=inbox&user=${req.user.id}` });
   }
@@ -405,7 +406,7 @@ r.get('/admin/threads', manage, ah(async (req, res) => {
       const u = userMap.get(l.threadUserId);
       return {
         userId: l.threadUserId, name: u?.name ?? 'Unknown', email: u?.email ?? null,
-        avatarUrl: u?.avatarPath ? `/api/profile/avatar/${u.id}` : null,
+        avatarUrl: avatarUrl(u),
         lastMessage: lastMessages[i]?.body?.slice(0, 160) ?? '', lastFromTrainer: lastMessages[i]?.fromTrainer ?? false,
         lastAt: l._max.createdAt, unread: unreadMap.get(l.threadUserId) ?? 0,
       };
@@ -416,7 +417,7 @@ r.get('/admin/threads', manage, ah(async (req, res) => {
 r.get('/admin/threads/:userId', manage, ah(async (req, res) => {
   const student = await prisma.user.findUnique({ where: { id: String(req.params.userId) }, select: { id: true, name: true, email: true } });
   if (!student) throw notFound('User not found');
-  const rows = await prisma.trainerMessage.findMany({ where: { threadUserId: student.id }, include: { author: true }, orderBy: { createdAt: 'asc' }, take: 500 });
+  const rows = await prisma.trainerMessage.findMany({ where: { threadUserId: student.id }, include: { author: { select: authorSelect } }, orderBy: { createdAt: 'asc' }, take: 500 });
   await prisma.trainerMessage.updateMany({ where: { threadUserId: student.id, fromTrainer: false, readAt: null }, data: { readAt: new Date() } });
   res.json({ student, items: rows.map(msgOut) });
 }));
@@ -425,7 +426,7 @@ r.post('/admin/threads/:userId', manage, ah(async (req, res) => {
   const { body } = parse(z.object({ body: reqStr(4000) }), req.body);
   const student = await prisma.user.findUnique({ where: { id: String(req.params.userId) } });
   if (!student) throw notFound('User not found');
-  const m = await prisma.trainerMessage.create({ data: { threadUserId: student.id, authorId: req.user.id, fromTrainer: true, body }, include: { author: true } });
+  const m = await prisma.trainerMessage.create({ data: { threadUserId: student.id, authorId: req.user.id, fromTrainer: true, body }, include: { author: { select: authorSelect } } });
   await notify(student.id, { type: 'trainer_message', title: `Your trainer replied`, body: body.slice(0, 140), link: '/app/training/messages' });
   await audit(req, 'training.trainer_reply', { entityType: 'user', entityId: student.id });
   res.status(201).json({ message: msgOut(m) });

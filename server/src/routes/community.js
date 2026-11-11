@@ -3,13 +3,14 @@ import { prisma } from '../db.js';
 import { ah, notFound, badRequest } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { COMMUNITY_CATEGORIES } from '../lib/constants.js';
-import { requireAuth, requirePermission, hasPermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, hasPermission, avatarUrl } from '../middleware/auth.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/activity.js';
 import { REPORT_REASONS } from './marketplace.js';
 
 const r = Router();
-const avatarUrl = (u) => (u?.avatarPath ? `/api/profile/avatar/${u.id}` : null);
+/** Keep only keys present in the request body, so a partial PATCH never writes defaults or untouched fields. */
+const sentOnly = (parsed, raw) => clean(Object.fromEntries(Object.entries(parsed).filter(([k]) => Object.hasOwn(raw || {}, k))));
 const isModerator = (req) => hasPermission(req, 'admin.moderate');
 const authorSelect = { select: { id: true, name: true, avatarPath: true } };
 const authorOut = (a) => (a ? { id: a.id, name: a.name, avatarUrl: avatarUrl(a) } : null);
@@ -132,7 +133,8 @@ r.patch('/posts/:id', requireAuth, ah(async (req, res) => {
   if (p.authorId !== req.user.id) throw notFound('Post not found');
   if (p.status === 'removed') throw badRequest('This post was removed by a moderator');
   const body = parse(z.object({ title: reqStr(200).optional(), body: reqStr(20000).optional(), category: z.enum(COMMUNITY_CATEGORIES).optional() }), req.body);
-  const updated = await prisma.communityPost.update({ where: { id: p.id }, data: clean(body), include: { author: authorSelect, _count: { select: { comments: true } } } });
+  // Partial update: write only the fields the request sent (never a schema default).
+  const updated = await prisma.communityPost.update({ where: { id: p.id }, data: sentOnly(body, req.body), include: { author: authorSelect, _count: { select: { comments: true } } } });
   res.json({ post: postOut(updated, req, { full: true }) });
 }));
 

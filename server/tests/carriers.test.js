@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { registerUser, prisma } from './helpers.js';
+import { clearCensusCache } from '../src/services/carriers/fmcsaCensus.js';
 
 const CENSUS_ROW = {
   dot_number: '1234567', legal_name: 'ACME HAULING LLC', dba_name: 'ACME', phone: '6145550101', email_address: 'OPS@ACME.TEST',
@@ -20,7 +21,7 @@ describe('carriers CRUD and isolation', () => {
     A = await registerUser();
     B = await registerUser();
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); });
 
   it('creates a carrier with normalised fields and time zone', async () => {
     const res = await A.agent.post('/api/carriers').send({
@@ -225,7 +226,7 @@ describe('carrier profile: activity filters, counts, texts, enrich preview', () 
     quiet = (await A.agent.post('/api/carriers').send({ companyName: 'Quiet Freight', phone: '6145550113' })).body.carrier;
     await A.agent.post('/api/calls').send({ carrierId: called.id, outcome: 'no_answer' });
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); });
 
   it('logs a text by hand and counts it; others cannot', async () => {
     expect((await A.agent.post(`/api/carriers/${texted.id}/texts`).send({ body: 'Hi, this is Dana' })).status).toBe(201);

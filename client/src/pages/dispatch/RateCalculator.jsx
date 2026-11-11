@@ -1,34 +1,34 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { ClipboardPaste, Save, RotateCcw, Info } from 'lucide-react';
-import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
+import { Save, RotateCcw } from 'lucide-react';
 import { dollars, label } from '../../lib/format.js';
-import { Badge, Button, Card, PageHeader, Textarea } from '../../components/ui.jsx';
+import { Badge, Button, Card, Field, PageHeader } from '../../components/ui.jsx';
 import { useToast } from '../../components/Toast.jsx';
-import LoadFormModal, { CalcSummary, LoadFields, formCalc, loadToForm } from '../../components/dispatch/LoadForm.jsx';
+import LoadFormModal, { CalcSummary, LoadFields, formCalc, formToFitLoad, loadToForm, parsedToForm, rateConNote } from '../../components/dispatch/LoadForm.jsx';
+import RateConImport from '../../components/dispatch/RateConImport.jsx';
+import FitCard from '../../components/dispatch/FitCard.jsx';
+import { RateConVetting } from '../../components/dispatch/BrokerVetting.jsx';
+import { CarrierPicker } from '../../components/dispatch/Pickers.jsx';
 
 const START = loadToForm({ status: 'planned' });
 
 export default function RateCalculator() {
   const [form, setForm] = useState(START);
-  const [text, setText] = useState('');
   const [parsed, setParsed] = useState(null);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
   const toast = useToast();
   const navigate = useNavigate();
   const calc = useMemo(() => formCalc(form), [form]);
+  const fitLoad = useMemo(() => formToFitLoad(form), [form]);
 
-  const parse = useApiMutation((t) => api.post('/api/loads/parse', { text: t }), {
-    onSuccess: (res) => {
-      setParsed(res);
-      const next = loadToForm({ ...res.fields });
-      // Keep the user's own cost assumptions (fuel, MPG, fee) when applying parsed freight details.
-      setForm((f) => ({ ...f, ...Object.fromEntries(Object.entries(next).filter(([k, v]) => v !== '' && v != null && k !== 'status')) }));
-      if (res.found.length) toast.success(`Filled ${res.found.length} field${res.found.length === 1 ? '' : 's'} from pasted text`);
-      else toast.info('No load details recognised — fill the form manually.');
-    },
-  });
+  const onParsed = ({ parsed: res }) => {
+    setParsed(res);
+    // Keep the user's own cost assumptions (fuel, MPG, fee) when applying parsed freight details.
+    setForm((f) => ({ ...f, ...parsedToForm(res.fields), brokerId: f.brokerId || res.broker?.match?.id || null, notes: rateConNote(res.fields) || f.notes }));
+    if (res.found.length) toast.success(`Filled ${res.found.length} field${res.found.length === 1 ? '' : 's'}. Check them before saving.`);
+    else toast.info('No load details recognized. Fill the form by hand.');
+  };
 
   const draft = useMemo(() => ({
     ...form,
@@ -38,38 +38,35 @@ export default function RateCalculator() {
   }), [form]);
 
   const rpmTone = calc.ratePerMile == null ? 'gray' : calc.ratePerMile >= 2.5 ? 'green' : calc.ratePerMile >= 2 ? 'amber' : 'red';
+  const f = parsed?.fields || {};
 
   return (
     <div>
       <PageHeader title="Rate calculator" subtitle="Rate per mile = total load rate ÷ loaded miles. Add deadhead, fuel and detention to see the real margin."
         actions={<>
-          <Button variant="secondary" icon={RotateCcw} onClick={() => { setForm(START); setParsed(null); setText(''); }}>Reset</Button>
+          <Button variant="secondary" icon={RotateCcw} onClick={() => { setForm(START); setParsed(null); setResetKey((k) => k + 1); }}>Reset</Button>
           <Button icon={Save} onClick={() => setSaveOpen(true)} disabled={!form.loadedMiles || !form.rate}>Save as load</Button>
         </>} />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
-        <div className="space-y-4">
-          <Card title="Paste load details" actions={<Button size="sm" variant="secondary" icon={ClipboardPaste} loading={parse.isPending} disabled={text.trim().length < 5} onClick={() => parse.mutate(text)}>Parse</Button>}>
-            <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} aria-label="Pasted load details"
-              placeholder={'e.g.\nDallas, TX → Atlanta, GA  11/12  Van  42,000 lbs  781 mi  $2,350  DH-O 35\nBroker: Summit Logistics MC# 123456'} />
-            <p className="mt-2 flex items-start gap-1.5 text-xs text-muted">
-              <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-              Paste text you can already see in your own DAT, Truckstop or broker email. Nothing is fetched from load boards — parsing happens on our server with fixed rules.
-            </p>
+        <div className="min-w-0 space-y-4">
+          <Card title="Rate con or load details">
+            <RateConImport key={resetKey} onParsed={onParsed} defaultPaste />
             {parsed && (
-              <div className="mt-3 space-y-1.5 text-sm">
+              <div className="mt-3 space-y-2 text-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-muted">Recognised:</span>
+                  <span className="text-muted">Recognized:</span>
                   {parsed.found.length ? parsed.found.map((k) => <Badge key={k} color="green">{label(k.replace(/Cents$/, ''))}</Badge>) : <span>nothing</span>}
                   {parsed.missing.map((k) => <Badge key={k} color="gray">{label(k.replace(/Cents$/, ''))} missing</Badge>)}
                 </div>
-                {(parsed.fields.brokerName || parsed.fields.brokerMc || parsed.fields.referenceNumber) && (
+                {(f.brokerName || f.brokerMc || f.referenceNumber) && (
                   <p className="text-xs text-muted">
-                    {[parsed.fields.brokerName && `Broker: ${parsed.fields.brokerName}`, parsed.fields.brokerMc && `MC ${parsed.fields.brokerMc}`, parsed.fields.brokerPhone, parsed.fields.brokerEmail, parsed.fields.referenceNumber && `Ref ${parsed.fields.referenceNumber}`].filter(Boolean).join(' · ')}
+                    {[f.brokerName && `Broker: ${f.brokerName}`, f.brokerMc && `MC ${f.brokerMc}`, f.brokerPhone, f.brokerEmail, f.referenceNumber && `Ref ${f.referenceNumber}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
-                {parsed.fields.postedRatePerMile != null && <p className="text-xs text-muted">Posted rate: {dollars(parsed.fields.postedRatePerMile)}/mi</p>}
-                {parsed.notes.map((n) => <p key={n} className="text-xs text-amber-700 dark:text-amber-300">{n}</p>)}
+                {f.postedRatePerMile != null && <p className="text-xs text-muted">Posted rate: {dollars(f.postedRatePerMile)}/mi</p>}
+                {parsed.notes.map((n) => <p key={n} className="text-xs text-c-amber">{n}</p>)}
+                {f.brokerMc && <RateConVetting mc={f.brokerMc} phone={f.brokerPhone} email={f.brokerEmail} brokerId={parsed.broker?.match?.id} initial={parsed.vetting} />}
               </div>
             )}
           </Card>
@@ -87,14 +84,22 @@ export default function RateCalculator() {
               {calc.allInRatePerMile != null && calc.allInRatePerMile !== calc.ratePerMile && <Badge color="gray">All-in {dollars(calc.allInRatePerMile)}/mi</Badge>}
             </div>
           </div>
+          <Card title="Check against a carrier">
+            <div className="space-y-3">
+              <Field label="Carrier" hint="Pick a customer to see its rules and walk-away rate.">
+                <CarrierPicker value={form.carrierId} onChange={(v) => setForm((x) => ({ ...x, carrierId: v }))} />
+              </Field>
+              <FitCard load={fitLoad} carrierId={form.carrierId} />
+            </div>
+          </Card>
           <Card title="Breakdown">
             <CalcSummary calc={calc} />
           </Card>
-          <p className="text-xs text-muted">Results use only the numbers you enter. No market or spot rates are estimated here.</p>
+          <p className="text-xs text-muted">Results use only the numbers you enter and your own load history. No market or spot rates are estimated here.</p>
         </aside>
       </div>
 
-      <LoadFormModal open={saveOpen} onClose={() => setSaveOpen(false)} initial={draft} onSaved={() => navigate('/app/loads')} />
+      <LoadFormModal open={saveOpen} onClose={() => setSaveOpen(false)} initial={draft} onSaved={(l) => navigate(l?.id ? `/app/loads?load=${l.id}` : '/app/loads')} />
     </div>
   );
 }

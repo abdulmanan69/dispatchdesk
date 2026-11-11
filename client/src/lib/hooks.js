@@ -1,5 +1,21 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../components/Toast.jsx';
+import { api } from './api.js';
+
+/** Toast for a failed request; plan-limit errors (402) get a "See plans" link to billing. */
+export function errorToast(toast, err) {
+  const code = err?.details?.code || err?.code;
+  if (err?.status === 403 && code === 'EMAIL_UNVERIFIED') {
+    // Writes wait for a verified address: offer the link again right from the error.
+    const resend = () => api.post('/api/auth/resend-verification')
+      .then((r) => (r?.alreadyVerified ? toast.success('Your email is already verified. Reload the page.')
+        : r?.emailSent ? toast.success('Verification email sent. Open the link in it, then try again.')
+          : toast.error(`Could not send the email: ${r?.reason || 'email is not configured'}`)))
+      .catch((e) => toast.error(e));
+    toast.error(err, { action: { label: 'Resend link', onClick: resend } });
+  } else if (err?.status === 402) toast.error(err, { action: { label: code === 'STORAGE_FULL' ? 'Upgrade or free up space' : 'See plans', href: '/app/billing' } });
+  else toast.error(err);
+}
 
 /**
  * useMutation + toast + cache invalidation.
@@ -17,7 +33,7 @@ export function useApiMutation(fn, { success, invalidate = [], onSuccess, onErro
     },
     onError: (err, vars) => {
       if (onError) onError(err, vars);
-      else toast.error(err);
+      else errorToast(toast, err);
     },
   });
 }

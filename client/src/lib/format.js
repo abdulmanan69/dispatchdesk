@@ -1,31 +1,70 @@
+// Intl formatters are expensive to build (tens of microseconds each) and these helpers run once per table cell,
+// so each distinct set of options gets one cached formatter.
+const nfCache = new Map();
+const dtfCache = new Map();
+const CACHE_MAX = 200;
+
+function cached(cache, key, make) {
+  let f = cache.get(key);
+  if (!f) {
+    if (cache.size >= CACHE_MAX) cache.clear();
+    f = make();
+    cache.set(key, f);
+  }
+  return f;
+}
+
+/** Cached Intl.NumberFormat for en-US. */
+export const nf = (opts = {}) => cached(nfCache, JSON.stringify(opts), () => new Intl.NumberFormat('en-US', opts));
+/** Cached Intl.DateTimeFormat for en-US (include timeZone in opts for zone clocks). Throws on an invalid zone. */
+export const dtf = (opts = {}) => cached(dtfCache, JSON.stringify(opts), () => new Intl.DateTimeFormat('en-US', opts));
+const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
 export const money = (cents, opts = {}) =>
-  cents == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: opts.currency || 'USD', maximumFractionDigits: opts.digits ?? 2 }).format(cents / 100);
+  cents == null ? '—' : nf({ style: 'currency', currency: opts.currency || 'USD', maximumFractionDigits: opts.digits ?? 2 }).format(cents / 100);
 
 export const dollars = (n, digits = 2) =>
-  n == null || Number.isNaN(n) ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
+  n == null || Number.isNaN(n) ? '—' : nf({ style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
 
-export const num = (n, digits = 0) => (n == null ? '—' : new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(n));
+export const num = (n, digits = 0) => (n == null ? '—' : nf({ maximumFractionDigits: digits }).format(n));
 export const pct = (n, digits = 1) => (n == null ? '—' : `${Number(n).toFixed(digits)}%`);
+
+const DATE_DEFAULT = { month: 'short', day: 'numeric', year: 'numeric' };
+const DATETIME = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
 
 export function date(d, opts) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-US', opts || { month: 'short', day: 'numeric', year: 'numeric' });
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return '—';
+  return dtf(opts || DATE_DEFAULT).format(x);
 }
 export function dateTime(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return '—';
+  return dtf(DATETIME).format(x);
 }
 export function relative(d) {
   if (!d) return '—';
   const diff = (new Date(d).getTime() - Date.now()) / 1000;
+  if (Number.isNaN(diff)) return '—';
   const abs = Math.abs(diff);
-  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
   if (abs < 60) return rtf.format(Math.round(diff), 'second');
   if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute');
   if (abs < 86400) return rtf.format(Math.round(diff / 3600), 'hour');
   if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), 'day');
   return date(d);
 }
+
+/** Clock parts in a time zone from one cached formatter: { time: '9:42', ampm: 'am', hour24: 9, abbr: 'CST' }. */
+export function zoneClock(now, timeZone) {
+  const parts = dtf({ timeZone, hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' }).formatToParts(now);
+  const get = (type) => parts.find((p) => p.type === type)?.value || '';
+  const hour = Number(get('hour')) % 12;
+  const pm = /pm/i.test(get('dayPeriod'));
+  return { time: `${get('hour')}:${get('minute')}`, ampm: pm ? 'pm' : 'am', hour24: hour + (pm ? 12 : 0), abbr: get('timeZoneName') };
+}
+
 /** Value for <input type="datetime-local"> in the browser's local zone. */
 export function toLocalInput(d) {
   if (!d) return '';
@@ -46,7 +85,8 @@ export const initials = (name = '') => name.split(/\s+/).filter(Boolean).slice(0
 export const bytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 export const EQUIPMENT = ['dry_van', 'reefer', 'flatbed', 'step_deck', 'power_only', 'hotshot', 'box_truck', 'tanker', 'car_hauler', 'conestoga', 'lowboy', 'other'];
-export const CALL_OUTCOMES = ['no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted'];
+// Same order as server/src/lib/constants.js and components/calling/outcomes.js (dialer hotkeys 1-9, then 0).
+export const CALL_OUTCOMES = ['no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted', 'wrong_number', 'do_not_call'];
 export const US_STATES = 'AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' ');
 // Preset choices for fields that also accept a custom value (rendered with ComboInput).
 export const PRESETS = {
@@ -62,4 +102,4 @@ export const PRESETS = {
   tagNames: ['Hot', 'New authority', 'Owner-operator', 'Reefer', 'Flatbed', 'Call back', 'Spanish speaking', 'Needs factoring', 'Referred'],
 };
 
-export const DOCUMENT_TYPES =['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'other'];
+export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'other'];

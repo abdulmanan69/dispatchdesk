@@ -37,7 +37,7 @@ Open it with **Call panel** in the popup. It also opens by itself when you call 
 - **Carrier:** the current carrier from today's call queue, or the one you just called from a web page. Its name, MC/DOT, location, local time and calling window are shown.
 - **Script:** the first lines of your call script, with merge fields filled in.
 - **Call:** dials through your provider. Google Voice loads in your already-open, signed-in Voice tab for the account chosen in Options (u/0, u/1, …), or in the workspace window, or in one reused tab. You still press Call in Google Voice.
-- **Outcome:** buttons for the eight outcomes, also on keys <kbd>1</kbd>–<kbd>8</kbd>, plus notes.
+- **Outcome:** buttons for the ten outcomes, also on keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd>, plus notes. **Wrong number** (<kbd>9</kbd>) schedules no call-back. **Do not call** (<kbd>0</kbd>) turns on do-not-call for the carrier and stops its sequences.
 - **Follow-up:** Automatic, Tomorrow 9 AM (carrier's local time), Next week, Pick a time, or None. **Save and next** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>) logs the call with its attempt, so the provider and duration are kept, then moves on.
 - **Send email:** sends a saved template through your connected mailbox. Without a mailbox, it opens Email → Mailboxes in the app.
 - **Skip** (<kbd>S</kbd>) moves to the next carrier.

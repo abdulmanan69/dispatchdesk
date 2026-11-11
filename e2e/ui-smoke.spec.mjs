@@ -14,7 +14,11 @@ const APP = ['/app', '/app/discover', '/app/carriers', '/app/import', '/app/pipe
   '/app/follow-ups', '/app/opportunities', '/app/customers', '/app/brokers', '/app/loads', '/app/loads/calculator', '/app/email', '/app/email?tab=mailboxes',
   '/app/email?tab=templates', '/app/automations', '/app/ai', '/app/ai/knowledge', '/app/training', '/app/training/messages', '/app/marketplace',
   '/app/marketplace/new', '/app/community', '/app/team', '/app/billing', '/app/settings', '/app/notifications',
-  '/app/lead-generator', '/app/market', '/app/fleet', '/app/dialer', '/app/call-scripts', '/app/tools', '/app/tools?tool=factoring', '/app/tools?tool=timezones', '/app/extension', '/app/settings?tab=calling'];
+  '/app/lead-generator', '/app/market', '/app/fleet', '/app/dialer', '/app/call-scripts', '/app/tools', '/app/tools?tool=factoring', '/app/tools?tool=timezones', '/app/extension', '/app/settings?tab=calling',
+  '/app/today', '/app/templates', '/app/invoices', '/app/new-authority', '/app/truck-posts', '/app/settings?tab=notifications', '/app/settings?tab=calendar'];
+// Pages checked at phone width (375 px) for horizontal overflow.
+const MOBILE = ['/', '/app', '/app/carriers', '/app/pipeline', '/app/loads/calculator', '/app/email', '/app/fleet', '/app/loads', '/app/dialer',
+  '/app/follow-ups', '/app/discover', '/app/today', '/app/invoices', '/app/templates', '/app/truck-posts'];
 const ADMIN_ROUTES = ['/app/admin', '/app/admin/training'];
 
 function watch(page) {
@@ -89,7 +93,8 @@ test('themed controls: no native select or datalist anywhere in the app', async 
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Create account' }).click();
   await page.waitForURL(/\/app/);
-  for (const r of ['/app/carriers', '/app/discover', '/app/loads', '/app/email?tab=templates', '/app/settings?tab=calling', '/app/lead-generator']) {
+  for (const r of ['/app/carriers', '/app/discover', '/app/loads', '/app/email?tab=templates', '/app/settings?tab=calling', '/app/lead-generator',
+    '/app/templates', '/app/invoices', '/app/today', '/app/truck-posts', '/app/new-authority']) {
     await page.goto(BASE + r, { waitUntil: 'networkidle' });
     expect(await page.locator('select, datalist').count(), `native dropdown on ${r}`).toBe(0);
   }
@@ -149,9 +154,14 @@ test('mobile viewport: app shell has no horizontal overflow', async ({ browser }
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Create account' }).click();
   await page.waitForURL(/\/app/);
-  for (const r of ['/', '/app', '/app/carriers', '/app/pipeline', '/app/loads/calculator', '/app/email']) {
+  for (const r of MOBILE) {
     await page.goto(BASE + r, { waitUntil: 'networkidle' });
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    // In the app shell <main> is the scroll container, so wide content overflows inside it, not the document.
+    const overflow = await page.evaluate(() => {
+      const main = document.querySelector('main');
+      const inner = main ? main.scrollWidth - main.clientWidth : 0;
+      return Math.max(document.documentElement.scrollWidth - window.innerWidth, inner);
+    });
     expect(overflow, `horizontal overflow on ${r}`).toBeLessThanOrEqual(1);
   }
   expect(errors).toEqual([]);

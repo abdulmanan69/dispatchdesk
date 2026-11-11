@@ -14,11 +14,19 @@ const r = Router();
 r.use(requirePermission('crm.use'));
 
 const SUBDIR = 'documents';
-const upload = uploader('document', SUBDIR);
+// Uploads count toward the account's storage quota (checked before the file is written, see middleware/upload.js).
+// Replacing a file (PUT /:id) frees the old one, so only the difference counts.
+const upload = uploader('document', SUBDIR, undefined, {
+  quotaCredit: async (req) => {
+    if (req.method !== 'PUT' || !req.params.id) return 0;
+    const d = await prisma.document.findUnique({ where: { id: String(req.params.id) }, select: { sizeBytes: true, ownerId: true, uploadedById: true } });
+    return d && (d.ownerId === req.user.id || d.uploadedById === req.user.id) ? d.sizeBytes : 0;
+  },
+});
 
 const publicDoc = (d) => ({
   id: d.id, type: d.type, originalName: d.originalName, mimeType: d.mimeType, sizeBytes: d.sizeBytes, expiresAt: d.expiresAt,
-  carrierId: d.carrierId, loadId: d.loadId, createdAt: d.createdAt, updatedAt: d.updatedAt,
+  carrierId: d.carrierId, loadId: d.loadId, source: d.source ?? null, createdAt: d.createdAt, updatedAt: d.updatedAt,
   uploadedBy: d.uploadedBy ? { id: d.uploadedBy.id, name: d.uploadedBy.name } : undefined,
 });
 
@@ -65,7 +73,8 @@ r.get('/', ah(async (req, res) => {
   const parent = await resolveParent(req.user, q, false);
   const where = parent.carrierId ? { carrierId: parent.carrierId } : { loadId: parent.loadId };
   if (q.types) where.type = { in: q.types.split(',').filter((t) => DOCUMENT_TYPES.includes(t)) };
-  const docs = await prisma.document.findMany({ where, orderBy: { createdAt: 'desc' }, include: { uploadedBy: { select: { id: true, name: true } } } });
+  // Bounded: one carrier or load never needs more than this in one list.
+  const docs = await prisma.document.findMany({ where, orderBy: { createdAt: 'desc' }, take: 500, include: { uploadedBy: { select: { id: true, name: true } } } });
   res.json({ items: docs.map(publicDoc) });
 }));
 
@@ -81,7 +90,7 @@ r.post('/', upload.single('file'), cleanupOnError(async (req, res) => {
     data: {
       ownerId: parent.ownerId, uploadedById: req.user.id, carrierId: parent.carrierId, loadId: parent.loadId,
       type: body.type, originalName: req.file.originalname.slice(0, 200), storedName: req.file.filename,
-      mimeType: req.file.mimetype, sizeBytes: req.file.size, expiresAt: body.expiresAt ?? null,
+      mimeType: req.file.mimetype, sizeBytes: req.file.size, expiresAt: body.expiresAt ?? null, source: 'upload',
     },
     include: { uploadedBy: { select: { id: true, name: true } } },
   });

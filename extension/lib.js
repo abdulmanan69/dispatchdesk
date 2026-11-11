@@ -133,7 +133,9 @@ export async function focusPanel(payload) {
   await chrome.storage.session.set({ panelFocus: { ...payload, at: Date.now() } });
 }
 
-export const CALL_OUTCOMES = ['no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted'];
+// Same order as the app (server/src/lib/constants.js): hotkeys 1-9, then 0 for the tenth.
+export const CALL_OUTCOMES = ['no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted', 'wrong_number', 'do_not_call'];
+export const outcomeKey = (i) => (i === 9 ? '0' : String(i + 1));
 export const label = (k) => String(k || '').replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 
 /**

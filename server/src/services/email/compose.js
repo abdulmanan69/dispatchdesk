@@ -2,6 +2,7 @@ import { prisma } from '../../db.js';
 import { badRequest } from '../../lib/errors.js';
 import { assertLimit } from '../../lib/plans.js';
 import { pickAccount, blockedReason, deliverEmail } from './index.js';
+import { resolveAttachments } from './attachments.js';
 
 /**
  * Shared "send an email as this user" helper for server features (invoices, statements, detention notices,
@@ -13,7 +14,9 @@ import { pickAccount, blockedReason, deliverEmail } from './index.js';
  *     -> { email, outcome, message }   outcome: 'sent' | 'scheduled' | 'deferred' | 'failed' (from deliverEmail)
  *   Throws 400 when there is no mailbox, the recipient is blocked/suppressed, or required fields are missing,
  *   and 402 when the plan's daily email limit is reached.
- *   documentIds: owner-checked attachment ids (stored in Email.attachments; delivery attaches them).
+ *   documentIds: up to 5 Document ids (10 MB total) the user may access (owner, or team access to the document's
+ *   carrier/load). Stored in Email.attachments; delivery attaches the files (SMTP, Gmail and Microsoft mailboxes).
+ *   `user` must be the full user row (teamMembership included when team access matters), e.g. req.user.
  */
 export async function queueUserEmail({ user, toEmail, subject, body, carrierId = null, brokerId = null, templateId = null, documentIds = [], accountId, sendNow = true }) {
   if (!toEmail) throw badRequest('Recipient email is required');
@@ -23,15 +26,7 @@ export async function queueUserEmail({ user, toEmail, subject, body, carrierId =
   if (blocked) throw badRequest(blocked);
   const account = await pickAccount(user.id, accountId || undefined);
   if (!account) throw badRequest('Connect a mailbox first (Email → Mailboxes)');
-
-  let attachments = null;
-  if (documentIds?.length) {
-    const docs = await prisma.document.findMany({ where: { id: { in: documentIds.slice(0, 5) }, ownerId: user.id }, select: { id: true, originalName: true, sizeBytes: true } });
-    if (docs.length !== Math.min(documentIds.length, 5)) throw badRequest('One or more attachments were not found');
-    const total = docs.reduce((n, d) => n + d.sizeBytes, 0);
-    if (total > 10 * 1024 * 1024) throw badRequest('Attachments are limited to 10 MB per email');
-    attachments = JSON.stringify(docs.map((d) => ({ documentId: d.id, name: d.originalName, size: d.sizeBytes })));
-  }
+  const attachments = await resolveAttachments(user, documentIds);
 
   await assertLimit(user, 'emailsToday');
   const created = await prisma.email.create({

@@ -1,35 +1,18 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { driver } from 'driver.js';
-import 'driver.js/dist/driver.css';
-import './tour.css';
-import { api } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { TOURS, tourForPath } from './tours.js';
+import { useTourState } from './useTourState.js';
 
-const LOCAL_KEY = 'dd.tours';
-const readLocal = () => { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || '{}'); } catch { return {}; } };
-const writeLocal = (s) => { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ } };
+export { useTourState };
 
-/** Tour state from the server, with a localStorage fallback when the request fails. */
-export function useTourState() {
-  const qc = useQueryClient();
-  const query = useQuery({
-    queryKey: ['tours'],
-    queryFn: async () => {
-      try { return (await api.get('/api/tours')).state || {}; } catch { return readLocal(); }
-    },
-    staleTime: Infinity,
-  });
-  const record = useCallback(async (id, status) => {
-    const next = { ...(qc.getQueryData(['tours']) || {}), [id]: { [status]: true, at: new Date().toISOString() } };
-    qc.setQueryData(['tours'], next);
-    writeLocal(next);
-    try { await api.post(`/api/tours/${id}`, { status }); } catch { /* kept locally */ }
-  }, [qc]);
-  return { state: query.data, loaded: query.isSuccess, record };
-}
+// driver.js and its styles load only when a tour actually starts.
+let driverModule = null;
+const loadDriver = () => (driverModule ||= Promise.all([
+  import('driver.js'),
+  import('driver.js/dist/driver.css'),
+  import('./tour.css'),
+]).then(([m]) => m.driver).catch((err) => { driverModule = null; throw err; }));
 
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
@@ -53,6 +36,7 @@ export default function TourHost() {
   const { state, loaded, record } = useTourState();
   const active = useRef(null);
 
+  /** Returns true when the tour will start (targets found); driver.js then loads in the background. */
   const start = useCallback((id, { auto = false } = {}) => {
     const tour = TOURS[id];
     if (!tour || active.current) return false;
@@ -60,43 +44,50 @@ export default function TourHost() {
     const steps = buildSteps(tour);
     // Auto-start only when the page's real targets are there; a tour of nothing but centered text is noise.
     if (!steps.length || (auto && !steps.some((s) => s.element))) return false;
-    let finished = false;
-    const d = driver({
-      steps,
-      showProgress: true,
-      progressText: '{{current}} of {{total}}',
-      nextBtnText: 'Next',
-      prevBtnText: 'Back',
-      doneBtnText: 'Done',
-      allowClose: true,
-      allowKeyboardControl: true,
-      animate: !reducedMotion(),
-      smoothScroll: !reducedMotion(),
-      overlayOpacity: 0.55,
-      stagePadding: 6,
-      stageRadius: 10,
-      popoverClass: 'dd-tour',
-      onPopoverRender: (popover, { driver: drv }) => {
-        // A plain "Skip tour" link next to Back/Next.
-        if (drv.isLastStep()) return;
-        const skip = document.createElement('button');
-        skip.type = 'button';
-        skip.className = 'dd-tour-skip';
-        skip.textContent = 'Skip tour';
-        skip.addEventListener('click', () => drv.destroy());
-        popover.footerButtons.prepend(skip);
-      },
-      onNextClick: (el, step, { driver: drv }) => {
-        if (drv.isLastStep()) finished = true;
-        drv.moveNext();
-      },
-      onDestroyed: () => {
-        active.current = null;
-        record(id, finished ? 'done' : 'skipped');
-      },
+    active.current = 'loading';
+    loadDriver().then((driver) => {
+      if (active.current !== 'loading') return;
+      let finished = false;
+      const d = driver({
+        steps,
+        showProgress: true,
+        progressText: '{{current}} of {{total}}',
+        nextBtnText: 'Next',
+        prevBtnText: 'Back',
+        doneBtnText: 'Done',
+        allowClose: true,
+        allowKeyboardControl: true,
+        animate: !reducedMotion(),
+        smoothScroll: !reducedMotion(),
+        overlayOpacity: 0.55,
+        stagePadding: 6,
+        stageRadius: 10,
+        popoverClass: 'dd-tour',
+        onPopoverRender: (popover, { driver: drv }) => {
+          // A plain "Skip tour" link next to Back/Next.
+          if (drv.isLastStep()) return;
+          const skip = document.createElement('button');
+          skip.type = 'button';
+          skip.className = 'dd-tour-skip';
+          skip.textContent = 'Skip tour';
+          skip.addEventListener('click', () => drv.destroy());
+          popover.footerButtons.prepend(skip);
+        },
+        onNextClick: (el, step, { driver: drv }) => {
+          if (drv.isLastStep()) finished = true;
+          drv.moveNext();
+        },
+        onDestroyed: () => {
+          active.current = null;
+          record(id, finished ? 'done' : 'skipped');
+        },
+      });
+      active.current = d;
+      d.drive();
+    }).catch((err) => {
+      active.current = null;
+      console.warn('[tour] could not load the tour', err?.message || err);
     });
-    active.current = d;
-    d.drive();
     return true;
   }, [record, user]);
 
@@ -132,6 +123,10 @@ export default function TourHost() {
     return () => window.removeEventListener('dd:tour', onTour);
   }, [location.pathname, location.search, user, start, navigate]);
 
-  useEffect(() => () => active.current?.destroy(), []);
+  useEffect(() => () => {
+    const d = active.current;
+    active.current = null;
+    if (d && typeof d.destroy === 'function') d.destroy();
+  }, []);
   return null;
 }

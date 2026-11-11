@@ -38,6 +38,7 @@ export default function Moderation() {
                     {r.target ? (
                       <div className="mt-2 rounded-md border border-line bg-surface-2 p-3 text-sm">
                         {r.target.title && <p className="font-medium">{r.target.title}</p>}
+                        {r.target.context && <p className="text-xs text-muted">{r.target.context}</p>}
                         <p className="whitespace-pre-line text-muted">{r.target.excerpt}</p>
                         <p className="mt-1 flex items-center gap-2 text-xs text-muted">by {r.target.author?.name || 'unknown'}
                           <Link to={r.target.link} target="_blank" className="inline-flex items-center gap-1 text-brand-700 hover:underline dark:text-brand-300">open <ExternalLink className="size-3" /></Link>

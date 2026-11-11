@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
 import { money } from '../../lib/format.js';
 import { Button, Loading, cx } from '../ui.jsx';
 import { TRIP_STATUS, NEXT_TRIP_STATUS } from './fleetApi.js';
+import { useTripStatus } from './useTripStatus.js';
 
 const DAY = 86400000;
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -17,9 +17,7 @@ export default function TripTimeline({ carrierId, onSelectCarrier }) {
     queryKey: ['fleet', 'trips', from.toISOString(), carrierId || ''],
     queryFn: () => api.get('/api/fleet/trips', { from: from.toISOString(), days: 7, carrierId }),
   });
-  const advance = useApiMutation(({ id, status }) => api.post(`/api/fleet/trips/${id}/status`, { status }), {
-    success: (d) => `Trip is now ${TRIP_STATUS[d.trip.status]?.label.toLowerCase() || d.trip.status}`, invalidate: [['fleet'], ['loads']],
-  });
+  const advance = useTripStatus();
   const days = Array.from({ length: 7 }, (_, i) => new Date(from.getTime() + i * DAY));
   const rows = useMemo(() => {
     const by = new Map();

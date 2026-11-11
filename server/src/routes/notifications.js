@@ -18,6 +18,13 @@ r.get('/', ah(async (req, res) => {
   res.json({ ...pageResult(items, total, q), unread });
 }));
 
+/** Unread count only (one indexed count): what the bell badge polls. The list is fetched when the menu opens. */
+r.get('/unread-count', ah(async (req, res) => {
+  const unread = await prisma.notification.count({ where: { userId: req.user.id, readAt: null } });
+  res.set('Cache-Control', 'private, no-store');
+  res.json({ unread });
+}));
+
 r.post('/read-all', ah(async (req, res) => {
   const result = await prisma.notification.updateMany({ where: { userId: req.user.id, readAt: null }, data: { readAt: new Date() } });
   res.json({ updated: result.count });

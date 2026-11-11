@@ -10,6 +10,9 @@ function authHeader(sid, token) {
   return `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}`;
 }
 
+// A slow Twilio response must not hold a request (or the dialer) open indefinitely.
+const TIMEOUT_MS = 15_000;
+
 async function request(method, path, sid, token, form) {
   let res;
   try {
@@ -17,6 +20,7 @@ async function request(method, path, sid, token, form) {
       method,
       headers: { Authorization: authHeader(sid, token), ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
       body: form ? new URLSearchParams(form).toString() : undefined,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
     throw new Error(`Could not reach Twilio: ${err.message}`);
@@ -46,6 +50,7 @@ export async function createBridgeCall({ sid, token, to, from, twiml, statusCall
       method: 'POST',
       headers: { Authorization: authHeader(sid, token), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
     throw new Error(`Could not reach Twilio: ${err.message}`);

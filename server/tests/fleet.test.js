@@ -89,9 +89,17 @@ describe('fleet map API', () => {
     expect((await A.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'booked' })).status).toBe(200);
     const transit = await A.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'in_transit' });
     expect(transit.body.truck.truckStatus).toBe('loaded');
-    expect((await A.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'planned' })).status).toBe(400);
+    // Same rules as the Loads page: moving back asks first (409 CONFIRM_STATUS) and changes nothing until confirmed.
+    const back = await A.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'planned' });
+    expect(back.status).toBe(409);
+    expect(back.body.code).toBe('CONFIRM_STATUS');
+    expect((await prisma.load.findUnique({ where: { id: tripId } })).status).toBe('in_transit');
     const done = await A.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'delivered' });
     expect(done.body.truck).toMatchObject({ truckStatus: 'available', location: { city: 'Chicago', state: 'IL' } });
+    // The shared status code records each change on the load timeline and points out the missing POD.
+    expect(done.body.paperwork.missing).toEqual(['pod']);
+    const moves = await prisma.loadEvent.findMany({ where: { loadId: tripId, type: 'status' } });
+    expect(moves.map((e) => JSON.parse(e.data).to).sort()).toEqual(['booked', 'delivered', 'in_transit']);
     expect(done.body.truck.currentTrip).toBeNull();
     expect((await A.agent.delete(`/api/fleet/trips/${tripId}`)).status).toBe(400);
     expect((await B.agent.post(`/api/fleet/trips/${tripId}/status`).send({ status: 'canceled' })).status).toBe(404);
@@ -108,7 +116,8 @@ describe('fleet map API', () => {
 
   it('shows customers on the fleet map and open loads as origins', async () => {
     const c = await prisma.carrier.findUnique({ where: { id: other.id } });
-    await prisma.carrier.update({ where: { id: c.id }, data: { truckStatus: 'unknown', locationState: null, locationLat: null, locationLng: null, locationCity: null } });
+    // Writing the row directly bypasses the API, so the denormalized fleet flag is reset by hand too.
+    await prisma.carrier.update({ where: { id: c.id }, data: { truckStatus: 'unknown', locationState: null, locationLat: null, locationLng: null, locationCity: null, isFleet: false } });
     expect((await A.agent.get('/api/fleet')).body.trucks.map((t) => t.id)).not.toContain(other.id);
     await prisma.customer.create({ data: { carrierId: other.id, ownerId: A.user.id } });
     expect((await A.agent.get('/api/fleet')).body.trucks.find((t) => t.id === other.id).isCustomer).toBe(true);

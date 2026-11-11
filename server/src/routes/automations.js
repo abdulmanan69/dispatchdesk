@@ -6,6 +6,7 @@ import { assertLimit } from '../lib/plans.js';
 import { STAGE_KEYS, CALL_OUTCOMES } from '../lib/constants.js';
 import { requirePermission } from '../middleware/auth.js';
 import { AUTOMATION_TRIGGERS, AUTOMATION_ACTIONS } from '../services/automation.js';
+import { onlySent } from '../services/carriers/normalize.js';
 
 const r = Router();
 r.use(requirePermission('automation.use'));
@@ -74,7 +75,8 @@ async function own(req) {
 
 r.patch('/:id', ah(async (req, res) => {
   const a = await own(req);
-  const b = parse(schema.partial(), req.body);
+  // onlySent: .partial() keeps the schema defaults (delayDays 0, active true), which would reset them on every edit.
+  const b = onlySent(parse(schema.partial(), req.body), req.body);
   const merged = await validate(req.user.id, { ...a, ...clean(b) });
   const row = await prisma.automation.update({
     where: { id: a.id },

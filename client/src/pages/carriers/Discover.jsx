@@ -1,18 +1,21 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Save, Info, CheckCircle2, AlertTriangle, Play } from 'lucide-react';
+import { Search, Save, Info, CheckCircle2, AlertTriangle, Play, Users } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { US_STATES, date, dateTime } from '../../lib/format.js';
 import { Badge, Button, Card, Checkbox, DataTable, EmptyState, ErrorState, Field, Input, Loading, PageHeader, Select } from '../../components/ui.jsx';
-import { AuthorityBadge, PhoneLink, equipmentLabel } from '../../components/carriers/shared.jsx';
+import { useConfirm } from '../../components/Modal.jsx';
+import { AuthorityBadge, equipmentLabel } from '../../components/carriers/shared.jsx';
+import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
 
 const INITIAL = { state: '', city: '', name: '', dot: '', mc: '', minPowerUnits: '', maxPowerUnits: '', authorityAgeMinMonths: '', authorityAgeMaxMonths: '', activeOnly: true, hasMc: true, hasEmail: false, order: 'newest' };
 const LIMIT = 50;
 
 export default function Discover() {
   const [params] = useSearchParams();
+  const confirm = useConfirm();
   // ?state=XX (from the market map) pre-fills the state filter.
   const [form, setForm] = useState(() => ({ ...INITIAL, state: /^[A-Z]{2}$/.test(params.get('state') || '') ? params.get('state') : INITIAL.state }));
   const [search, setSearch] = useState(null); // submitted params
@@ -26,24 +29,35 @@ export default function Discover() {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
   const providers = useQuery({ queryKey: ['discovery', 'providers'], queryFn: () => api.get('/api/discovery/providers'), staleTime: 300000 });
+  // The signal cancels a search the user has already moved past (new filters, next page).
   const results = useQuery({
     queryKey: ['discovery', 'search', search, offset],
-    queryFn: () => api.get('/api/discovery/search', { ...search, offset, limit: LIMIT }),
+    queryFn: ({ signal }) => api.get('/api/discovery/search', { ...search, offset, limit: LIMIT }, { signal }),
     enabled: !!search,
     retry: false,
   });
   const look = useQuery({
     queryKey: ['discovery', 'lookup', lookup],
-    queryFn: () => api.get('/api/discovery/lookup', /^\s*mc/i.test(lookup) ? { mc: lookup } : { dot: lookup }),
+    queryFn: ({ signal }) => api.get('/api/discovery/lookup', /^\s*mc/i.test(lookup) ? { mc: lookup } : { dot: lookup }, { signal }),
     enabled: !!lookup,
     retry: false,
   });
 
   const save = useApiMutation((dots) => api.post('/api/discovery/save', { dotNumbers: dots, sequenceId: sequenceId || null }), {
     success: (d) => `Saved ${d.created} carrier${d.created === 1 ? '' : 's'}${d.sequence ? ` · ${d.enrolled} added to ${d.sequence.name}` : ''}${d.skipped ? ` · ${d.skipped} already in your list` : ''}${d.limited ? ` · ${d.limited} over plan limit` : ''}${d.notFound ? ` · ${d.notFound} not found` : ''}`,
-    invalidate: [['discovery', 'search'], ['discovery', 'lookup'], ['carriers'], ['pipeline'], ['sequences'], ['queue']],
+    invalidate: [['discovery', 'search'], ['discovery', 'lookup'], ['carriers'], ['pipeline'], ['sequences'], ['queue'], ['billing']],
     onSuccess: (d) => { setSelected(new Set()); if (d.sequence && d.enrolled) setEnrolled({ ...d.sequence, count: d.enrolled }); },
   });
+
+  // Team collision guard: say so before saving carriers that teammates already work.
+  const saveDots = async (dots) => {
+    const claimed = rows.filter((r) => dots.includes(r.id) && r.teamClaims?.length);
+    if (claimed.length) {
+      const message = claimed.length === 1 ? `${claimText(claimed[0].teamClaims)} Save it to your list anyway?` : `${claimed.length} of these carriers are already with teammates. Save them to your list anyway?`;
+      if (!(await confirm({ title: 'Teammates already have some of these', message, confirmLabel: 'Save anyway' }))) return;
+    }
+    save.mutate(dots);
+  };
 
   const submit = (e) => {
     e.preventDefault();
@@ -59,6 +73,34 @@ export default function Discover() {
   const census = providers.data?.items.find((p) => p.id === 'fmcsa_census');
   const qc = providers.data?.items.find((p) => p.id === 'fmcsa_qc');
 
+  // Already in your list (link to it), or a teammate has it (team collision guard).
+  const crmStatus = (r) => (r.existsInCrm ? <Link to={`/app/carriers/${r.existingId}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs text-green-700 hover:underline dark:text-green-400"><CheckCircle2 className="size-3.5" />In your list</Link>
+    : r.teamClaims?.length ? <span title={claimText(r.teamClaims)}><Badge color="amber"><Users className="size-3" aria-hidden />{r.teamClaims[0].ownerName}</Badge></span> : null);
+
+  // Phones (below sm): one card per carrier with the call link and status on screen, instead of a 9-column table.
+  const mobileRow = (r, { selected: on, toggle }) => (
+    <div className="flex items-start gap-3">
+      {r.existsInCrm ? <span className="size-4 shrink-0" aria-hidden /> : (
+        <span onClick={(e) => e.stopPropagation()} className="pt-0.5"><Checkbox aria-label={`Select ${r.companyName}`} checked={on} onChange={toggle} /></span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <span className="min-w-0 break-words font-medium">{r.companyName}</span>
+          <span className="shrink-0"><AuthorityBadge status={r.authorityStatus} /></span>
+        </div>
+        <div className="mt-0.5 text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
+        <div className="text-xs text-muted">
+          {[[r.city, r.state].filter(Boolean).join(', '), r.fleetSize != null && `${r.fleetSize} truck${r.fleetSize === 1 ? '' : 's'}`, r.authorityDate && `registered ${date(r.authorityDate)}`].filter(Boolean).join(' · ') || 'No location on file'}
+        </div>
+        {r.email && <div className="truncate text-xs text-muted">{r.email}</div>}
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+          <SaveAndCall record={r} />
+          {crmStatus(r)}
+        </div>
+      </div>
+    </div>
+  );
+
   const columns = [
     { key: 'companyName', header: 'Carrier', render: (r) => (
       <div className="min-w-44">
@@ -67,14 +109,15 @@ export default function Discover() {
         <div className="text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
       </div>
     ) },
-    { key: 'phone', header: 'Phone', render: (r) => <PhoneLink phone={r.phone} /> },
+    // Calling a lead that is not saved yet saves it first, so the call is logged on the record.
+    { key: 'phone', header: 'Phone', render: (r) => <SaveAndCall record={r} /> },
     { key: 'email', header: 'Email', render: (r) => <span className="text-[13px]">{r.email || '—'}</span> },
     { key: 'loc', header: 'Location', render: (r) => <span className="whitespace-nowrap">{[r.city, r.state].filter(Boolean).join(', ')}</span> },
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'equipment', header: 'Equipment*', render: (r) => <span className="text-[13px]">{equipmentLabel(r.equipment)}</span> },
     { key: 'authorityStatus', header: 'USDOT status', render: (r) => <AuthorityBadge status={r.authorityStatus} /> },
     { key: 'authorityDate', header: 'Registered', render: (r) => <span className="whitespace-nowrap text-[13px]">{date(r.authorityDate)}</span> },
-    { key: 'crm', header: '', render: (r) => (r.existsInCrm ? <Link to={`/app/carriers/${r.existingId}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs text-green-700 hover:underline dark:text-green-400"><CheckCircle2 className="size-3.5" />In your list</Link> : null) },
+    { key: 'crm', header: '', render: crmStatus },
   ];
 
   return (
@@ -130,12 +173,17 @@ export default function Discover() {
               <div className="mt-3 space-y-1 text-sm">
                 <p className="font-medium">{look.data.record.companyName}</p>
                 <p className="text-xs text-muted tabular">DOT {look.data.record.dotNumber}{look.data.record.mcNumber && ` · MC ${look.data.record.mcNumber}`}</p>
-                <p><PhoneLink phone={look.data.record.phone} /> · {[look.data.record.city, look.data.record.state].filter(Boolean).join(', ')}</p>
+                <p><SaveAndCall record={look.data.record} /> · {[look.data.record.city, look.data.record.state].filter(Boolean).join(', ')}</p>
+                {look.data.record.teamClaims?.length > 0 && <p className="text-xs text-c-amber">{claimText(look.data.record.teamClaims)}</p>}
                 <p className="flex items-center gap-2"><AuthorityBadge status={look.data.record.authorityStatus} /> {look.data.record.fleetSize ?? '?'} trucks</p>
                 <p className="text-xs text-muted">Source: {look.data.sources.join(' + ')} · retrieved {dateTime(look.data.retrievedAt)}</p>
                 {look.data.record.existsInCrm
                   ? <Button size="sm" variant="secondary" to={`/app/carriers/${look.data.record.existingId}`}>Open in CRM</Button>
-                  : <Button size="sm" icon={Save} loading={save.isPending} onClick={() => save.mutate([look.data.record.dotNumber])}>Save to my list</Button>}
+                  : <Button size="sm" icon={Save} loading={save.isPending} onClick={async () => {
+                    const rec = look.data.record;
+                    if (rec.teamClaims?.length && !(await confirm({ title: 'A teammate has this carrier', message: `${claimText(rec.teamClaims)} Save it to your list anyway?`, confirmLabel: 'Save anyway' }))) return;
+                    save.mutate([rec.dotNumber]);
+                  }}>Save to my list</Button>}
               </div>
             )}
           </Card>
@@ -148,7 +196,7 @@ export default function Discover() {
                 <option value="">Don't add to a sequence</option>
                 {activeSequences.map((s) => <option key={s.id} value={s.id}>Add to {s.name}</option>)}
               </Select>
-              <Button size="sm" icon={Save} loading={save.isPending} onClick={() => save.mutate([...selected])}>
+              <Button size="sm" icon={Save} loading={save.isPending} onClick={() => saveDots([...selected])}>
                 {sequenceId ? `Save ${selected.size} and add to sequence` : `Save ${selected.size} to my list`}
               </Button>
             </div>
@@ -169,7 +217,7 @@ export default function Discover() {
           ) : (
             <>
               {results.data.note && <p className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-amber-700"><AlertTriangle className="size-3.5" />{results.data.note}</p>}
-              <DataTable dense columns={columns} rows={rows} selected={selected}
+              <DataTable dense columns={columns} rows={rows} selected={selected} mobileRow={mobileRow}
                 onSelect={(s) => setSelected(new Set([...s].filter((id) => selectable.has(id))))}
                 empty={<EmptyState title="No carriers match">Widen the filters — e.g. remove the city or fleet-size limits.</EmptyState>} />
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-2.5 text-xs text-muted">

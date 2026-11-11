@@ -1,125 +1,117 @@
-import { lazy, Suspense } from 'react';
-import { createBrowserRouter, Link } from 'react-router';
-import PublicLayout from './layouts/PublicLayout.jsx';
-import AppLayout, { RequirePermission } from './layouts/AppLayout.jsx';
+import { createBrowserRouter } from 'react-router';
 import { Loading } from './components/ui.jsx';
+import { page, layout, requires, bindRouter, NotFound, RouteError, PageError } from './context/routes.jsx';
 
-const L = (fn) => {
-  const C = lazy(fn);
-  return <Suspense fallback={<Loading />}><C /></Suspense>;
-};
+/**
+ * Routes load lazily with React Router's route-level `lazy`, so a page's chunk downloads in parallel with the
+ * layout's chunk and with /api/auth/me instead of after them. Public pages and the driver's /track page never load
+ * the app shell. A missing chunk after a deploy reloads the tab once (see context/reload.js).
+ * Errors: a crash inside a page shows PageError inside the layout (sidebar and header keep working); only a crash
+ * of a layout itself shows the full-screen RouteError.
+ */
 
-function NotFound() {
-  return (
-    <div className="mx-auto max-w-md px-4 py-24 text-center">
-      <p className="text-5xl font-semibold text-muted/40 tabular">404</p>
-      <h1 className="mt-3 text-lg font-semibold">Page not found</h1>
-      <p className="mt-1 text-sm text-muted">The page you're looking for doesn't exist or was moved.</p>
-      <Link to="/" className="mt-5 inline-block text-sm font-medium text-brand-700 hover:underline dark:text-brand-300">Back to home</Link>
-    </div>
-  );
-}
-
-function RouteError() {
-  return (
-    <div className="mx-auto max-w-md px-4 py-24 text-center">
-      <h1 className="text-lg font-semibold">Something went wrong</h1>
-      <p className="mt-1 text-sm text-muted">This page failed to load. Reload to try again — if you just deployed an update, a refresh fetches the new version.</p>
-      <button type="button" onClick={() => window.location.reload()} className="mt-5 text-sm font-medium text-brand-700 hover:underline">Reload</button>
-    </div>
-  );
-}
+const boot = <Loading className="h-full" />;
 
 export const router = createBrowserRouter([
   // Driver live-location link: public, no app chrome, opened on the driver's phone.
-  { path: '/track/:token', errorElement: <RouteError />, element: L(() => import('./pages/track/DriverTrack.jsx')) },
-  { path: '/t/:token', errorElement: <RouteError />, element: L(() => import('./pages/track/LoadTrack.jsx')) },
-  { path: '/portal/:token', errorElement: <RouteError />, element: L(() => import('./pages/portal/CarrierPortal.jsx')) },
+  { path: '/track/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/track/DriverTrack.jsx')) },
+  { path: '/t/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/track/LoadTrack.jsx')) },
+  { path: '/portal/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/portal/CarrierPortal.jsx')) },
   {
-    element: <PublicLayout />,
+    lazy: layout(() => import('./layouts/PublicLayout.jsx')),
     errorElement: <RouteError />,
-    children: [
-      { path: '/', element: L(() => import('./pages/public/Home.jsx')) },
-      { path: '/features', element: L(() => import('./pages/public/Features.jsx')) },
-      { path: '/pricing', element: L(() => import('./pages/public/Pricing.jsx')) },
-      { path: '/training', element: L(() => import('./pages/training/PublicTraining.jsx')) },
-      { path: '/marketplace', element: L(() => import('./pages/marketplace/MarketplaceBrowse.jsx')) },
-      { path: '/marketplace/:id', element: L(() => import('./pages/marketplace/ListingDetail.jsx')) },
-      { path: '/community', element: L(() => import('./pages/community/CommunityFeed.jsx')) },
-      { path: '/community/:id', element: L(() => import('./pages/community/PostDetail.jsx')) },
-      { path: '/u/:userId', element: L(() => import('./pages/community/UserProfile.jsx')) },
-      { path: '/login', element: L(() => import('./pages/auth/Login.jsx')) },
-      { path: '/register', element: L(() => import('./pages/auth/Register.jsx')) },
-      { path: '/forgot-password', element: L(() => import('./pages/auth/ForgotPassword.jsx')) },
-      { path: '/reset-password', element: L(() => import('./pages/auth/ResetPassword.jsx')) },
-      { path: '/verify-email', element: L(() => import('./pages/auth/VerifyEmail.jsx')) },
-      { path: '/invite/:token', element: L(() => import('./pages/team/AcceptInvite.jsx')) },
-      { path: '/unsubscribe', element: L(() => import('./pages/public/Unsubscribe.jsx')) },
-      { path: '/terms', element: L(() => import('./pages/public/Terms.jsx')) },
-      { path: '/privacy', element: L(() => import('./pages/public/Privacy.jsx')) },
-      { path: '*', element: <NotFound /> },
-    ],
+    hydrateFallbackElement: boot,
+    children: [{
+      errorElement: <PageError />,
+      children: [
+        { path: '/', lazy: page(() => import('./pages/public/Home.jsx')) },
+        { path: '/features', lazy: page(() => import('./pages/public/Features.jsx')) },
+        { path: '/pricing', lazy: page(() => import('./pages/public/Pricing.jsx')) },
+        { path: '/training', lazy: page(() => import('./pages/training/PublicTraining.jsx')) },
+        { path: '/marketplace', lazy: page(() => import('./pages/marketplace/MarketplaceBrowse.jsx')) },
+        { path: '/marketplace/:id', lazy: page(() => import('./pages/marketplace/ListingDetail.jsx')) },
+        { path: '/community', lazy: page(() => import('./pages/community/CommunityFeed.jsx')) },
+        { path: '/community/:id', lazy: page(() => import('./pages/community/PostDetail.jsx')) },
+        { path: '/u/:userId', lazy: page(() => import('./pages/community/UserProfile.jsx')) },
+        { path: '/login', lazy: page(() => import('./pages/auth/Login.jsx')) },
+        { path: '/register', lazy: page(() => import('./pages/auth/Register.jsx')) },
+        { path: '/forgot-password', lazy: page(() => import('./pages/auth/ForgotPassword.jsx')) },
+        { path: '/reset-password', lazy: page(() => import('./pages/auth/ResetPassword.jsx')) },
+        { path: '/verify-email', lazy: page(() => import('./pages/auth/VerifyEmail.jsx')) },
+        { path: '/invite/:token', lazy: page(() => import('./pages/team/AcceptInvite.jsx')) },
+        { path: '/unsubscribe', lazy: page(() => import('./pages/public/Unsubscribe.jsx')) },
+        { path: '/terms', lazy: page(() => import('./pages/public/Terms.jsx')) },
+        { path: '/privacy', lazy: page(() => import('./pages/public/Privacy.jsx')) },
+        { path: '*', element: <NotFound /> },
+      ],
+    }],
   },
   {
     path: '/app',
-    element: <AppLayout />,
+    lazy: layout(() => import('./layouts/AppLayout.jsx')),
     errorElement: <RouteError />,
-    children: [
-      { index: true, element: L(() => import('./pages/dashboard/Dashboard.jsx')) },
-      // Leads & CRM
-      { path: 'discover', element: L(() => import('./pages/carriers/Discover.jsx')) },
-      { path: 'market', element: L(() => import('./pages/market/Market.jsx')) },
-      { path: 'fleet', element: L(() => import('./pages/fleet/Fleet.jsx')) },
-      { path: 'today', element: L(() => import('./pages/today/Today.jsx')) },
-      { path: 'templates', element: L(() => import('./pages/templates/Templates.jsx')) },
-      { path: 'invoices', element: L(() => import('./pages/invoices/Invoices.jsx')) },
-      { path: 'new-authority', element: L(() => import('./pages/leads/NewAuthority.jsx')) },
-      { path: 'truck-posts', element: L(() => import('./pages/leads/TruckPosts.jsx')) },
-      { path: 'lead-generator', element: L(() => import('./pages/carriers/LeadGenerator.jsx')) },
-      { path: 'carriers', element: L(() => import('./pages/carriers/CarrierList.jsx')) },
-      { path: 'carriers/:id', element: L(() => import('./pages/carriers/CarrierDetail.jsx')) },
-      { path: 'import', element: L(() => import('./pages/carriers/ImportCsv.jsx')) },
-      { path: 'pipeline', element: L(() => import('./pages/carriers/Pipeline.jsx')) },
-      { path: 'prospecting', element: L(() => import('./pages/prospecting/Prospecting.jsx')) },
-      { path: 'sequences', element: L(() => import('./pages/prospecting/Sequences.jsx')) },
-      { path: 'sequences/:id', element: L(() => import('./pages/prospecting/SequenceEditor.jsx')) },
-      { path: 'dialer', element: L(() => import('./pages/calling/PowerDialer.jsx')) },
-      { path: 'call-scripts', element: L(() => import('./pages/calling/CallScripts.jsx')) },
-      { path: 'tools', element: L(() => import('./pages/tools/ToolsHub.jsx')) },
-      { path: 'extension', element: L(() => import('./pages/calling/ExtensionSetup.jsx')) },
-      { path: 'follow-ups', element: L(() => import('./pages/prospecting/FollowUps.jsx')) },
-      // Deals & dispatch
-      { path: 'opportunities', element: L(() => import('./pages/deals/Opportunities.jsx')) },
-      { path: 'customers', element: L(() => import('./pages/deals/Customers.jsx')) },
-      { path: 'customers/:id', element: L(() => import('./pages/deals/CustomerDetail.jsx')) },
-      { path: 'brokers', element: L(() => import('./pages/dispatch/Brokers.jsx')) },
-      { path: 'brokers/:id', element: L(() => import('./pages/dispatch/BrokerDetail.jsx')) },
-      { path: 'loads', element: L(() => import('./pages/dispatch/Loads.jsx')) },
-      { path: 'loads/calculator', element: L(() => import('./pages/dispatch/RateCalculator.jsx')) },
-      // Outreach & AI
-      { path: 'email', element: L(() => import('./pages/email/EmailCenter.jsx')) },
-      { path: 'automations', element: L(() => import('./pages/email/Automations.jsx')) },
-      { path: 'ai', element: L(() => import('./pages/ai/AiDispatcher.jsx')) },
-      { path: 'ai/knowledge', element: L(() => import('./pages/ai/KnowledgeBase.jsx')) },
-      // Grow
-      { path: 'training', element: L(() => import('./pages/training/TrainingHome.jsx')) },
-      { path: 'training/messages', element: L(() => import('./pages/training/TrainerMessages.jsx')) },
-      { path: 'training/:slug', element: L(() => import('./pages/training/CourseView.jsx')) },
-      { path: 'training/:slug/:lessonId', element: L(() => import('./pages/training/LessonView.jsx')) },
-      { path: 'marketplace', element: L(() => import('./pages/marketplace/MyMarketplace.jsx')) },
-      { path: 'marketplace/new', element: L(() => import('./pages/marketplace/ListingForm.jsx')) },
-      { path: 'marketplace/:id/edit', element: L(() => import('./pages/marketplace/ListingForm.jsx')) },
-      { path: 'community', element: L(() => import('./pages/community/CommunityFeed.jsx')) },
-      { path: 'community/:id', element: L(() => import('./pages/community/PostDetail.jsx')) },
-      { path: 'team', element: L(() => import('./pages/team/Team.jsx')) },
-      // Account
-      { path: 'billing', element: L(() => import('./pages/account/Billing.jsx')) },
-      { path: 'settings', element: L(() => import('./pages/account/Settings.jsx')) },
-      { path: 'notifications', element: L(() => import('./pages/account/Notifications.jsx')) },
-      // Admin (backend enforces admin.* permissions on every API call)
-      { path: 'admin', element: <RequirePermission perm="admin.access">{L(() => import('./pages/admin/Admin.jsx'))}</RequirePermission> },
-      { path: 'admin/training', element: <RequirePermission perm="training.manage">{L(() => import('./pages/training/TrainingAdmin.jsx'))}</RequirePermission> },
-      { path: '*', element: <NotFound /> },
-    ],
+    hydrateFallbackElement: <Loading label="Loading your workspace…" className="h-full" />,
+    children: [{
+      errorElement: <PageError />,
+      children: [
+        { index: true, lazy: page(() => import('./pages/dashboard/Dashboard.jsx')) },
+        // Leads & CRM
+        { path: 'discover', lazy: page(() => import('./pages/carriers/Discover.jsx')) },
+        { path: 'market', lazy: page(() => import('./pages/market/Market.jsx')) },
+        { path: 'fleet', lazy: page(() => import('./pages/fleet/Fleet.jsx')) },
+        { path: 'today', lazy: page(() => import('./pages/today/Today.jsx')) },
+        { path: 'templates', lazy: page(() => import('./pages/templates/Templates.jsx')) },
+        { path: 'invoices', lazy: page(() => import('./pages/invoices/Invoices.jsx')) },
+        { path: 'new-authority', lazy: page(() => import('./pages/leads/NewAuthority.jsx')) },
+        { path: 'truck-posts', lazy: page(() => import('./pages/leads/TruckPosts.jsx')) },
+        { path: 'lead-generator', lazy: page(() => import('./pages/carriers/LeadGenerator.jsx')) },
+        { path: 'carriers', lazy: page(() => import('./pages/carriers/CarrierList.jsx')) },
+        { path: 'carriers/:id', lazy: page(() => import('./pages/carriers/CarrierDetail.jsx')) },
+        { path: 'import', lazy: page(() => import('./pages/carriers/ImportCsv.jsx')) },
+        { path: 'pipeline', lazy: page(() => import('./pages/carriers/Pipeline.jsx')) },
+        { path: 'prospecting', lazy: page(() => import('./pages/prospecting/Prospecting.jsx')) },
+        { path: 'sequences', lazy: page(() => import('./pages/prospecting/Sequences.jsx')) },
+        { path: 'sequences/:id', lazy: page(() => import('./pages/prospecting/SequenceEditor.jsx')) },
+        { path: 'dialer', lazy: page(() => import('./pages/calling/PowerDialer.jsx')) },
+        { path: 'call-scripts', lazy: page(() => import('./pages/calling/CallScripts.jsx')) },
+        { path: 'tools', lazy: page(() => import('./pages/tools/ToolsHub.jsx')) },
+        { path: 'extension', lazy: page(() => import('./pages/calling/ExtensionSetup.jsx')) },
+        { path: 'follow-ups', lazy: page(() => import('./pages/prospecting/FollowUps.jsx')) },
+        // Deals & dispatch
+        { path: 'opportunities', lazy: page(() => import('./pages/deals/Opportunities.jsx')) },
+        { path: 'customers', lazy: page(() => import('./pages/deals/Customers.jsx')) },
+        { path: 'customers/:id', lazy: page(() => import('./pages/deals/CustomerDetail.jsx')) },
+        { path: 'brokers', lazy: page(() => import('./pages/dispatch/Brokers.jsx')) },
+        { path: 'brokers/:id', lazy: page(() => import('./pages/dispatch/BrokerDetail.jsx')) },
+        { path: 'loads', lazy: page(() => import('./pages/dispatch/Loads.jsx')) },
+        { path: 'loads/calculator', lazy: page(() => import('./pages/dispatch/RateCalculator.jsx')) },
+        // Outreach & AI
+        { path: 'email', lazy: page(() => import('./pages/email/EmailCenter.jsx')) },
+        { path: 'automations', lazy: page(() => import('./pages/email/Automations.jsx')) },
+        { path: 'ai', lazy: page(() => import('./pages/ai/AiDispatcher.jsx')) },
+        { path: 'ai/knowledge', lazy: page(() => import('./pages/ai/KnowledgeBase.jsx')) },
+        // Grow
+        { path: 'training', lazy: page(() => import('./pages/training/TrainingHome.jsx')) },
+        { path: 'training/messages', lazy: page(() => import('./pages/training/TrainerMessages.jsx')) },
+        { path: 'training/:slug', lazy: page(() => import('./pages/training/CourseView.jsx')) },
+        { path: 'training/:slug/:lessonId', lazy: page(() => import('./pages/training/LessonView.jsx')) },
+        { path: 'marketplace', lazy: page(() => import('./pages/marketplace/MyMarketplace.jsx')) },
+        { path: 'marketplace/new', lazy: page(() => import('./pages/marketplace/ListingForm.jsx')) },
+        { path: 'marketplace/:id/edit', lazy: page(() => import('./pages/marketplace/ListingForm.jsx')) },
+        { path: 'community', lazy: page(() => import('./pages/community/CommunityFeed.jsx')) },
+        { path: 'community/:id', lazy: page(() => import('./pages/community/PostDetail.jsx')) },
+        { path: 'team', lazy: page(() => import('./pages/team/Team.jsx')) },
+        // Account
+        { path: 'billing', lazy: page(() => import('./pages/account/Billing.jsx')) },
+        { path: 'settings', lazy: page(() => import('./pages/account/Settings.jsx')) },
+        { path: 'notifications', lazy: page(() => import('./pages/account/Notifications.jsx')) },
+        // Admin (backend enforces admin.* permissions on every API call)
+        { path: 'admin', lazy: page(() => import('./pages/admin/Admin.jsx'), requires('admin.access')) },
+        { path: 'admin/training', lazy: page(() => import('./pages/training/TrainingAdmin.jsx'), requires('training.manage')) },
+        { path: '*', element: <NotFound /> },
+      ],
+    }],
   },
 ]);
+
+bindRouter(router);

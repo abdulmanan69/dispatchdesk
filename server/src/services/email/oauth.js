@@ -64,6 +64,7 @@ async function tokenRequest(provider, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: c.clientId, client_secret: c.clientSecret, ...body }),
+    signal: AbortSignal.timeout(15000), // a hung provider must never stall the scheduler
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Token request failed: ${data.error_description || data.error || res.status}`);
@@ -74,7 +75,7 @@ async function tokenRequest(provider, body) {
 export async function exchangeCode(provider, code) {
   const def = OAUTH_PROVIDERS[provider];
   const tok = await tokenRequest(provider, { grant_type: 'authorization_code', code, redirect_uri: redirectUri(provider) });
-  const pr = await fetch(def.profileUrl, { headers: { Authorization: `Bearer ${tok.access_token}` } });
+  const pr = await fetch(def.profileUrl, { headers: { Authorization: `Bearer ${tok.access_token}` }, signal: AbortSignal.timeout(15000) });
   const profile = await pr.json().catch(() => ({}));
   if (!pr.ok) throw new Error('Could not read mailbox profile');
   const email = def.profileEmail(profile);
@@ -97,15 +98,20 @@ export async function getAccessToken(account) {
   if (!refreshToken) throw new Error('Mailbox authorization expired — reconnect the mailbox');
   const tok = await tokenRequest(account.provider, { grant_type: 'refresh_token', refresh_token: refreshToken });
   const expiresAt = new Date(Date.now() + (Number(tok.expires_in) || 3600) * 1000);
+  const accessTokenEnc = encrypt(tok.access_token);
   await prisma.emailAccount.update({
     where: { id: account.id },
     data: {
-      accessTokenEnc: encrypt(tok.access_token),
+      accessTokenEnc,
       tokenExpiresAt: expiresAt,
       ...(tok.refresh_token ? { secretEnc: encrypt(tok.refresh_token) } : {}),
     },
   });
+  // The scheduler reuses this account object for several messages in one tick: keep the cached token in step,
+  // otherwise the next call would see the new expiry with the old (expired) token.
+  account.accessTokenEnc = accessTokenEnc;
   account.tokenExpiresAt = expiresAt;
+  if (tok.refresh_token) account.secretEnc = encrypt(tok.refresh_token);
   return tok.access_token;
 }
 

@@ -1,45 +1,61 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   AlarmClock, CalendarClock, CalendarDays, Check, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Mail, MessageSquare,
   MoreHorizontal, Pencil, Plus, Repeat, Search, Trash2, X,
 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
-import { toLocalInput } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
-  Badge, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, Loading, LocalClock, PageHeader, Pagination, Select, Tabs, cx,
+  Badge, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, Loading, LocalClock, PageHeader, Pagination, RefreshError, Select, Tabs, cx,
 } from '../../components/ui.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import CallButton from '../../components/calling/CallButton.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
-import FollowUpForm, { FollowUpDialog, FOLLOW_UP_INVALIDATE, Segmented } from '../../components/followups/FollowUpForm.jsx';
+import TextLogModal from '../../components/carriers/TextLogModal.jsx';
+import CarrierTimeInput from '../../components/calling/CarrierTimeInput.jsx';
+import { tzOf } from '../../components/calling/callWindow.js';
+import FollowUpForm, { FollowUpDialog, FOLLOW_UP_LISTS, Segmented } from '../../components/followups/FollowUpForm.jsx';
 import CompleteDialog from '../../components/followups/CompleteDialog.jsx';
 import Popover, { MenuItem } from '../../components/followups/Popover.jsx';
 import {
-  PRIORITIES, RECURRENCES, SNOOZE_PRESETS, TYPES, WHEN_PRESETS, addDays, dayLabel, startOfDay, startOfWeek, textHref, timeOf, typeMeta,
+  PRIORITIES, RECURRENCES, SNOOZE_PRESETS, TYPES, WHEN_PRESETS, addDays, dayLabel, startOfDay, startOfWeek, timeOf, typeMeta,
 } from '../../components/followups/followUpUtils.js';
 
 const PRIORITY_BAR = ['bg-transparent', 'bg-signal-500', 'bg-red-500'];
 const typing = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.getAttribute?.('role') === 'combobox');
 
-function RescheduleDialog({ open, title, initial, onClose, onSave, pending }) {
+/** Reschedule one follow-up (in its carrier's local time when known) or a selection (in your time). */
+function RescheduleDialog({ open, title, initial, timezone, onClose, onSave, pending }) {
   const [value, setValue] = useState('');
-  useEffect(() => { if (open) setValue(toLocalInput(initial || WHEN_PRESETS[2].get())); }, [open, initial]);
+  useEffect(() => { if (open) setValue(new Date(initial || WHEN_PRESETS[2].get(timezone)).toISOString()); }, [open, initial, timezone]);
   return (
-    <Modal open={open} onClose={onClose} size="sm" title={title}
-      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={pending} disabled={!value} onClick={() => onSave(new Date(value).toISOString())}>Save</Button></>}>
+    <Modal open={open} onClose={onClose} size="md" title={title}
+      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={pending} disabled={!value} onClick={() => onSave(value)}>Save</Button></>}>
       <div className="space-y-3">
         <div className="flex flex-wrap gap-1.5">
-          {WHEN_PRESETS.map((p) => <Button key={p.key} size="sm" variant="secondary" onClick={() => setValue(toLocalInput(p.get()))}>{p.label}</Button>)}
+          {WHEN_PRESETS.map((p) => <Button key={p.key} size="sm" variant="secondary" onClick={() => setValue(p.get(timezone).toISOString())}>{p.label}</Button>)}
         </div>
-        <Field label="Date and time"><Input type="datetime-local" value={value} onChange={(e) => setValue(e.target.value)} /></Field>
+        <Field label="Date and time">{(id) => <CarrierTimeInput id={id} value={value} onChange={setValue} timezone={timezone} />}</Field>
       </div>
     </Modal>
   );
 }
+
+/** Search input that owns its text and debounce, so typing never re-renders the list until the search changes. */
+const SearchBox = forwardRef(function SearchBox({ onSearch }, ref) {
+  const [text, setText] = useState('');
+  useEffect(() => { const t = setTimeout(() => onSearch(text.trim()), 250); return () => clearTimeout(t); }, [text, onSearch]);
+  return (
+    <div className="relative w-full sm:w-72">
+      <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted" aria-hidden />
+      <Input ref={ref} aria-label="Search follow-ups" value={text} onChange={(e) => setText(e.target.value)} placeholder="Search carrier, title or note" className="pl-8 pr-8" />
+      <kbd className="pointer-events-none absolute right-2 top-2 rounded border border-line px-1 font-mono text-[11px] text-muted">/</kbd>
+    </div>
+  );
+});
 
 function SnoozeMenu({ onSnooze, onPick, size = 'sm', label = 'Snooze' }) {
   return (
@@ -55,17 +71,17 @@ function SnoozeMenu({ onSnooze, onPick, size = 'sm', label = 'Snooze' }) {
   );
 }
 
-function FollowUpRow({ f, selected, onSelect, provider, mine, actions }) {
+/** One follow-up. Memoized: props are the row data plus stable callbacks (onAction(kind, f, arg), onSelect(id, on)). */
+const FollowUpRow = memo(function FollowUpRow({ f, selected, onSelect, provider, mine, onAction }) {
   const meta = typeMeta(f.type);
   const Icon = meta.icon;
   const pending = f.status === 'pending';
   const overdue = pending && new Date(f.dueAt) < new Date();
-  const sms = textHref(f.carrier.phone, provider);
   return (
     <li className={cx('group relative flex flex-col gap-3 py-3 pl-5 pr-4 transition-ui hover:bg-surface-2/50 md:flex-row md:items-center', selected && 'bg-brand-50/60 dark:bg-brand-900/20')}>
       <span className={cx('absolute inset-y-2 left-0 w-0.5 rounded-full', PRIORITY_BAR[f.priority] || PRIORITY_BAR[0])} aria-hidden />
       <div className="flex min-w-0 flex-1 items-start gap-3">
-        {mine && <Checkbox aria-label={`Select ${f.carrier.companyName}`} checked={selected} onChange={(e) => onSelect(e.target.checked)} className="mt-0.5" />}
+        {mine && <Checkbox aria-label={`Select ${f.carrier.companyName}`} checked={selected} onChange={(e) => onSelect(f.id, e.target.checked)} className="mt-0.5" />}
         <span className={cx('mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg', overdue ? 'bg-c-red-soft text-c-red' : meta.tone)} title={meta.label}>
           <Icon className="size-3.5" aria-hidden />
         </span>
@@ -89,38 +105,47 @@ function FollowUpRow({ f, selected, onSelect, provider, mine, actions }) {
           <LocalClock timezone={f.carrier.timezone} className="text-xs text-muted" />
         </div>
         {pending && mine ? (
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {f.carrier.phone && <CallButton variant="button" size="sm" phone={f.carrier.phone} carrierId={f.carrier.id} />}
-            {f.carrier.email && <IconButton icon={Mail} label="Email" onClick={actions.email} />}
-            {sms && <a href={sms} target={sms.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer" aria-label="Text" title={provider === 'google_voice' ? 'Text in Google Voice' : 'Text'}
-              className="inline-flex size-8 items-center justify-center rounded-lg text-fg-2 transition-ui hover:bg-surface-2 hover:text-fg"><MessageSquare className="size-4" /></a>}
-            <Button size="sm" icon={Check} onClick={actions.complete}>Done</Button>
-            <SnoozeMenu onSnooze={actions.snooze} onPick={actions.reschedule} label="" />
+            {f.carrier.email && <IconButton icon={Mail} label="Email with a template" onClick={() => onAction('email', f)} />}
+            {f.carrier.phone && !f.carrier.doNotCall && <IconButton icon={MessageSquare} label={provider === 'google_voice' ? 'Text in Google Voice with a template' : 'Text with a template'} onClick={() => onAction('text', f)} />}
+            <Button size="sm" icon={Check} onClick={() => onAction('complete', f)}>Done</Button>
+            <SnoozeMenu onSnooze={(body) => onAction('snooze', f, body)} onPick={() => onAction('reschedule', f)} label="" />
             <Popover width="w-44" trigger={({ toggle }) => <IconButton icon={MoreHorizontal} label="More actions" onClick={toggle} />}>
               {({ close }) => (
                 <>
-                  <MenuItem icon={Pencil} onClick={() => { close(); actions.edit(); }}>Edit</MenuItem>
-                  <MenuItem icon={CalendarDays} onClick={() => { close(); actions.reschedule(); }}>Reschedule</MenuItem>
-                  <MenuItem icon={Trash2} danger onClick={() => { close(); actions.remove(); }}>Delete</MenuItem>
+                  <MenuItem icon={Pencil} onClick={() => { close(); onAction('edit', f); }}>Edit</MenuItem>
+                  <MenuItem icon={CalendarDays} onClick={() => { close(); onAction('reschedule', f); }}>Reschedule</MenuItem>
+                  <MenuItem icon={Trash2} danger onClick={() => { close(); onAction('remove', f); }}>Delete</MenuItem>
                 </>
               )}
             </Popover>
           </div>
         ) : mine && f.status !== 'pending' ? (
-          <IconButton icon={Trash2} label="Delete" onClick={actions.remove} />
+          <IconButton icon={Trash2} label="Delete" onClick={() => onAction('remove', f)} />
         ) : null}
       </div>
     </li>
   );
-}
+});
 
 function WeekView({ weekStart, items, onPick }) {
-  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
+  // Group once per data change instead of filtering every item for every day on each render.
+  const byDay = useMemo(() => {
+    const m = new Map();
+    for (const f of items) {
+      const k = startOfDay(f.dueAt).getTime();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(f);
+    }
+    return m;
+  }, [items]);
   const today = startOfDay(new Date()).getTime();
   return (
     <div className="grid grid-cols-1 divide-y divide-line sm:grid-cols-7 sm:divide-x sm:divide-y-0">
       {days.map((d) => {
-        const list = items.filter((f) => startOfDay(f.dueAt).getTime() === d.getTime());
+        const list = byDay.get(d.getTime()) || [];
         const isToday = d.getTime() === today;
         return (
           <div key={d.toISOString()} className="min-h-40 p-2">
@@ -157,12 +182,16 @@ export default function FollowUps() {
   const { user } = useAuth();
   const confirm = useConfirm();
   const searchRef = useRef(null);
-  const [view, setView] = useState('today');
+  // ?view=overdue|today|upcoming|done opens that tab (links from reminder notifications).
+  const [sp] = useSearchParams();
+  const urlView = ['overdue', 'today', 'upcoming', 'done'].includes(sp.get('view')) ? sp.get('view') : null;
+  const [view, setView] = useState(urlView || 'today');
   const [mode, setMode] = useState('list');
+  useEffect(() => { if (urlView) { setView(urlView); setMode('list'); } }, [urlView]);
   const [type, setType] = useState('');
   const [priority, setPriority] = useState('');
   const [scope, setScope] = useState('mine');
-  const [search, setSearch] = useState('');
+  const [searchKey, setSearchKey] = useState(0);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
@@ -172,8 +201,10 @@ export default function FollowUps() {
   const [completing, setCompleting] = useState(null);
   const [rescheduling, setRescheduling] = useState(null); // follow-up | 'bulk'
   const [emailing, setEmailing] = useState(null);
+  const [texting, setTexting] = useState(null);
 
-  useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 250); return () => clearTimeout(t); }, [search]);
+  const onSearch = useCallback((value) => { setQ(value); }, []);
+  useEffect(() => { setPage(1); }, [q]);
   useEffect(() => setSelected(new Set()), [view, type, priority, q, scope, mode, page]);
   useEffect(() => {
     const onKey = (e) => {
@@ -189,23 +220,37 @@ export default function FollowUps() {
   const params = mode === 'week'
     ? { ...filters, view: 'all', status: 'all', from: weekStart.toISOString(), to: addDays(weekStart, 7).toISOString(), pageSize: 500 }
     : { ...filters, view, page, pageSize: 100 };
-  const list = useQuery({ queryKey: ['follow-ups', params], queryFn: () => api.get('/api/follow-ups', params), placeholderData: keepPreviousData });
+  // The signal cancels the previous request when the search or filters change again.
+  const list = useQuery({ queryKey: ['follow-ups', params], queryFn: ({ signal }) => api.get('/api/follow-ups', params, { signal }), placeholderData: keepPreviousData });
   const settings = useQuery({ queryKey: ['telephony', 'settings'], queryFn: () => api.get('/api/telephony/settings'), staleTime: 300000 });
   const provider = settings.data?.settings?.provider;
   const counts = list.data?.counts;
   const items = useMemo(() => list.data?.items || [], [list.data]);
 
+  // Mutations refresh the lists (FOLLOW_UP_LISTS) and only the profiles of the carriers they touched (vars.carrierIds).
+  // Without that list (a selected follow-up was no longer on screen) every cached carrier profile is marked stale.
+  const qc = useQueryClient();
+  const refreshCarriers = (_, vars) => {
+    const ids = vars?.carrierIds;
+    if (!Array.isArray(ids)) { qc.invalidateQueries({ queryKey: ['carrier'] }); return; }
+    for (const id of new Set(ids)) if (id) qc.invalidateQueries({ queryKey: ['carrier', id] });
+  };
+  const carriersOf = (followUpIds) => {
+    const byId = new Map(items.map((f) => [f.id, f.carrier?.id]));
+    return followUpIds.every((id) => byId.get(id)) ? followUpIds.map((id) => byId.get(id)) : null;
+  };
   const snooze = useApiMutation(({ id, body }) => api.post(`/api/follow-ups/${id}/snooze`, body), {
-    invalidate: FOLLOW_UP_INVALIDATE, success: (d) => `Snoozed to ${dayLabel(d.followUp.dueAt).toLowerCase()} ${timeOf(d.followUp.dueAt)}`,
+    invalidate: FOLLOW_UP_LISTS, success: (d) => `Snoozed to ${dayLabel(d.followUp.dueAt).toLowerCase()} ${timeOf(d.followUp.dueAt)}`,
+    onSuccess: refreshCarriers,
   });
   const reschedule = useApiMutation(({ id, dueAt }) => api.patch(`/api/follow-ups/${id}`, { dueAt }), {
-    invalidate: FOLLOW_UP_INVALIDATE, success: 'Rescheduled', onSuccess: () => setRescheduling(null),
+    invalidate: FOLLOW_UP_LISTS, success: 'Rescheduled', onSuccess: (d, vars) => { refreshCarriers(d, vars); setRescheduling(null); },
   });
-  const del = useApiMutation((id) => api.del(`/api/follow-ups/${id}`), { invalidate: FOLLOW_UP_INVALIDATE, success: 'Follow-up deleted' });
-  const bulk = useApiMutation((body) => api.post('/api/follow-ups/bulk', body), {
-    invalidate: FOLLOW_UP_INVALIDATE,
+  const del = useApiMutation(({ id }) => api.del(`/api/follow-ups/${id}`), { invalidate: FOLLOW_UP_LISTS, success: 'Follow-up deleted', onSuccess: refreshCarriers });
+  const bulk = useApiMutation(({ carrierIds, ...body }) => api.post('/api/follow-ups/bulk', body), {
+    invalidate: FOLLOW_UP_LISTS,
     success: (d) => `${d.updated} updated${d.skipped ? ` · ${d.skipped} skipped` : ''}`,
-    onSuccess: () => { setSelected(new Set()); setRescheduling(null); },
+    onSuccess: (d, vars) => { refreshCarriers(d, vars); setSelected(new Set()); setRescheduling(null); },
   });
 
   const groups = useMemo(() => {
@@ -219,19 +264,26 @@ export default function FollowUps() {
     return [...map.values()];
   }, [items, view]);
 
-  const selectable = items.filter((f) => f.userId === user.id);
+  const selectable = useMemo(() => items.filter((f) => f.userId === user.id), [items, user.id]);
   const allSelected = selectable.length > 0 && selectable.every((f) => selected.has(f.id));
-  const toggle = (id, on) => setSelected((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
+  const toggle = useCallback((id, on) => setSelected((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n; }), []);
   const ids = [...selected];
+  /** Run a bulk action on the selection; carrierIds stays in the browser (only for refreshing those profiles). */
+  const bulkRun = (body) => bulk.mutate({ ...body, ids, carrierIds: carriersOf(ids) });
+  const complete = useApiMutation(({ id }) => api.post(`/api/follow-ups/${id}/complete`, {}), { invalidate: FOLLOW_UP_LISTS, success: 'Follow-up done', onSuccess: refreshCarriers });
 
-  const actionsFor = (f) => ({
-    complete: () => setCompleting(f),
-    snooze: (body) => snooze.mutate({ id: f.id, body }),
-    reschedule: () => setRescheduling(f),
-    edit: () => setEdit(f),
-    email: () => setEmailing(f),
-    remove: async () => { if (await confirm({ title: 'Delete this follow-up?', message: f.recurrence !== 'none' ? 'Future repeats stop too.' : undefined, confirmLabel: 'Delete', danger: true })) del.mutate(f.id); },
-  });
+  // One stable dispatcher for every row: the latest handlers live in a ref, so memoized rows never re-render for it.
+  const handlers = useRef({});
+  handlers.current = {
+    complete: (f) => setCompleting(f),
+    snooze: (f, body) => snooze.mutate({ id: f.id, body, carrierIds: [f.carrier.id] }),
+    reschedule: (f) => setRescheduling(f),
+    edit: (f) => setEdit(f),
+    email: (f) => setEmailing(f),
+    text: (f) => setTexting(f),
+    remove: async (f) => { if (await confirm({ title: 'Delete this follow-up?', message: f.recurrence !== 'none' ? 'Future repeats stop too.' : undefined, confirmLabel: 'Delete', danger: true })) del.mutate({ id: f.id, carrierIds: [f.carrier.id] }); },
+  };
+  const onAction = useCallback((kind, f, arg) => handlers.current[kind]?.(f, arg), []);
 
   const filtered = !!(type || priority !== '' || q);
   const emptyText = {
@@ -274,11 +326,7 @@ export default function FollowUps() {
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted" aria-hidden />
-          <Input ref={searchRef} aria-label="Search follow-ups" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search carrier, title or note" className="pl-8 pr-8" />
-          <kbd className="pointer-events-none absolute right-2 top-2 rounded border border-line px-1 font-mono text-[11px] text-muted">/</kbd>
-        </div>
+        <SearchBox key={searchKey} ref={searchRef} onSearch={onSearch} />
         <Select aria-label="Type" value={type} onChange={(e) => { setType(e.target.value); setPage(1); }} className="w-36">
           <option value="">All types</option>
           {TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -288,26 +336,28 @@ export default function FollowUps() {
           {PRIORITIES.map((p) => <option key={p.value} value={String(p.value)}>{p.label}</option>)}
         </Select>
         {user?.team && <Select aria-label="Scope" value={scope} onChange={(e) => setScope(e.target.value)} className="w-32"><option value="mine">Mine</option><option value="team">Team</option></Select>}
-        {filtered && <Button size="sm" variant="ghost" icon={X} onClick={() => { setType(''); setPriority(''); setSearch(''); }}>Clear</Button>}
+        {filtered && <Button size="sm" variant="ghost" icon={X} onClick={() => { setType(''); setPriority(''); setQ(''); setSearchKey((k) => k + 1); }}>Clear</Button>}
       </div>
 
       {selected.size > 0 && (
         <div className="dd-enter sticky top-2 z-30 mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface px-4 py-2 shadow-sm">
           <span className="mr-1 text-sm font-medium tabular">{selected.size} selected</span>
-          <Button size="sm" icon={Check} loading={bulk.isPending} onClick={() => bulk.mutate({ ids, action: 'complete' })}>Mark done</Button>
-          <SnoozeMenu onSnooze={(b) => bulk.mutate({ ids, action: 'snooze', ...b })} onPick={() => setRescheduling('bulk')} />
+          <Button size="sm" icon={Check} loading={bulk.isPending} onClick={() => bulkRun({ action: 'complete' })}>Mark done</Button>
+          <SnoozeMenu onSnooze={(b) => bulkRun({ action: 'snooze', ...b })} onPick={() => setRescheduling('bulk')} />
           <Button size="sm" variant="secondary" icon={CalendarDays} onClick={() => setRescheduling('bulk')}>Reschedule</Button>
           <Popover align="left" width="w-40" trigger={({ toggle }) => <Button size="sm" variant="secondary" icon={ChevronDown} onClick={toggle}>Priority</Button>}>
-            {({ close }) => PRIORITIES.map((p) => <MenuItem key={p.value} onClick={() => { close(); bulk.mutate({ ids, action: 'priority', priority: p.value }); }}>{p.label}</MenuItem>)}
+            {({ close }) => PRIORITIES.map((p) => <MenuItem key={p.value} onClick={() => { close(); bulkRun({ action: 'priority', priority: p.value }); }}>{p.label}</MenuItem>)}
           </Popover>
-          <Button size="sm" variant="secondary" icon={Trash2} onClick={async () => { if (await confirm({ title: `Delete ${selected.size} follow-up(s)?`, confirmLabel: 'Delete', danger: true })) bulk.mutate({ ids, action: 'delete' }); }}>Delete</Button>
+          <Button size="sm" variant="secondary" icon={Trash2} onClick={async () => { if (await confirm({ title: `Delete ${selected.size} follow-up(s)?`, confirmLabel: 'Delete', danger: true })) bulkRun({ action: 'delete' }); }}>Delete</Button>
           <span className="flex-1" />
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear selection</Button>
         </div>
       )}
 
+      {/* A failed background refresh keeps the loaded list on screen with a retry notice. */}
+      <RefreshError query={list} />
       <Card bodyClass="p-0">
-        {list.isLoading ? <Loading /> : list.isError ? <ErrorState error={list.error} onRetry={list.refetch} /> : mode === 'week' ? (
+        {list.isLoading ? <Loading /> : list.isError && !list.data ? <ErrorState error={list.error} onRetry={list.refetch} /> : mode === 'week' ? (
           <WeekView weekStart={weekStart} items={items} onPick={(f) => (f.userId === user.id && f.status === 'pending' ? setEdit(f) : null)} />
         ) : !items.length ? (
           <EmptyState icon={CalendarClock} title={filtered ? 'No follow-ups match these filters' : emptyText}
@@ -330,7 +380,7 @@ export default function FollowUps() {
                 <ul className="divide-y divide-line">
                   {g.items.map((f) => (
                     <FollowUpRow key={f.id} f={f} provider={provider} mine={f.userId === user.id} selected={selected.has(f.id)}
-                      onSelect={(on) => toggle(f.id, on)} actions={actionsFor(f)} />
+                      onSelect={toggle} onAction={onAction} />
                   ))}
                 </ul>
               </section>
@@ -343,12 +393,20 @@ export default function FollowUps() {
 
       <FollowUpDialog open={!!edit} followUp={edit} onClose={() => setEdit(null)} />
       {completing && <CompleteDialog followUp={completing} onClose={() => setCompleting(null)} />}
-      <RescheduleDialog open={!!rescheduling} title={rescheduling === 'bulk' ? `Reschedule ${selected.size} follow-up(s)` : 'Reschedule'}
-        initial={rescheduling && rescheduling !== 'bulk' ? rescheduling.dueAt : null} pending={reschedule.isPending || bulk.isPending}
+      <RescheduleDialog open={!!rescheduling} title={rescheduling === 'bulk' ? `Reschedule ${selected.size} follow-up(s)` : `Reschedule · ${rescheduling?.carrier?.companyName || ''}`}
+        initial={rescheduling && rescheduling !== 'bulk' ? rescheduling.dueAt : null} timezone={rescheduling && rescheduling !== 'bulk' ? tzOf(rescheduling.carrier) : null}
+        pending={reschedule.isPending || bulk.isPending}
         onClose={() => setRescheduling(null)}
-        onSave={(dueAt) => (rescheduling === 'bulk' ? bulk.mutate({ ids, action: 'reschedule', dueAt }) : reschedule.mutate({ id: rescheduling.id, dueAt }))} />
+        onSave={(dueAt) => (rescheduling === 'bulk' ? bulkRun({ action: 'reschedule', dueAt }) : reschedule.mutate({ id: rescheduling.id, dueAt, carrierIds: [rescheduling.carrier?.id] }))} />
       <ComposeModal open={!!emailing} onClose={() => setEmailing(null)} carrierId={emailing?.carrier.id} toEmail={emailing?.carrier.email}
-        subject={emailing?.title || ''} />
+        subject={emailing?.title || ''} templateCategory="follow_up"
+        doneOption={emailing && emailing.type === 'email' ? { label: 'Mark this follow-up done', defaultChecked: true } : undefined}
+        onSent={(res, meta) => { if (meta?.done && emailing) complete.mutate({ id: emailing.id, carrierIds: [emailing.carrier.id] }); }} />
+      {texting && (
+        <TextLogModal carrier={texting.carrier} category="follow_up" onClose={() => setTexting(null)}
+          doneOption={texting.type === 'text' ? { label: 'Mark this follow-up done', defaultChecked: true } : undefined}
+          onLogged={({ done }) => { if (done) complete.mutate({ id: texting.id, carrierIds: [texting.carrier.id] }); }} />
+      )}
     </div>
   );
 }

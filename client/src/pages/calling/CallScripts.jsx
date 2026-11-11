@@ -7,13 +7,15 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useConfirm } from '../../components/Modal.jsx';
 import { label } from '../../lib/format.js';
 import { Button, Card, EmptyState, Field, Input, Loading, ErrorState, Markdown, PageHeader, Select, Tabs, Textarea, cx } from '../../components/ui.jsx';
+import { mergeText } from '../../components/templates/merge.js';
 
 export const SCRIPT_CATEGORIES = ['cold_call', 'follow_up', 'voicemail', 'objection', 'onboarding', 'broker'];
-export const MERGE_FIELDS = ['company', 'first_name', 'my_name', 'mc', 'city', 'state'];
+/** Same names as email and text templates ({{sender_name}} and other older names still work). */
+export const MERGE_FIELDS = ['company', 'first_name', 'contact_name', 'mc', 'dot', 'city', 'state', 'equipment', 'my_name', 'my_first_name', 'my_phone'];
 
-/** Fill {{merge}} fields. Unknown values stay as visible placeholders like [company]. */
+/** Fill {{merge}} fields. Missing values stay as visible placeholders like [company]. */
 export function fillScript(body, values = {}) {
-  return String(body || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => (values[k] ? String(values[k]) : `[${k.replace('_', ' ')}]`));
+  return mergeText(body, values, { missing: 'bracket' });
 }
 
 const EMPTY = { id: null, name: '', category: 'cold_call', body: '' };
@@ -55,7 +57,10 @@ export default function CallScripts() {
 
   const startNew = () => { setSelectedId('new'); setForm(EMPTY); setView('edit'); };
   const duplicate = () => { setSelectedId('new'); setForm({ ...form, id: null, name: `${form.name} (copy)` }); };
-  const sample = { company: 'Red River Transport LLC', first_name: 'Marcus', my_name: user?.name?.split(' ')[0], mc: '1184420', city: 'Shreveport', state: 'LA' };
+  const sample = {
+    company: 'Red River Transport LLC', first_name: 'Marcus', contact_name: 'Marcus Hill', mc: '1184420', dot: '3561982', city: 'Shreveport', state: 'LA', equipment: 'dry van',
+    my_name: user?.name, my_first_name: user?.name?.split(' ')[0], my_phone: user?.phone,
+  };
   const dirty = form.id ? (() => { const s = items.find((x) => x.id === form.id); return s && (s.name !== form.name || s.body !== form.body || s.category !== form.category); })() : !!(form.name || form.body);
 
   const grouped = SCRIPT_CATEGORIES.map((c) => [c, items.filter((s) => s.category === c)]).filter(([, list]) => list.length);
@@ -132,7 +137,7 @@ export default function CallScripts() {
                 </div>
               ) : (
                 <div>
-                  <p className="mb-3 text-xs text-muted">Preview with a sample carrier (Red River Transport LLC)</p>
+                  <p className="mb-3 text-xs text-muted">Preview with sample data (Red River Transport LLC) and your own name. In the power dialer the fields fill in from the carrier you are calling.</p>
                   <Markdown text={fillScript(form.body, sample)} className="max-w-2xl" />
                 </div>
               )}

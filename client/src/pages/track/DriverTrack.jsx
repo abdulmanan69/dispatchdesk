@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router';
-import { AlertTriangle, CheckCircle2, KeyRound, Loader2, Lock, MapPin, Monitor, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Smartphone, Truck, Warehouse } from 'lucide-react';
+import { AlertTriangle, Camera, CheckCircle2, KeyRound, Loader2, Lock, MapPin, Monitor, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Smartphone, Truck, Warehouse } from 'lucide-react';
 import { Logo } from '../../components/Logo.jsx';
 import { Checkbox, cx } from '../../components/ui.jsx';
+import DriverPhotos from './DriverPhotos.jsx';
+import DriverHours from './DriverHours.jsx';
 
 /**
  * Public driver page for a live-location link. No login: the secret token in the URL is the credential.
@@ -19,6 +21,22 @@ const MISMATCH = 'This link is already active on another phone. Ask your dispatc
 const deviceKey = (token) => `dd-track-device:${token}`;
 const getDevice = (token) => { try { return localStorage.getItem(deviceKey(token)) || ''; } catch { return ''; } };
 const setDevice = (token, secret) => { try { if (secret) localStorage.setItem(deviceKey(token), secret); } catch { /* private mode: works until the tab closes */ } };
+
+/*
+ * A fix that could not be sent (no signal) is kept in this browser too, so it survives a reload or the phone discarding
+ * the tab; it is sent on the next visit if it is less than an hour old.
+ */
+const fixKey = (token) => `dd-track-fix:${token}`;
+const FIX_MAX_AGE_MS = 3600_000;
+const saveFix = (token, fix) => { try { localStorage.setItem(fixKey(token), JSON.stringify({ fix, savedAt: Date.now() })); } catch { /* storage blocked */ } };
+const clearFix = (token) => { try { localStorage.removeItem(fixKey(token)); } catch { /* storage blocked */ } };
+function loadFix(token) {
+  try {
+    const v = JSON.parse(localStorage.getItem(fixKey(token)) || 'null');
+    if (!v?.fix || Date.now() - v.savedAt > FIX_MAX_AGE_MS) { clearFix(token); return null; }
+    return v.fix;
+  } catch { return null; }
+}
 
 /** Signals the server uses to tell a phone from a computer. */
 function deviceSignals() {
@@ -82,9 +100,23 @@ function BigButton({ children, className, ...props }) {
   );
 }
 
+/** Appointment window in the stop's time zone: "Wed, Nov 12, 8:00 AM–10:00 AM CST". */
+function windowText(stop) {
+  const start = stop.windowStart || stop.date;
+  const end = stop.windowEnd || stop.windowStart || stop.date;
+  if (!start) return null;
+  const opts = stop.tz ? { timeZone: stop.tz } : {};
+  try {
+    const day = new Date(start).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', ...opts });
+    const t = (d, zone) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', ...opts, ...(zone ? { timeZoneName: 'short' } : {}) });
+    return Math.abs(new Date(end) - new Date(start)) < 60000 ? `${day}, ${t(start, true)}` : `${day}, ${t(start)}–${t(end, true)}`;
+  } catch { return fmtDate(start); }
+}
+
 function Stop({ kind, stop }) {
-  const links = navLinks(stop);
+  const links = navLinks(stop.address ? { ...stop, lat: null, city: `${stop.address}, ${stop.city}` } : stop);
   const Icon = kind === 'Pickup' ? Warehouse : MapPin;
+  const when = windowText(stop);
   return (
     <div className="rounded-2xl border border-line bg-surface p-4">
       <div className="flex items-start gap-3">
@@ -92,7 +124,9 @@ function Stop({ kind, stop }) {
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium uppercase tracking-wide text-muted">{kind}</p>
           <p className="text-lg font-medium">{stop.city}, {stop.state}</p>
-          {stop.date && <p className="text-sm text-fg-2">{fmtDate(stop.date)}</p>}
+          {stop.facility && <p className="text-sm font-medium text-fg">{stop.facility}</p>}
+          {stop.address && <p className="text-sm text-fg-2">{stop.address}</p>}
+          {when && <p className="text-sm text-fg-2">{stop.windowEnd && stop.windowEnd !== stop.windowStart ? 'Window ' : 'Appointment '}{when}</p>}
         </div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -122,10 +156,13 @@ export default function DriverTrack() {
   const [note, setNote] = useState('');
   const [issueOpen, setIssueOpen] = useState(false);
   const [wakeOn, setWakeOn] = useState(false);
+  const [podPrompt, setPodPrompt] = useState(false);
   const watchId = useRef(null);
   const lastSent = useRef(null); // { lat, lng, t }
+  const lastFix = useRef(null); // latest fix from the phone, sent with check-ins
   const queued = useRef(null);
   const wakeLock = useRef(null);
+  const photos = useRef(null);
 
   const api = useCallback((method, path, body) => call(token, method, path, body, memSecret.current), [token]);
   const remember = (secret) => { if (secret) { memSecret.current = secret; setDevice(token, secret); } };
@@ -151,16 +188,28 @@ export default function DriverTrack() {
       const r = await api('POST', '/ping', fix);
       lastSent.current = { lat: fix.lat, lng: fix.lng, t: Date.now() };
       queued.current = null;
+      clearFix(token);
       setPending(false);
       setLast({ at: r.at, accuracy: fix.accuracy });
     } catch (e) {
-      if (e.status === 410 || e.code === 'DEVICE_MISMATCH') { stopWatching(); fail(e); return; }
+      if (e.status === 410 || e.code === 'DEVICE_MISMATCH') { clearFix(token); stopWatching(); fail(e); return; }
       if (e.status === 429) return; // too soon; the next fix goes through
       if (e.status === 409) { stopWatching(); setGeoError(e.message); return; }
       queued.current = fix; // offline or server unreachable: keep the latest fix and retry
+      saveFix(token, fix);
       setPending(true);
     }
-  }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A fix saved during an earlier visit without signal is sent once the link is open again on this phone.
+  const resent = useRef(false);
+  useEffect(() => {
+    if (resent.current || !info || info.pinRequired || !info.consentAt || !(info.bound || getDevice(token) || memSecret.current)) return;
+    resent.current = true;
+    const saved = loadFix(token);
+    if (saved && (!info.lastAt || (saved.clientTime && saved.clientTime > new Date(info.lastAt).getTime()))) send(saved);
+    else if (saved) clearFix(token);
+  }, [info, send, token]);
 
   // Retry a queued fix when the connection comes back, and every 30 s while waiting.
   useEffect(() => {
@@ -178,6 +227,7 @@ export default function DriverTrack() {
       clientTime: Number.isFinite(pos.timestamp) ? Math.round(pos.timestamp) : null,
     };
     setGeoError(null);
+    lastFix.current = { ...fix, t: Date.now() };
     const prev = lastSent.current;
     const due = !prev || Date.now() - prev.t >= SEND_EVERY_MS || metersBetween(prev, fix) >= SEND_IF_MOVED_M;
     if (due) send(fix);
@@ -252,15 +302,35 @@ export default function DriverTrack() {
   const checkin = async (event) => {
     setBusy(event);
     try {
-      const r = await api('POST', '/checkin', { event, note: event === 'issue' ? note : undefined, signals: deviceSignals() });
+      // Where the check-in happened: the phone's latest fix when it is recent.
+      const f = lastFix.current && Date.now() - lastFix.current.t < 10 * 60_000 ? lastFix.current : null;
+      const r = await api('POST', '/checkin', {
+        event, note: event === 'issue' ? note : undefined, signals: deviceSignals(),
+        ...(f ? { lat: f.lat, lng: f.lng, accuracy: f.accuracy } : {}),
+        // The trip on screen: after "Delivered" the link moves on to the next trip, and a second tap must not deliver it.
+        ...(info?.trip?.id ? { loadId: info.trip.id } : {}),
+      });
       remember(r.deviceSecret);
       setDone((d) => ({ ...d, [event]: new Date() }));
       if (event === 'issue') { setNote(''); setIssueOpen(false); }
+      if (event === 'delivered') setPodPrompt(true);
       if (r.tripStatus) setInfo((i) => (i?.trip ? { ...i, trip: { ...i.trip, status: r.tripStatus } } : i));
+      if (r.deviceSecret) load();
     } catch (e) {
       if (!fail(e)) setGeoError(e.message);
     } finally { setBusy(null); }
   };
+
+  const sendHours = async (body) => {
+    try {
+      await api('POST', '/hours', body);
+    } catch (e) {
+      if (fail(e)) return;
+      throw e;
+    }
+  };
+  const getSecret = useCallback(() => getDevice(token) || memSecret.current || '', [token]);
+  const linkGone = useCallback((e) => { fail(e); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error?.mismatch) {
     return (
@@ -351,6 +421,7 @@ export default function DriverTrack() {
               <ShieldCheck className="mt-0.5 size-6 shrink-0 text-c-green" aria-hidden />
               <p className="text-[15px] leading-relaxed text-fg-2">
                 <span className="font-medium text-fg">{info.company}</span> will see your location while this page is open{expires ? <>, until <span className="font-medium text-fg">{expires}</span></> : ''}. Stop anytime.
+                {' '}If your dispatcher shares a tracking page with the broker, the broker sees the city you are near (your exact position only if your dispatcher turns that on) and the arrival estimate, never your name or phone number.
               </p>
             </div>
             {isComputer && (
@@ -383,6 +454,14 @@ export default function DriverTrack() {
           <Stop kind="Delivery" stop={trip.delivery} />
 
           <h2 className="pt-2 text-lg font-medium">Check in</h2>
+          {podPrompt && (
+            <div className="flex items-center gap-3 rounded-2xl border border-c-green bg-c-green-soft p-3">
+              <PackageCheck className="size-6 shrink-0 text-c-green" aria-hidden />
+              <p className="min-w-0 flex-1 text-sm"><span className="font-medium">Delivered.</span> Send a photo of the signed POD now so your dispatcher can bill the load.</p>
+              <button type="button" onClick={() => { setPodPrompt(false); photos.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-600 px-3 text-sm font-medium text-white"><Camera className="size-4" aria-hidden />POD</button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             {[['arrived_pickup', 'Arrived at pickup', Warehouse], ['loaded', 'Loaded', Truck], ['arrived_delivery', 'Arrived at delivery', MapPin], ['delivered', 'Delivered', PackageCheck]].map(([key, text, Icon]) => (
               <BigButton key={key} disabled={!!busy || tripDone && key !== 'delivered'} onClick={() => checkin(key)}
@@ -397,6 +476,12 @@ export default function DriverTrack() {
       ) : (
         <section className="rounded-2xl border border-line bg-surface p-4 text-sm text-fg-2">No trip is attached to this link yet. Your dispatcher still sees your location while you share it.</section>
       )}
+
+      {/* Paperwork and hours (only on the phone that holds the link) */}
+      {(info.bound || (!info.pinEnabled && info.consentAt)) && info.uploads && (
+        <DriverPhotos ref={photos} token={token} tripId={trip?.id || null} getSecret={getSecret} uploads={info.uploads} preferType={podPrompt || tripDone ? 'pod' : null} onLinkGone={linkGone} />
+      )}
+      {info.bound && trip && <DriverHours send={sendHours} />}
 
       {/* Issue */}
       <section className="rounded-2xl border border-line bg-surface p-4">
@@ -419,7 +504,7 @@ export default function DriverTrack() {
         )}
       </section>
 
-      <p className="pb-6 text-center text-xs text-muted">Your location goes only to {info.company}. It is not shared with anyone else and is deleted after 30 days.</p>
+      <p className="pb-6 text-center text-xs text-muted">Your location goes to {info.company} dispatch. If they share a tracking page for this load, the broker sees the nearest city (the exact position only if dispatch turns that on) and the arrival estimate. Location history is deleted after 30 days.</p>
     </Shell>
   );
 }

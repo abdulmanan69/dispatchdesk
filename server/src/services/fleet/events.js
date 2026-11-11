@@ -21,6 +21,19 @@ export async function recordLoadEvent({ loadId, ownerId, type, at = new Date(), 
   });
 }
 
+/** Stop and detention events: the detention clock needs them even when a long trip has many newer check calls. */
+const MILESTONES = ['arrived_pickup', 'loaded', 'departed_pickup', 'arrived_delivery', 'delivered', 'detention_start', 'detention_stop'];
+
+/**
+ * A load's timeline in time order: the newest `take` events, plus every stop and detention milestone that is older,
+ * so a load with more events than `take` keeps its latest updates and a correct detention clock.
+ */
 export async function loadEvents(loadId, { take = 200 } = {}) {
-  return prisma.loadEvent.findMany({ where: { loadId }, orderBy: { at: 'asc' }, take });
+  const rows = await prisma.loadEvent.findMany({ where: { loadId }, orderBy: { at: 'desc' }, take });
+  if (rows.length >= take) {
+    const seen = new Set(rows.map((e) => e.id));
+    const milestones = await prisma.loadEvent.findMany({ where: { loadId, type: { in: MILESTONES } }, orderBy: { at: 'asc' }, take: 100 });
+    rows.push(...milestones.filter((e) => !seen.has(e.id)));
+  }
+  return rows.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }

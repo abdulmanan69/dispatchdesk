@@ -1,53 +1,73 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './fleet.css';
-import { MAP_STYLES, STATUS, TRIP_STATUS, initials, liveTag } from './fleetApi.js';
+import { MAP_STYLES, STATUS, TRIP_STATUS, initials, liveTag, isStale } from './fleetApi.js';
+import { splitRoute } from './polyline.js';
 
 const US = [[-125, 24], [-66.5, 49.5]];
 const empty = { type: 'FeatureCollection', features: [] };
 const tripColor = ['match', ['get', 'status'], ...Object.entries(TRIP_STATUS).flatMap(([k, v]) => [k, v.color]), '#7c3aed'];
 // Basemap clutter that competes with trucks and routes.
 const HIDE = /poi|housenumber|aerialway|aeroway|railway_service|ferry/i;
+// A live truck this close to its road route is drawn on the road (GPS wobble), farther away at its real position.
+const SNAP_PIN_MILES = 0.3;
 
-function truckFeatures(trucks) {
-  return {
-    type: 'FeatureCollection',
-    features: trucks.filter((t) => t.location?.lat != null).map((t) => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [t.location.lng, t.location.lat] },
-      properties: { id: t.id, status: t.truckStatus },
-    })),
-  };
-}
+const line = (coordinates, properties) => ({ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties });
+const point = (coordinates, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates }, properties });
+const fc = (features) => ({ type: 'FeatureCollection', features });
+const straight = (a, b) => [[a.lng, a.lat], [b.lng, b.lat]];
 
-function tripFeatures(trucks) {
+/**
+ * Trip lines from the stored road routes. An in-transit trip with a known truck position is split at the truck:
+ * the driven part is drawn muted, the part ahead in the trip color with direction arrows. The truck's run to its next
+ * pickup (deadhead) is a dashed grey road route. Straight lines appear only when the routing service had no route
+ * for a trip, and are dashed and labelled "Estimate".
+ */
+function buildTrips(trucks, routes, deadheads) {
   const lines = [];
   const ends = [];
+  const pins = new Map(); // truck id -> displayed [lng, lat]
   for (const t of trucks) {
+    const pos = t.location?.lat != null ? { lat: t.location.lat, lng: t.location.lng } : null;
+    if (pos) pins.set(t.id, [pos.lng, pos.lat]);
     for (const trip of t.trips || []) {
       if (trip.origin.lat == null || trip.dest.lat == null) continue;
-      lines.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: [[trip.origin.lng, trip.origin.lat], [trip.dest.lng, trip.dest.lat]] }, properties: { id: trip.id, carrierId: t.id, status: trip.status } });
-      ends.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [trip.origin.lng, trip.origin.lat] }, properties: { kind: 'origin', status: trip.status, label: trip.origin.city } });
-      ends.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [trip.dest.lng, trip.dest.lat] }, properties: { kind: 'dest', status: trip.status, label: trip.dest.city } });
-      if (t.location?.lat != null && trip === t.nextTrip && t.truckStatus !== 'loaded') {
-        lines.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: [[t.location.lng, t.location.lat], [trip.origin.lng, trip.origin.lat]] }, properties: { id: `${trip.id}-dh`, carrierId: t.id, status: 'deadhead' } });
+      const r = routes.get(trip.id);
+      const road = r?.points?.length > 1;
+      const pts = road ? r.points : straight(trip.origin, trip.dest);
+      const props = { id: trip.id, carrierId: t.id, status: trip.status, estimate: !road || !!r.estimate };
+      if (trip.status === 'in_transit' && pos) {
+        const { done, ahead, snap } = splitRoute(pts, pos);
+        if (done.length > 1) lines.push(line(done, { ...props, part: 'done' }));
+        if (ahead.length > 1) lines.push(line(ahead, { ...props, part: 'ahead' }));
+        if (snap && road && !r.estimate && snap.offMiles < SNAP_PIN_MILES) pins.set(t.id, snap.point);
+      } else {
+        lines.push(line(pts, { ...props, part: 'ahead' }));
       }
+      ends.push(point([trip.origin.lng, trip.origin.lat], { kind: 'origin', status: trip.status, label: trip.origin.city }));
+      ends.push(point([trip.dest.lng, trip.dest.lat], { kind: 'dest', status: trip.status, label: trip.dest.city }));
+    }
+    const next = t.nextTrip;
+    if (pos && next && !t.currentTrip && t.truckStatus !== 'loaded' && next.origin.lat != null) {
+      const dh = deadheads.get(`${t.id}:${next.id}`);
+      let pts = straight(pos, next.origin);
+      if (dh?.points?.length > 1) {
+        const { ahead } = splitRoute(dh.points, pos);
+        pts = [[pos.lng, pos.lat], ...ahead];
+      }
+      lines.push(line(pts, { id: `${next.id}-dh`, carrierId: t.id, status: 'deadhead', part: 'ahead', estimate: !dh?.points?.length || !!dh.estimate }));
     }
   }
-  return { lines: { type: 'FeatureCollection', features: lines }, ends: { type: 'FeatureCollection', features: ends } };
+  return { lines: fc(lines), ends: fc(ends), pins };
+}
+
+function truckFeatures(trucks, pins) {
+  return fc(trucks.filter((t) => pins.has(t.id)).map((t) => point(pins.get(t.id), { id: t.id, status: t.truckStatus })));
 }
 
 function pointFeatures(items, kind) {
-  return {
-    type: 'FeatureCollection',
-    features: items.filter((p) => p.lat != null).map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { id: p.id, kind, label: p.label || '' } })),
-  };
-}
-
-function setData(map, id, data) {
-  const src = map.getSource(id);
-  if (src) src.setData(data);
+  return fc(items.filter((p) => p.lat != null).map((p) => point([p.lng, p.lat], { id: p.id, kind, label: p.label || '' })));
 }
 
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -62,22 +82,30 @@ function trustBadge(live) {
   return { html, text };
 }
 
-/** Build or update the DOM for a truck pin. */
+/** Build or update the DOM for a truck pin; skipped when nothing visible changed (no innerHTML churn on every poll). */
 function paintPin(el, t, selected) {
   const color = (STATUS[t.truckStatus] || STATUS.unknown).color;
   const live = t.live || {};
-  const isLive = live.sharing && !live.stale;
-  const stale = live.source === 'driver_link' && live.stale;
+  const stale = live.source === 'driver_link' && isStale(live);
+  const isLive = live.sharing && !isStale(live);
   const moving = isLive && live.heading != null && (live.speedMph ?? 0) >= 3;
   const tag = liveTag(t);
+  const trust = trustBadge(live);
+  const showTag = tag && (selected || isLive || stale);
+  const offRoute = !!t.plan?.progress?.offRoute;
+  const sig = [t.truckStatus, selected, isLive, stale, moving && Math.round(live.heading / 10), showTag && tag.text, trust.text, offRoute, t.companyName].join('|');
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
   el.style.setProperty('--pin-color', color);
   // Toggle our classes only: MapLibre positions the marker through its own maplibregl-marker class.
   el.classList.add('fleet-pin');
   el.classList.toggle('fleet-pin--selected', !!selected);
   el.classList.toggle('fleet-pin--live', !!isLive);
   el.classList.toggle('fleet-pin--stale', !!stale);
-  const trust = trustBadge(live);
-  el.setAttribute('aria-label', `${t.companyName}, ${(STATUS[t.truckStatus] || STATUS.unknown).label}${tag ? `, ${tag.text}` : ''}${trust.text ? `. ${trust.text}` : ''}`);
+  el.classList.toggle('fleet-pin--off', offRoute);
+  el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
+  el.setAttribute('aria-label', `${t.companyName}, ${(STATUS[t.truckStatus] || STATUS.unknown).label}${tag ? `, ${tag.text}` : ''}${offRoute ? ', off the planned route' : ''}${trust.text ? `. ${trust.text}` : ''}`);
   if (trust.text) el.title = `${t.companyName} · ${trust.text}`;
   else el.removeAttribute('title');
   el.innerHTML = `
@@ -85,24 +113,46 @@ function paintPin(el, t, selected) {
     ${moving ? `<span class="fleet-pin__arrow" style="transform: rotate(${Math.round(live.heading)}deg)"></span>` : ''}
     <span class="fleet-pin__body">${esc(initials(t.companyName))}</span>
     ${trust.html}
-    ${tag && (selected || isLive || stale) ? `<span class="fleet-pin__tag fleet-pin__tag--${tag.tone}">${tag.tone === 'live' ? '<span class="fleet-pin__dot"></span>' : ''}${esc(tag.text)}</span>` : ''}`;
+    ${showTag ? `<span class="fleet-pin__tag fleet-pin__tag--${tag.tone}">${tag.tone === 'live' ? '<span class="fleet-pin__dot"></span>' : ''}${esc(tag.text)}</span>` : ''}`;
 }
 
 /**
  * Interactive fleet map (MapLibre GL + OpenFreeMap vector tiles, free and keyless).
- * Trucks are HTML pins colored by status, with a pulsing halo when a driver is sharing live GPS.
- * When zoomed out they collapse into clusters. Trips show as cased lines with pickup/delivery ends.
+ * Trucks are HTML pins colored by status, with a pulsing halo when a driver is sharing live GPS; zoomed out they cluster.
+ * Each GeoJSON source is rebuilt only when its own inputs change, and setData runs only for sources that changed.
+ * On touch screens the map needs two fingers to pan, so the page still scrolls with one.
  */
 export default function FleetMap({
   trucks = [], openLoads = [], alerts = [], layers, selectedId, onSelect, onOpenLoad, pickMode, onPick, editPoint, onEditMove,
-  plannedRoute, focus, fitKey, dark, trail, className,
+  plannedRoute, focus, fitKey, dark, trail, className, routes, deadheads,
 }) {
   const box = useRef(null);
   const mapRef = useRef(null);
   const markerRef = useRef(null);
   const pins = useRef(new Map()); // truck id -> maplibregl.Marker
+  const applied = useRef({}); // source id -> last data object sent to the map
   const latest = useRef({});
-  latest.current = { trucks, openLoads, alerts, layers, selectedId, onSelect, onOpenLoad, pickMode, onPick, plannedRoute, onEditMove, trail };
+
+  const routeMap = routes || EMPTY_MAP;
+  const deadheadMap = deadheads || EMPTY_MAP;
+  const trips = useMemo(() => buildTrips(trucks, routeMap, deadheadMap), [trucks, routeMap, deadheadMap]);
+  const data = useMemo(() => ({
+    trucks: truckFeatures(trucks, trips.pins),
+    trips: trips.lines,
+    'trip-ends': trips.ends,
+  }), [trucks, trips]);
+  const originData = useMemo(() => pointFeatures(openLoads.map((l) => ({ id: l.id, lat: l.origin.lat, lng: l.origin.lng, label: `${l.origin.city} → ${l.dest.city}` })), 'load'), [openLoads]);
+  const alertData = useMemo(() => pointFeatures(alerts, 'alert'), [alerts]);
+  const trailData = useMemo(() => (trail?.length > 1 ? fc([line(trail, {})]) : empty), [trail]);
+  const planData = useMemo(() => {
+    const r = plannedRoute;
+    if (!r?.geometry?.length) return empty;
+    return fc([
+      line(r.geometry, { estimate: !!r.estimate }),
+      ...(r.deadhead?.geometry?.length ? [line(r.deadhead.geometry, { estimate: true, deadhead: true })] : []),
+    ]);
+  }, [plannedRoute]);
+  latest.current = { trucks, pins: trips.pins, layers, selectedId, onSelect, onOpenLoad, pickMode, onPick, onEditMove, sources: { ...data, origins: originData, alerts: alertData, trail: trailData, plan: planData } };
 
   // HTML pins for unclustered trucks; clusters stay as a circle layer.
   const syncPins = () => {
@@ -117,16 +167,19 @@ export default function FleetMap({
         if (f.properties.cluster) continue;
         const id = f.properties.id;
         const t = byId.get(id);
-        if (!t || want.has(id)) continue;
+        const at = s.pins.get(id);
+        if (!t || !at || want.has(id)) continue;
         want.add(id);
         let m = pins.current.get(id);
         if (!m) {
           const el = document.createElement('div');
           el.addEventListener('click', (e) => { e.stopPropagation(); latest.current.onSelect?.(id); });
-          m = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([t.location.lng, t.location.lat]).addTo(map);
+          el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); latest.current.onSelect?.(id); } });
+          m = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(at).addTo(map);
           pins.current.set(id, m);
         } else {
-          m.setLngLat([t.location.lng, t.location.lat]);
+          const cur = m.getLngLat();
+          if (cur.lng !== at[0] || cur.lat !== at[1]) m.setLngLat(at);
         }
         paintPin(m.getElement(), t, s.selectedId === id);
         m.getElement().style.zIndex = s.selectedId === id ? '3' : t.live?.sharing ? '2' : '1';
@@ -135,50 +188,62 @@ export default function FleetMap({
     for (const [id, m] of pins.current) if (!want.has(id)) { m.remove(); pins.current.delete(id); }
   };
 
-  const sync = () => {
+  /** Send changed sources to the map (all of them after a style reload). */
+  const pushSources = (force = false) => {
     const map = mapRef.current;
     // Only the presence of our sources matters; isStyleLoaded() is still false inside style.load.
     if (!map || !map.getSource('trucks')) return;
-    const s = latest.current;
-    const trips = tripFeatures(s.trucks);
-    setData(map, 'trucks', truckFeatures(s.trucks));
-    setData(map, 'trips', trips.lines);
-    setData(map, 'trip-ends', trips.ends);
-    setData(map, 'origins', pointFeatures(s.openLoads.map((l) => ({ id: l.id, lat: l.origin.lat, lng: l.origin.lng, label: `${l.origin.city} → ${l.dest.city}` })), 'load'));
-    setData(map, 'alerts', pointFeatures(s.alerts, 'alert'));
-    setData(map, 'trail', s.trail?.length > 1 ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: s.trail }, properties: {} }] } : empty);
-    const r = s.plannedRoute;
-    setData(map, 'plan', r?.geometry?.length ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: r.geometry }, properties: { estimate: !!r.estimate } }, ...(r.deadhead?.geometry?.length ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates: r.deadhead.geometry }, properties: { estimate: true, deadhead: true } }] : [])] } : empty);
+    for (const [id, value] of Object.entries(latest.current.sources)) {
+      if (!force && applied.current[id] === value) continue;
+      map.getSource(id)?.setData(value);
+      applied.current[id] = value;
+    }
+  };
+
+  const applyLayers = () => {
+    const map = mapRef.current;
+    if (!map || !map.getSource('trucks')) return;
     const vis = (id, on) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
-    const L = s.layers || {};
+    const L = latest.current.layers || {};
     ['clusters', 'cluster-count'].forEach((id) => vis(id, L.trucks !== false));
-    ['trip-casing', 'trip-lines', 'trip-flow', 'trip-deadhead', 'trip-ends', 'trip-end-labels'].forEach((id) => vis(id, L.trips !== false));
-    ['origin-dot'].forEach((id) => vis(id, L.origins !== false));
-    ['alert-dot'].forEach((id) => vis(id, L.weather === true));
-    syncPins();
+    TRIP_LAYERS.forEach((id) => vis(id, L.trips !== false));
+    vis('origin-dot', L.origins !== false);
+    vis('alert-dot', L.weather === true);
+    // Other trucks' trips step back while one truck is selected.
+    const sel = latest.current.selectedId;
+    const fade = (on) => (sel ? ['case', ['==', ['get', 'carrierId'], sel], on, on * 0.35] : on);
+    for (const [id, prop, on] of [['trip-lines', 'line-opacity', 1], ['trip-casing', 'line-opacity', 0.9], ['trip-estimate', 'line-opacity', 0.9], ['trip-deadhead', 'line-opacity', 0.9], ['trip-done', 'line-opacity', 0.75]]) {
+      if (map.getLayer(id)) map.setPaintProperty(id, prop, fade(on));
+    }
   };
 
   const addLayers = (map) => {
     if (map.getSource('trucks')) return;
     const isDark = document.documentElement.classList.contains('dark');
     const casing = isDark ? '#0b0b0d' : '#ffffff';
+    const muted = isDark ? '#71717a' : '#a1a1aa';
     for (const l of map.getStyle().layers || []) if (HIDE.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
 
     map.addSource('trucks', { type: 'geojson', data: empty, cluster: true, clusterRadius: 48, clusterMaxZoom: 7 });
-    map.addSource('trips', { type: 'geojson', data: empty });
-    map.addSource('trip-ends', { type: 'geojson', data: empty });
-    map.addSource('origins', { type: 'geojson', data: empty });
-    map.addSource('alerts', { type: 'geojson', data: empty });
-    map.addSource('plan', { type: 'geojson', data: empty });
+    for (const id of ['trips', 'trip-ends', 'origins', 'alerts', 'plan']) map.addSource(id, { type: 'geojson', data: empty });
     map.addSource('trail', { type: 'geojson', data: empty, lineMetrics: true });
 
-    const notDh = ['!=', ['get', 'status'], 'deadhead'];
+    const isDh = ['==', ['get', 'status'], 'deadhead'];
+    const ahead = ['==', ['get', 'part'], 'ahead'];
+    const road = ['!', ['get', 'estimate']];
     map.addLayer({ id: 'trail-line', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 4, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, 'rgba(22,163,74,0)', 1, 'rgba(22,163,74,0.95)'] } });
-    map.addLayer({ id: 'trip-deadhead', type: 'line', source: 'trips', filter: ['==', ['get', 'status'], 'deadhead'], layout: { 'line-cap': 'round' }, paint: { 'line-color': isDark ? '#a1a1aa' : '#71717a', 'line-width': 2, 'line-dasharray': [1, 2] } });
-    map.addLayer({ id: 'trip-casing', type: 'line', source: 'trips', filter: notDh, layout: { 'line-cap': 'round' }, paint: { 'line-color': casing, 'line-width': 7, 'line-opacity': 0.9 } });
-    map.addLayer({ id: 'trip-lines', type: 'line', source: 'trips', filter: notDh, layout: { 'line-cap': 'round' }, paint: { 'line-color': tripColor, 'line-width': 4 } });
-    // Marching dashes on trips in transit show direction of travel.
-    map.addLayer({ id: 'trip-flow', type: 'line', source: 'trips', filter: ['==', ['get', 'status'], 'in_transit'], paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-opacity': 0.85, 'line-dasharray': [0, 4, 3] } });
+    map.addLayer({ id: 'trip-deadhead', type: 'line', source: 'trips', filter: isDh, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDark ? '#a1a1aa' : '#71717a', 'line-width': ['case', road, 3, 2], 'line-dasharray': [1.2, 1.6] } });
+    map.addLayer({ id: 'trip-done', type: 'line', source: 'trips', filter: ['all', ['!', isDh], ['==', ['get', 'part'], 'done']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': muted, 'line-width': 3, 'line-opacity': 0.75 } });
+    map.addLayer({ id: 'trip-casing', type: 'line', source: 'trips', filter: ['all', ['!', isDh], ahead, road], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': casing, 'line-width': 7, 'line-opacity': 0.9 } });
+    map.addLayer({ id: 'trip-lines', type: 'line', source: 'trips', filter: ['all', ['!', isDh], ahead, road], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': tripColor, 'line-width': 4 } });
+    map.addLayer({ id: 'trip-estimate', type: 'line', source: 'trips', filter: ['all', ['!', isDh], ahead, ['get', 'estimate']], layout: { 'line-cap': 'round' }, paint: { 'line-color': tripColor, 'line-width': 3, 'line-dasharray': [2, 2], 'line-opacity': 0.9 } });
+    // Direction of travel: static arrows along the road ahead of a loaded truck (no animation, nothing repaints).
+    map.addLayer({ id: 'trip-arrows', type: 'symbol', source: 'trips', filter: ['all', ahead, ['==', ['get', 'status'], 'in_transit']], minzoom: 4,
+      layout: { 'symbol-placement': 'line', 'symbol-spacing': 64, 'text-field': '›', 'text-font': ['Noto Sans Bold'], 'text-size': 19, 'text-keep-upright': false, 'text-rotation-alignment': 'map', 'text-allow-overlap': true, 'text-ignore-placement': true, 'text-offset': [0, -0.12] },
+      paint: { 'text-color': '#ffffff', 'text-opacity': 0.95 } });
+    map.addLayer({ id: 'trip-estimate-label', type: 'symbol', source: 'trips', filter: ['all', ahead, ['get', 'estimate']], minzoom: 4.5,
+      layout: { 'symbol-placement': 'line-center', 'text-field': 'Estimate', 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-offset': [0, -0.9], 'text-optional': true },
+      paint: { 'text-color': isDark ? '#d4d4d8' : '#3f3f46', 'text-halo-color': casing, 'text-halo-width': 1.5 } });
     map.addLayer({ id: 'plan-line', type: 'line', source: 'plan', filter: ['!', ['get', 'estimate']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0f7d73', 'line-width': 5, 'line-opacity': 0.95 } });
     map.addLayer({ id: 'plan-estimate', type: 'line', source: 'plan', filter: ['get', 'estimate'], paint: { 'line-color': '#0f7d73', 'line-width': 3, 'line-dasharray': [1.5, 1.5] } });
     map.addLayer({ id: 'trip-ends', type: 'circle', source: 'trip-ends', paint: {
@@ -194,15 +259,18 @@ export default function FleetMap({
   };
 
   useEffect(() => {
+    const coarse = !!window.matchMedia?.('(pointer: coarse)').matches;
     const map = new maplibregl.Map({
       container: box.current, style: dark ? MAP_STYLES.dark : MAP_STYLES.light, bounds: US, attributionControl: false, maxPitch: 0, fadeDuration: 150,
+      // Phones and tablets: one finger scrolls the page, two fingers move the map.
+      cooperativeGestures: coarse,
     });
     mapRef.current = map;
     // Controls sit on the left: the right side hosts the planner drawer and the app's floating dock.
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-left');
     map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
-    map.on('style.load', () => { addLayers(map); sync(); });
+    map.on('style.load', () => { applied.current = {}; addLayers(map); pushSources(true); applyLayers(); syncPins(); });
     // Keep the (required) attribution as a small info button instead of a banner across the map.
     map.once('load', () => box.current?.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'));
     map.on('moveend', syncPins);
@@ -222,21 +290,10 @@ export default function FleetMap({
       map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', id, () => { map.getCanvas().style.cursor = latest.current.pickMode ? 'crosshair' : ''; });
     }
-    // Animate the in-transit dashes.
-    let step = 0;
-    const seq = [[0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5], [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2], [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5]];
-    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const anim = reduce ? null : setInterval(() => {
-      if (map.getLayer('trip-flow') && map.getLayoutProperty('trip-flow', 'visibility') !== 'none') {
-        step = (step + 1) % seq.length;
-        map.setPaintProperty('trip-flow', 'line-dasharray', seq[step]);
-      }
-    }, 90);
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(box.current);
     const pinMap = pins.current;
     return () => {
-      if (anim) clearInterval(anim);
       ro.disconnect();
       for (const m of pinMap.values()) m.remove();
       pinMap.clear();
@@ -255,7 +312,9 @@ export default function FleetMap({
     map.setStyle(dark ? MAP_STYLES.dark : MAP_STYLES.light, { diff: false });
   }, [dark]);
 
-  useEffect(sync); // data, layers, selection and trail
+  // Data: only sources whose inputs changed are sent to the map.
+  useEffect(() => { pushSources(); syncPins(); }, [data, originData, alertData, trailData, planData]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { applyLayers(); syncPins(); }, [layers, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const map = mapRef.current;
@@ -266,7 +325,7 @@ export default function FleetMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || fitKey == null) return;
-    const pts = [...trucks.filter((t) => t.location?.lat != null).map((t) => [t.location.lng, t.location.lat]), ...(plannedRoute?.geometry || [])];
+    const pts = [...[...trips.pins.values()], ...(plannedRoute?.geometry || [])];
     if (!pts.length) { map.fitBounds(US, { padding: 40, duration: 600 }); return; }
     const b = pts.reduce((acc, p) => acc.extend(p), new maplibregl.LngLatBounds(pts[0], pts[0]));
     const pad = plannedRoute ? { top: 70, bottom: 60, left: 60, right: Math.min(440, box.current.clientWidth / 2) } : 90;
@@ -275,7 +334,14 @@ export default function FleetMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (map && focus?.lat != null) map.flyTo({ center: [focus.lng, focus.lat], zoom: Math.max(map.getZoom(), focus.zoom || 7), duration: 1200, curve: 1.42, essential: true });
+    if (!map || !focus) return;
+    if (focus.bounds) {
+      const w = box.current?.clientWidth || 800;
+      // Room for the truck panel on the left and the legend on the right.
+      map.fitBounds(focus.bounds, { padding: { top: 70, bottom: 60, left: w > 700 ? 420 : 40, right: w > 1000 ? 150 : 40 }, maxZoom: 10, duration: 1000 });
+    } else if (focus.lat != null) {
+      map.flyTo({ center: [focus.lng, focus.lat], zoom: Math.max(map.getZoom(), focus.zoom || 7), duration: 1200, curve: 1.42, essential: true });
+    }
   }, [focus?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Draggable marker while editing a truck's location.
@@ -299,3 +365,6 @@ export default function FleetMap({
     </div>
   );
 }
+
+const EMPTY_MAP = new Map();
+const TRIP_LAYERS = ['trip-casing', 'trip-lines', 'trip-estimate', 'trip-deadhead', 'trip-done', 'trip-arrows', 'trip-estimate-label', 'trip-ends', 'trip-end-labels'];

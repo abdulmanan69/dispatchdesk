@@ -7,13 +7,17 @@ import { parse, z, reqStr } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/activity.js';
 import { getSetting } from '../lib/settings.js';
-import { effectivePlan, usage } from '../lib/plans.js';
+import { effectivePlan, usage, invalidatePlans, storageStatus, STORAGE_MB } from '../lib/plans.js';
+import { withLock } from '../lib/locks.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getStripe, requireStripe, stripeMode } from '../services/stripe.js';
 
 const r = Router();
 // Signature verification is a local HMAC check and needs no real API key.
 const verifier = new Stripe('sk_test_signature_verification_only');
+
+/** File storage included with a plan (see STORAGE_MB in lib/plans.js); per member on Teams plans. */
+const planStorageMb = (p) => (p.key === 'free' ? STORAGE_MB.free : p.perSeat ? STORAGE_MB.teamPerMember : STORAGE_MB.paid);
 
 export function planFeatures(p) {
   const n = (v, unit) => (v < 0 ? `Unlimited ${unit}` : `${v.toLocaleString('en-US')} ${unit}`);
@@ -27,6 +31,8 @@ export function planFeatures(p) {
     p.maxAutomations === 0 ? 'No automations' : n(p.maxAutomations, p.maxAutomations === 1 ? 'automation' : 'automations'),
     'CRM, pipeline, prospecting & follow-ups',
   ];
+  const storageMb = planStorageMb(p);
+  f.push(`${storageMb >= 1024 ? `${Math.round((storageMb / 1024) * 10) / 10} GB` : `${storageMb} MB`} file storage${p.perSeat ? ' per member' : ''}`);
   if (p.advancedReports) f.push('Advanced reporting');
   if (p.trainingIncluded) f.push('Dispatch training entitlement');
   if (p.teamFeatures) f.push('Team board, leaderboard & permissions');
@@ -40,6 +46,7 @@ const publicPlan = (p) => ({
     maxCarriers: p.maxCarriers, dailyEmailLimit: p.dailyEmailLimit, monthlyAiMessages: p.monthlyAiMessages, maxSequences: p.maxSequences,
     maxAutomations: p.maxAutomations, maxDiscoveryPerDay: p.maxDiscoveryPerDay,
     monthlyLeadGenLimit: p.monthlyLeadGenLimit, maxLeadGenerators: p.maxLeadGenerators,
+    storageMb: planStorageMb(p),
   },
   leadGenAutoRun: p.leadGenAutoRun,
   advancedReports: p.advancedReports, trainingIncluded: p.trainingIncluded, teamFeatures: p.teamFeatures,
@@ -54,9 +61,10 @@ r.get('/plans', ah(async (req, res) => {
 r.use(requireAuth);
 
 r.get('/me', ah(async (req, res) => {
-  const [{ plan, subscription }, u, payments, pending, mode] = await Promise.all([
+  const [{ plan, subscription }, u, storage, payments, pending, mode] = await Promise.all([
     effectivePlan(req.user),
     usage(req.user),
+    storageStatus(req.user),
     prisma.payment.findMany({ where: { userId: req.user.id }, orderBy: { createdAt: 'desc' }, take: 50 }),
     prisma.subscription.findFirst({ where: { userId: req.user.id, status: { in: ['incomplete', 'past_due', 'unpaid'] } }, include: { plan: true }, orderBy: { createdAt: 'desc' } }),
     stripeMode(),
@@ -72,6 +80,7 @@ r.get('/me', ah(async (req, res) => {
     },
     pendingSubscription: pending && { id: pending.id, status: pending.status, planKey: pending.plan.key, createdAt: pending.createdAt },
     usage: u,
+    storage: { usedBytes: storage.usedBytes, limitBytes: storage.limitBytes, scope: storage.scope },
     payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
     stripeMode: mode,
   });
@@ -195,14 +204,23 @@ r.post('/change-plan', ah(async (req, res) => {
 // Webhooks — the ONLY place subscription/payment state is created from Stripe events.
 // ---------------------------------------------------------------------------
 const ts = (s) => (s ? new Date(s * 1000) : null);
+// Stripe never moves a subscription out of these states; a later "active" payload for one is a stale, out-of-order event.
+const TERMINAL = new Set(['canceled', 'incomplete_expired']);
 
-/** Mirror a Stripe subscription object (verified: from a signed webhook or a Stripe API response) into our DB. */
+/**
+ * Mirror a Stripe subscription object (verified: from a signed webhook or a Stripe API response) into our DB.
+ * A subscription that ended is never revived by an older event that arrives late.
+ */
 export async function syncSubscription(remote) {
   const item = remote.items?.data?.[0];
   const priceId = item?.price?.id;
   const plan = priceId ? await prisma.plan.findFirst({ where: { stripePriceId: priceId } }) : null;
   let local = await prisma.subscription.findUnique({ where: { stripeSubscriptionId: remote.id } });
   if (!local && remote.metadata?.localSubscriptionId) local = await prisma.subscription.findUnique({ where: { id: remote.metadata.localSubscriptionId } });
+  if (local?.stripeSubscriptionId === remote.id && TERMINAL.has(local.status) && !TERMINAL.has(remote.status)) {
+    console.warn(`[billing] ignored "${remote.status}" for ended subscription ${remote.id} (out-of-order event)`);
+    return local;
+  }
   const data = {
     stripeSubscriptionId: remote.id,
     stripeCustomerId: typeof remote.customer === 'string' ? remote.customer : remote.customer?.id,
@@ -215,39 +233,90 @@ export async function syncSubscription(remote) {
     canceledAt: ts(remote.canceled_at),
     ...(plan ? { planId: plan.id } : {}),
   };
-  if (local) return prisma.subscription.update({ where: { id: local.id }, data });
+  if (local) {
+    const row = await prisma.subscription.update({ where: { id: local.id }, data });
+    invalidatePlans();
+    return row;
+  }
   const userId = remote.metadata?.userId;
   if (!userId || !plan || !(await prisma.user.findUnique({ where: { id: userId } }))) {
     console.warn('[billing] subscription event for unknown user/plan', remote.id);
     return null;
   }
-  return prisma.subscription.create({ data: { ...data, userId, teamId: remote.metadata?.teamId || null, planId: plan.id } });
+  const row = await prisma.subscription.create({ data: { ...data, userId, teamId: remote.metadata?.teamId || null, planId: plan.id } });
+  invalidatePlans();
+  return row;
+}
+
+/** SystemSetting key holding the newest applied event time (Stripe `created`, seconds) for one subscription. */
+const eventMarkerKey = (subId) => `billing.subEvent.${subId}`;
+
+/**
+ * customer.subscription.* events. Stripe does not deliver events in order and retries failed deliveries later, so:
+ * - events for one subscription are applied one at a time (DB lock, works across processes);
+ * - the newest applied event time is stored per subscription, and older events are skipped;
+ * - when a Stripe client is configured, the current subscription is fetched from Stripe and applied instead of the
+ *   (possibly stale) payload. A "deleted" event is final, so its payload is applied as is.
+ */
+async function applySubscriptionEvent(event, stripe) {
+  const obj = event.data.object;
+  return withLock(`stripe-sub.${obj.id}`, 60_000, async () => {
+    const key = eventMarkerKey(obj.id);
+    const marker = await prisma.systemSetting.findUnique({ where: { key } });
+    const last = Number(marker?.value) || 0;
+    const created = Number(event.created) || 0;
+    if (created && last && created < last) return { row: null, changed: false, skipped: 'stale' };
+    let remote = obj;
+    if (stripe && event.type !== 'customer.subscription.deleted') {
+      try {
+        remote = await stripe.subscriptions.retrieve(obj.id);
+      } catch (err) {
+        if (err?.statusCode !== 404 && err?.code !== 'resource_missing') throw err;
+      }
+    }
+    const before = await prisma.subscription.findUnique({ where: { stripeSubscriptionId: obj.id }, select: { status: true } });
+    const row = await syncSubscription(remote);
+    if (created > last) {
+      await prisma.systemSetting.upsert({ where: { key }, create: { key, value: String(created), secret: false }, update: { value: String(created) } });
+    }
+    return { row, changed: !!row && before?.status !== row.status };
+  });
 }
 
 function invoiceSubscriptionId(inv) {
   return inv.subscription?.id ?? inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
 }
 
+/**
+ * Record an invoice as a payment. Notifies only when the payment's status changes, so invoice.paid and
+ * invoice.payment_succeeded (both sent for one payment) produce one "Payment received" notification.
+ */
 async function recordInvoice(inv, status) {
-  const subId = invoiceSubscriptionId(inv);
-  const local = subId ? await prisma.subscription.findUnique({ where: { stripeSubscriptionId: subId } }) : null;
-  const userId = local?.userId
-    ?? (await prisma.subscription.findFirst({ where: { stripeCustomerId: typeof inv.customer === 'string' ? inv.customer : inv.customer?.id } }))?.userId;
-  if (!userId) { console.warn('[billing] invoice for unknown customer', inv.id); return null; }
-  const line = inv.lines?.data?.[0];
-  const data = {
-    userId, subscriptionId: local?.id ?? null,
-    amountCents: status === 'paid' ? inv.amount_paid ?? inv.total ?? 0 : inv.amount_due ?? inv.total ?? 0,
-    currency: inv.currency || 'usd', status,
-    description: line?.description || inv.description || null,
-    invoiceUrl: inv.hosted_invoice_url || null, invoicePdf: inv.invoice_pdf || null,
-    periodStart: ts(line?.period?.start ?? inv.period_start), periodEnd: ts(line?.period?.end ?? inv.period_end),
-    paidAt: status === 'paid' ? ts(inv.status_transitions?.paid_at) || new Date() : null,
-  };
-  const payment = await prisma.payment.upsert({ where: { stripeInvoiceId: inv.id }, create: { ...data, stripeInvoiceId: inv.id }, update: data });
-  if (status === 'paid') await notify(userId, { type: 'billing', title: 'Payment received', body: `Invoice paid: ${(data.amountCents / 100).toFixed(2)} ${data.currency.toUpperCase()}`, link: '/app/billing' });
-  else await notify(userId, { type: 'billing', title: 'Payment failed', body: 'Update your payment method in the billing portal to keep your plan.', link: '/app/billing' });
-  return payment;
+  return withLock(`stripe-invoice.${inv.id}`, 60_000, async () => {
+    const subId = invoiceSubscriptionId(inv);
+    const local = subId ? await prisma.subscription.findUnique({ where: { stripeSubscriptionId: subId } }) : null;
+    const userId = local?.userId
+      ?? (await prisma.subscription.findFirst({ where: { stripeCustomerId: typeof inv.customer === 'string' ? inv.customer : inv.customer?.id } }))?.userId;
+    if (!userId) { console.warn('[billing] invoice for unknown customer', inv.id); return null; }
+    const line = inv.lines?.data?.[0];
+    const data = {
+      userId, subscriptionId: local?.id ?? null,
+      amountCents: status === 'paid' ? inv.amount_paid ?? inv.total ?? 0 : inv.amount_due ?? inv.total ?? 0,
+      currency: inv.currency || 'usd', status,
+      description: line?.description || inv.description || null,
+      invoiceUrl: inv.hosted_invoice_url || null, invoicePdf: inv.invoice_pdf || null,
+      periodStart: ts(line?.period?.start ?? inv.period_start), periodEnd: ts(line?.period?.end ?? inv.period_end),
+      paidAt: status === 'paid' ? ts(inv.status_transitions?.paid_at) || new Date() : null,
+    };
+    const previous = await prisma.payment.findUnique({ where: { stripeInvoiceId: inv.id }, select: { status: true } });
+    if (previous?.status === 'paid' && status !== 'paid') return null; // a late "failed" never overwrites a paid invoice
+    const payment = await prisma.payment.upsert({ where: { stripeInvoiceId: inv.id }, create: { ...data, stripeInvoiceId: inv.id }, update: data });
+    if (previous?.status !== status) {
+      if (status === 'paid') await notify(userId, { type: 'billing', title: 'Payment received', body: `Invoice paid: ${(data.amountCents / 100).toFixed(2)} ${data.currency.toUpperCase()}`, link: '/app/billing' });
+      else await notify(userId, { type: 'billing', title: 'Payment failed', body: 'Update your payment method in the billing portal to keep your plan.', link: '/app/billing' });
+    }
+    return payment;
+  });
 }
 
 export async function handleStripeEvent(event, stripe) {
@@ -268,7 +337,7 @@ export async function handleStripeEvent(event, stripe) {
         }
       }
       // Status comes from Stripe's own subscription object, never from the redirect.
-      if (subId && stripe) await syncSubscription(await stripe.subscriptions.retrieve(subId));
+      if (subId && stripe) await withLock(`stripe-sub.${subId}`, 60_000, async () => syncSubscription(await stripe.subscriptions.retrieve(subId)));
       const userId = local?.userId || obj.client_reference_id;
       if (userId) await notify(userId, { type: 'billing', title: 'Checkout completed', body: 'Your subscription is being activated.', link: '/app/billing' });
       break;
@@ -276,14 +345,14 @@ export async function handleStripeEvent(event, stripe) {
     case 'customer.subscription.created':
     case 'customer.subscription.updated':
     case 'customer.subscription.deleted': {
-      const row = await syncSubscription(obj);
-      if (row && event.type === 'customer.subscription.deleted') {
+      const { row, changed } = await applySubscriptionEvent(event, stripe);
+      if (row && changed && TERMINAL.has(row.status)) {
         await notify(row.userId, { type: 'billing', title: 'Subscription ended', body: 'Your account is now on the Free plan.', link: '/app/billing' });
       }
       break;
     }
     case 'invoice.paid':
-    case 'invoice.payment_succeeded':
+    case 'invoice.payment_succeeded': // older webhook endpoints may still send it; recordInvoice never notifies twice
       await recordInvoice(obj, 'paid');
       break;
     case 'invoice.payment_failed':
@@ -292,6 +361,27 @@ export async function handleStripeEvent(event, stripe) {
     default:
       break; // ignored event types are acknowledged
   }
+}
+
+const PENDING = 'pending:';
+/** A pending claim older than this belongs to a worker that died mid-event; the next delivery takes it over. */
+const STALE_CLAIM_MS = 10 * 60_000;
+
+/** Claim a Stripe event for processing: 'claimed' (process it now), 'done' (already processed) or 'busy'. */
+async function claimStripeEvent(event, retry = true) {
+  try {
+    await prisma.stripeEvent.create({ data: { id: event.id, type: `${PENDING}${event.type}` } });
+    return 'claimed';
+  } catch (err) {
+    if (err?.code !== 'P2002') throw err;
+  }
+  const row = await prisma.stripeEvent.findUnique({ where: { id: event.id } });
+  if (!row) return retry ? claimStripeEvent(event, false) : 'busy'; // released by a failed attempt in between
+  if (!row.type.startsWith(PENDING)) return 'done';
+  if (Date.now() - row.processedAt.getTime() < STALE_CLAIM_MS) return 'busy';
+  // Take over a stale claim with compare-and-set, so only one delivery wins it.
+  const took = await prisma.stripeEvent.updateMany({ where: { id: event.id, processedAt: row.processedAt }, data: { processedAt: new Date() } });
+  return took.count ? 'claimed' : 'busy';
 }
 
 export async function webhookHandler(req, res) {
@@ -307,10 +397,20 @@ export async function webhookHandler(req, res) {
     } catch (err) {
       return res.status(400).json({ error: `Webhook signature verification failed: ${err.message}` });
     }
-    const seen = await prisma.stripeEvent.findUnique({ where: { id: event.id } });
-    if (seen) return res.json({ received: true, duplicate: true });
-    await handleStripeEvent(event, stripe);
-    await prisma.stripeEvent.create({ data: { id: event.id, type: event.type } });
+    // Idempotency: claim the event id first (primary key) as 'pending:<type>'; the real type is written when done.
+    const claim = await claimStripeEvent(event);
+    if (claim === 'done') return res.json({ received: true, duplicate: true });
+    // Another delivery of this event is still being processed. A 2xx here would tell Stripe the event was delivered
+    // even if that other attempt then fails, so answer 409 and let Stripe retry later.
+    if (claim === 'busy') return res.status(409).json({ error: 'This event is being processed', retry: true });
+    try {
+      await handleStripeEvent(event, stripe);
+    } catch (err) {
+      // Release the claim so Stripe's retry processes the event again.
+      await prisma.stripeEvent.delete({ where: { id: event.id } }).catch(() => {});
+      throw err;
+    }
+    await prisma.stripeEvent.update({ where: { id: event.id }, data: { type: event.type } });
     await audit(null, 'billing.webhook', { entityType: 'stripe_event', entityId: event.id, details: { type: event.type } });
     res.json({ received: true });
   } catch (err) {

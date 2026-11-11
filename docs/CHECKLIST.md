@@ -64,7 +64,7 @@ Legend:
 ## Phase 9 — Calling, extension, tools
 - [x] Click-to-call through Google Voice, 8x8, RingCentral, Dialpad, Teams, Zoom Phone, tel/callto/SIP/custom links. Verified live from the container for Google Voice.
 - [~] Twilio bridge calls with signed webhooks, auto duration and auto-logged unanswered calls. Tested with mocks; needs Twilio credentials to verify live.
-- [x] Power dialer: queue or list session, scripts, 1–8 outcome keys, timer, auto-advance, DNC and calling-hours guards.
+- [x] Power dialer: queue or list session, scripts, 1–9 and 0 outcome keys (including wrong number and do not call), timer, auto-advance, DNC and calling-hours guards.
 - [x] Call scripts library with 7 original starter scripts.
 - [x] Personal access tokens (bearer auth, blocked from sensitive routes).
 - [x] Browser extension (MV3), downloadable as a zip pre-configured for this server.

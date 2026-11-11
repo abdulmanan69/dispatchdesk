@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { prisma, tuneDatabase } from './db.js';
 import { bootstrap } from './bootstrap.js';
 import { startScheduler, stopScheduler } from './jobs/scheduler.js';
+import { flushPushQueue } from './services/push.js';
 
 async function main() {
   await tuneDatabase(); // per-connection pragmas (busy_timeout) must run in every process
@@ -21,6 +22,8 @@ async function main() {
     console.log(`[server] ${signal} received, shutting down`);
     stopScheduler();
     server.close(async () => {
+      // Send pushes still queued in this process (bounded, so a slow push service cannot hold up the restart).
+      await Promise.race([flushPushQueue().catch(() => {}), new Promise((r) => setTimeout(r, 3000).unref())]);
       await prisma.$disconnect();
       process.exit(0);
     });

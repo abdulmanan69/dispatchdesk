@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Phone, Mail, Pencil, Trash2, RefreshCw, CalendarPlus, ListOrdered, Plus, Pin, PinOff, ShieldCheck, X, ArrowLeft, ChevronLeft, ChevronRight, MessageSquare, Copy } from 'lucide-react';
+import { Phone, Mail, Pencil, Trash2, RefreshCw, CalendarPlus, ListOrdered, Plus, Pin, PinOff, ShieldCheck, X, ArrowLeft, ChevronLeft, ChevronRight, MessageSquare, Copy, Reply } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { date, dateTime, label, relative, money, PRESETS } from '../../lib/format.js';
-import { Badge, Button, Card, ComboInput, EmptyState, ErrorState, Field, IconButton, Input, Loading, Pagination, Select, Switch, Tabs, Textarea, Checkbox, LocalClock, cx } from '../../components/ui.jsx';
+import { Badge, Button, Card, ComboInput, EmptyState, ErrorState, Field, IconButton, Input, Loading, Pagination, RefreshError, Select, Switch, Tabs, Textarea, Checkbox, LocalClock, cx } from '../../components/ui.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import CarrierForm from '../../components/carriers/CarrierForm.jsx';
 import LogCallModal from '../../components/carriers/LogCallModal.jsx';
@@ -22,11 +22,17 @@ import { useToast } from '../../components/Toast.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
 
+const CARRIER_TABS = ['overview', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
+
 export default function CarrierDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const confirm = useConfirm();
-  const [tab, setTab] = useState('overview');
+  // ?tab=<tab> opens that tab; ?doc=<id> (document expiry notices, Today board) opens Documents.
+  const [sp] = useSearchParams();
+  const urlTab = sp.get('doc') ? 'documents' : CARRIER_TABS.includes(sp.get('tab')) ? sp.get('tab') : null;
+  const [tab, setTab] = useState(urlTab || 'overview');
+  useEffect(() => { if (urlTab) setTab(urlTab); }, [urlTab, id]);
   const [modal, setModal] = useState(null); // edit | call | followup | enroll | compose | text | enrich
   const toast = useToast();
   const q = useQuery({ queryKey: ['carrier', id], queryFn: () => api.get(`/api/carriers/${id}`) });
@@ -50,16 +56,25 @@ export default function CarrierDetail() {
   const del = useApiMutation(() => api.del(`/api/carriers/${id}`), { success: 'Carrier deleted', invalidate: [['carriers'], ['pipeline']], onSuccess: () => navigate('/app/carriers') });
 
   if (q.isLoading) return <Loading />;
-  if (q.isError) return <ErrorState error={q.error} onRetry={q.refetch} title={q.error.status === 404 ? 'Carrier not found' : 'Could not load carrier'} />;
+  // A failed refresh (after a call, note or stage change) keeps the profile on screen with a notice; a carrier that
+  // was deleted meanwhile (404) shows "not found".
+  if (q.isError && (!q.data || q.error?.status === 404)) return <ErrorState error={q.error} onRetry={q.refetch} title={q.error.status === 404 ? 'Carrier not found' : 'Could not load carrier'} />;
   const { carrier: c, callWindow, canWrite } = q.data;
 
+  // Real totals from the server (the lists below are the latest rows only).
+  const totals = {
+    contacts: c._count?.contacts ?? c.contacts.length,
+    notes: c._count?.notes ?? c.notes.length,
+    calls: c._count?.calls ?? c.calls.length,
+    pendingFollowUps: c.followUpCounts?.pending ?? c.followUps.filter((f) => f.status === 'pending').length,
+  };
   const tabs = [
     { value: 'overview', label: 'Overview' },
-    { value: 'contacts', label: 'Contacts', count: c.contacts.length },
-    { value: 'notes', label: 'Notes', count: c.notes.length },
-    { value: 'calls', label: 'Calls', count: c.calls.length },
+    { value: 'contacts', label: 'Contacts', count: totals.contacts },
+    { value: 'notes', label: 'Notes', count: totals.notes },
+    { value: 'calls', label: 'Calls', count: totals.calls },
     { value: 'emails', label: 'Emails', count: c._count.emails },
-    { value: 'followups', label: 'Follow-ups', count: c.followUps.filter((f) => f.status === 'pending').length },
+    { value: 'followups', label: 'Follow-ups', count: totals.pendingFollowUps },
     { value: 'documents', label: 'Documents', count: c._count.documents },
     { value: 'sequences', label: 'Sequences', count: c.enrollments.length },
     { value: 'activity', label: 'Activity' },
@@ -67,6 +82,7 @@ export default function CarrierDetail() {
 
   return (
     <div>
+      <RefreshError query={q} />
       <CarrierHeader carrier={c} callWindow={callWindow} canWrite={canWrite} nav={nav} navigate={navigate}
         onStage={(k) => stage.mutate(k)} stagePending={stage.isPending} onModal={setModal} toast={toast}
         onDelete={async () => { if (await confirm({ title: 'Delete carrier?', message: `${c.companyName} and all its notes, calls, follow-ups and documents will be permanently deleted.`, danger: true })) del.mutate(); }} />
@@ -134,22 +150,25 @@ export default function CarrierDetail() {
       )}
 
       {tab === 'contacts' && <ContactsTab carrier={c} canWrite={canWrite} />}
-      {tab === 'notes' && <NotesTab carrier={c} canWrite={canWrite} />}
+      {tab === 'notes' && <NotesTab carrier={c} canWrite={canWrite} total={totals.notes} />}
       {tab === 'calls' && (
         <Card title="Call history" actions={canWrite && <Button size="sm" icon={Phone} onClick={() => setModal('call')}>Log call</Button>} bodyClass="p-0">
           {!c.calls.length ? <EmptyState title="No calls logged yet" /> : (
-            <ul className="divide-y divide-line">
-              {c.calls.map((call) => (
-                <li key={call.id} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-start sm:gap-4">
-                  <div className="w-40 shrink-0 text-xs text-muted">{dateTime(call.calledAt)}<br />{call.user.name}</div>
-                  <div className="flex-1 text-sm">
-                    <Badge color={OUTCOME_COLORS[call.outcome]}>{label(call.outcome)}</Badge>
-                    {call.durationSec ? <span className="ml-2 text-xs text-muted">{Math.round(call.durationSec / 60)} min</span> : null}
-                    {call.notes && <p className="mt-1 whitespace-pre-wrap">{call.notes}</p>}
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="divide-y divide-line">
+                {c.calls.map((call) => (
+                  <li key={call.id} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-start sm:gap-4">
+                    <div className="w-40 shrink-0 text-xs text-muted">{dateTime(call.calledAt)}<br />{call.user.name}</div>
+                    <div className="flex-1 text-sm">
+                      <Badge color={OUTCOME_COLORS[call.outcome]}>{label(call.outcome)}</Badge>
+                      {call.durationSec ? <span className="ml-2 text-xs text-muted">{Math.round(call.durationSec / 60)} min</span> : null}
+                      {call.notes && <p className="mt-1 whitespace-pre-wrap">{call.notes}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <ShownOf shown={c.calls.length} total={totals.calls} what="calls" />
+            </>
           )}
         </Card>
       )}
@@ -399,7 +418,13 @@ function ContactsTab({ carrier, canWrite }) {
   );
 }
 
-function NotesTab({ carrier, canWrite }) {
+/** "Showing the latest 50 of 312 calls" when a profile list is shorter than the real total. */
+function ShownOf({ shown, total, what }) {
+  if (!total || total <= shown) return null;
+  return <p className="border-t border-line px-4 py-2 text-center text-xs text-muted">Showing the latest {shown} of {total.toLocaleString('en-US')} {what}.</p>;
+}
+
+function NotesTab({ carrier, canWrite, total }) {
   const confirm = useConfirm();
   const [body, setBody] = useState('');
   const inv = [['carrier', carrier.id]];
@@ -430,6 +455,7 @@ function NotesTab({ carrier, canWrite }) {
           ))}
         </ul>
       )}
+      {total > carrier.notes.length && <p className="mt-3 text-center text-xs text-muted">Showing the pinned and latest {carrier.notes.length} of {total.toLocaleString('en-US')} notes.</p>}
     </Card>
   );
 }
@@ -438,13 +464,15 @@ function EmailsTab({ carrier, onCompose, canWrite }) {
   const q = useQuery({ queryKey: ['emails', 'carrier', carrier.id], queryFn: () => api.get('/api/email/messages', { carrierId: carrier.id, pageSize: 50 }) });
   const color = { sent: 'green', failed: 'red', scheduled: 'blue', draft: 'gray', sending: 'amber', canceled: 'gray' };
   return (
-    <Card title="Emails" bodyClass="p-0" actions={canWrite && <Button size="sm" icon={Mail} disabled={!carrier.email || carrier.doNotEmail} onClick={onCompose}>Compose</Button>}>
+    <Card title="Emails" bodyClass="p-0" actions={canWrite && <div className="flex flex-wrap gap-2"><MarkRepliedButton carrier={carrier} /><Button size="sm" icon={Mail} disabled={!carrier.email || carrier.doNotEmail} onClick={onCompose}>Compose</Button></div>}>
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : !q.data.items?.length ? <EmptyState title="No emails with this carrier yet" /> : (
         <ul className="divide-y divide-line">
           {q.data.items.map((m) => (
             <li key={m.id} className="px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge color={color[m.status] || 'gray'}>{label(m.status)}</Badge>
+                {m.repliedAt && <Badge color="teal">Replied</Badge>}
+                {m.bouncedAt && <Badge color="red">Bounced</Badge>}
                 <span className="font-medium">{m.subject}</span>
                 <span className="ml-auto text-xs text-muted">{dateTime(m.sentAt || m.scheduledAt || m.createdAt)}</span>
               </div>
@@ -467,6 +495,7 @@ function FollowUpsTab({ carrier, canWrite, onNew }) {
   return (
     <Card title="Follow-ups" bodyClass="p-0" actions={canWrite && <Button size="sm" icon={CalendarPlus} onClick={onNew}>Schedule</Button>}>
       {!carrier.followUps.length ? <EmptyState title="No follow-ups scheduled" /> : (
+        // Pending follow-ups (soonest first), then the most recently completed ones.
         <ul className="divide-y divide-line">
           {carrier.followUps.map((f) => {
             const overdue = f.status === 'pending' && new Date(f.dueAt) < new Date();
@@ -491,12 +520,36 @@ function FollowUpsTab({ carrier, canWrite, onNew }) {
   );
 }
 
+/** The carrier answered (email, phone or text) outside reply detection: stops its sequences and logs the reply. */
+function MarkRepliedButton({ carrier, size = 'sm' }) {
+  const confirm = useConfirm();
+  const mark = useApiMutation(() => api.post(`/api/carriers/${carrier.id}/replied`), {
+    success: (d) => (d.stopped ? `Reply logged and ${d.stopped} sequence${d.stopped === 1 ? '' : 's'} stopped` : 'Reply logged'),
+    invalidate: [['carrier', carrier.id], ['queue'], ['emails'], ['follow-ups']],
+  });
+  const onClick = async () => {
+    const live = (carrier.enrollments || []).filter((e) => e.status === 'active' || e.status === 'paused').length;
+    if (live && !(await confirm({
+      title: `Mark ${carrier.companyName} as replied?`,
+      message: `This stops ${live === 1 ? 'its running sequence' : `its ${live} running sequences`}, logs the reply and adds a "Reply from" follow-up.`,
+      confirmLabel: 'Mark replied',
+    }))) return;
+    mark.mutate();
+  };
+  return <Button size={size} variant="secondary" icon={Reply} loading={mark.isPending} onClick={onClick}>Mark replied</Button>;
+}
+
 function SequencesTab({ carrier, canWrite, onEnroll }) {
   const inv = [['carrier', carrier.id], ['queue']];
-  const act = useApiMutation(({ id, action }) => api.post(`/api/sequences/enrollments/${id}/${action}`), { success: 'Updated', invalidate: inv });
+  // stepIndex = the step on screen: a stale click (the scheduler or another tab already moved on) gets 409 instead of
+  // acting on the next step.
+  const act = useApiMutation(({ id, action, stepIndex }) => api.post(`/api/sequences/enrollments/${id}/${action}`, stepIndex != null ? { stepIndex } : undefined), {
+    success: 'Updated', invalidate: inv,
+  });
   const color = { active: 'green', paused: 'amber', completed: 'brand', stopped: 'gray' };
+  const live = carrier.enrollments.some((e) => e.status === 'active' || e.status === 'paused');
   return (
-    <Card title="Sequences" bodyClass="p-0" actions={canWrite && <Button size="sm" icon={ListOrdered} onClick={onEnroll}>Enroll</Button>}>
+    <Card title="Sequences" bodyClass="p-0" actions={canWrite && <div className="flex flex-wrap gap-2">{live && <MarkRepliedButton carrier={carrier} />}<Button size="sm" icon={ListOrdered} onClick={onEnroll}>Enroll</Button></div>}>
       {!carrier.enrollments.length ? <EmptyState title="Not in any sequence" /> : (
         <ul className="divide-y divide-line">
           {carrier.enrollments.map((e) => (
@@ -507,8 +560,8 @@ function SequencesTab({ carrier, canWrite, onEnroll }) {
                 {e.status === 'active' && e.step ? `Step ${e.step.order}/${e.sequence.stepCount}: ${label(e.step.type)} · due ${dateTime(e.nextStepAt)}` : e.stopReason ? label(e.stopReason) : ''}
               </span>
               {canWrite && e.status === 'active' && <>
-                {e.step?.type !== 'email' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ id: e.id, action: 'complete-step' })}>Mark step done</Button>}
-                <Button size="sm" variant="ghost" onClick={() => act.mutate({ id: e.id, action: 'skip-step' })}>Skip step</Button>
+                {e.step?.type !== 'email' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ id: e.id, action: 'complete-step', stepIndex: e.currentStep })}>Mark step done</Button>}
+                <Button size="sm" variant="ghost" onClick={() => act.mutate({ id: e.id, action: 'skip-step', stepIndex: e.currentStep })}>Skip step</Button>
                 <Button size="sm" variant="ghost" onClick={() => act.mutate({ id: e.id, action: 'pause' })}>Pause</Button>
               </>}
               {canWrite && e.status === 'paused' && <Button size="sm" variant="secondary" onClick={() => act.mutate({ id: e.id, action: 'resume' })}>Resume</Button>}

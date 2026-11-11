@@ -10,8 +10,11 @@ export const STAGES = [
 ];
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 
+// Order matters: the power dialer maps keys 1-9 and 0 to these in order.
+// wrong_number: the number does not reach this carrier (no automatic follow-up).
+// do_not_call: the carrier asked not to be called again (turns on do-not-call).
 export const CALL_OUTCOMES = [
-  'no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted',
+  'no_answer', 'busy', 'voicemail', 'interested', 'not_interested', 'call_back', 'follow_up', 'converted', 'wrong_number', 'do_not_call',
 ];
 
 export const EQUIPMENT = [
@@ -19,7 +22,8 @@ export const EQUIPMENT = [
 ];
 
 export const AUTHORITY_STATUSES = ['active', 'inactive', 'pending', 'unknown'];
-export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'other'];
+// lumper_receipt, scale_ticket and fuel_receipt arrive from the driver link (routes/track.js) and from uploads.
+export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'other'];
 export const LOAD_STATUSES = ['planned', 'booked', 'in_transit', 'delivered', 'invoiced', 'paid', 'canceled'];
 export const OPPORTUNITY_STATUSES = ['open', 'negotiating', 'trial', 'won', 'lost'];
 export const CUSTOMER_STATUSES = ['active', 'paused', 'churned'];

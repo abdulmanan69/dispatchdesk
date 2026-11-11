@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
-import { toLocalInput } from '../../lib/format.js';
 import { Button, Field, Input, Select, Textarea, cx } from '../ui.jsx';
 import { Modal } from '../Modal.jsx';
 import CarrierPicker from './CarrierPicker.jsx';
+import CarrierTimeInput from '../calling/CarrierTimeInput.jsx';
+import { tzOf, zoneAbbr } from '../calling/callWindow.js';
 import { PRIORITIES, RECURRENCES, REMINDERS, TYPES, WHEN_PRESETS } from './followUpUtils.js';
 
-export const FOLLOW_UP_INVALIDATE = [['follow-ups'], ['carrier'], ['queue'], ['dashboard']];
+/** Lists that change with any follow-up. Carrier profiles are refreshed per carrier (see followUpInvalidate). */
+export const FOLLOW_UP_LISTS = [['follow-ups'], ['queue'], ['dashboard']];
+/** Queries to refresh after a follow-up change: only that carrier's profile when the carrier is known. */
+export const followUpInvalidate = (carrierId) => [...FOLLOW_UP_LISTS, carrierId ? ['carrier', carrierId] : ['carrier']];
 
 /** Segmented single-choice control (themed, keyboard reachable). */
 export function Segmented({ options, value, onChange, label, size = 'md' }) {
@@ -28,10 +32,11 @@ export function Segmented({ options, value, onChange, label, size = 'md' }) {
   );
 }
 
-const initial = (f) => ({
-  carrier: f?.carrier || null,
+// dueAt is an ISO string; presets use the carrier's time zone when it is known.
+const initial = (f, carrier) => ({
+  carrier: f?.carrier || carrier || null,
   type: f?.type || 'call',
-  dueAt: toLocalInput(f?.dueAt || WHEN_PRESETS[2].get()),
+  dueAt: f?.dueAt ? new Date(f.dueAt).toISOString() : WHEN_PRESETS[2].get(tzOf(f?.carrier || carrier)).toISOString(),
   preset: f ? null : 'tomorrow',
   priority: f?.priority ?? 0,
   recurrence: f?.recurrence || 'none',
@@ -45,29 +50,32 @@ const initial = (f) => ({
  * or neither to show the carrier search. `compact` lays it out as a quick-add bar.
  */
 export default function FollowUpForm({ followUp, carrier, onDone, compact, formId = 'follow-up-form', hideActions }) {
-  const [f, setF] = useState(() => ({ ...initial(followUp), carrier: followUp?.carrier || carrier || null }));
+  const [f, setF] = useState(() => initial(followUp, carrier));
   const set = (k) => (v) => setF((x) => ({ ...x, [k]: v?.target ? v.target.value : v }));
   const save = useApiMutation(
     (body) => (followUp ? api.patch(`/api/follow-ups/${followUp.id}`, body) : api.post('/api/follow-ups', body)),
     {
       success: followUp ? 'Follow-up updated' : 'Follow-up scheduled',
-      invalidate: FOLLOW_UP_INVALIDATE,
+      invalidate: followUpInvalidate(followUp?.carrierId || followUp?.carrier?.id || f.carrier?.id),
       onSuccess: (d) => {
-        if (!followUp) setF((x) => ({ ...initial(null), carrier: carrier || null, type: x.type }));
+        if (!followUp) setF((x) => ({ ...initial(null, carrier), type: x.type }));
         onDone?.(d);
       },
     },
   );
   const submit = (e) => {
     e.preventDefault();
-    if (!f.carrier) return;
+    if (!f.carrier || !f.dueAt) return;
     const body = {
-      dueAt: new Date(f.dueAt).toISOString(), type: f.type, priority: Number(f.priority), recurrence: f.recurrence,
+      dueAt: f.dueAt, type: f.type, priority: Number(f.priority), recurrence: f.recurrence,
       remindMinutesBefore: Number(f.remindMinutesBefore), title: f.title.trim() || null, note: f.note.trim() || null,
     };
     save.mutate(followUp ? body : { ...body, carrierId: f.carrier.id });
   };
-  const pickPreset = (p) => setF((x) => ({ ...x, preset: p.key, dueAt: toLocalInput(p.get()) }));
+  const tz = tzOf(f.carrier);
+  const pickPreset = (p) => setF((x) => ({ ...x, preset: p.key, dueAt: p.get(tzOf(x.carrier)).toISOString() }));
+  // A newly picked carrier moves the preset to that carrier's local clock.
+  const pickCarrier = (c) => setF((x) => ({ ...x, carrier: c, ...(x.preset && c ? { dueAt: WHEN_PRESETS.find((p) => p.key === x.preset).get(tzOf(c)).toISOString() } : {}) }));
   const lockedCarrier = followUp || carrier;
 
   const when = (
@@ -80,7 +88,8 @@ export default function FollowUpForm({ followUp, carrier, onDone, compact, formI
           </button>
         ))}
       </div>
-      <Input type="datetime-local" aria-label="Due date and time" value={f.dueAt} required onChange={(e) => setF((x) => ({ ...x, dueAt: e.target.value, preset: null }))} className="w-60" />
+      <CarrierTimeInput aria-label="Due date and time" value={f.dueAt} timezone={tz} required onChange={(v) => setF((x) => ({ ...x, dueAt: v, preset: null }))} />
+      {tz && f.preset && f.preset !== '1h' && <p className="text-xs text-muted">Presets use the carrier's local time ({zoneAbbr(tz)}).</p>}
     </div>
   );
 
@@ -88,7 +97,7 @@ export default function FollowUpForm({ followUp, carrier, onDone, compact, formI
     <form id={formId} onSubmit={submit} className={cx(compact ? 'grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)_minmax(0,1fr)]' : 'space-y-4')}>
       <div className="space-y-3">
         {!lockedCarrier ? (
-          <Field label="Carrier" required>{(id) => <CarrierPicker id={id} value={f.carrier} onChange={set('carrier')} />}</Field>
+          <Field label="Carrier" required>{(id) => <CarrierPicker id={id} value={f.carrier} onChange={pickCarrier} />}</Field>
         ) : !compact && <p className="text-sm"><span className="text-muted">Carrier </span><span className="font-medium">{f.carrier?.companyName}</span></p>}
         <Field label="Type"><Segmented label="Type" options={TYPES} value={f.type} onChange={set('type')} size={compact ? 'sm' : 'md'} /></Field>
       </div>
@@ -105,7 +114,7 @@ export default function FollowUpForm({ followUp, carrier, onDone, compact, formI
         <Field label="Note"><Textarea rows={compact ? 2 : 3} value={f.note} onChange={set('note')} maxLength={2000} /></Field>
         {!hideActions && (
           <div className="flex justify-end">
-            <Button type="submit" loading={save.isPending} disabled={!f.carrier}>{followUp ? 'Save changes' : 'Schedule follow-up'}</Button>
+            <Button type="submit" loading={save.isPending} disabled={!f.carrier || !f.dueAt}>{followUp ? 'Save changes' : 'Schedule follow-up'}</Button>
           </div>
         )}
       </div>

@@ -3,16 +3,20 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Plus, Download, Filter, X, Truck, Upload, Radar } from 'lucide-react';
 import { api, qs } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
+import { errorToast, useApiMutation } from '../../lib/hooks.js';
 import { EQUIPMENT, US_STATES, label, relative, PRESETS } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { Button, Card, ComboInput, DataTable, EmptyState, ErrorState, Field, Input, Loading, PageHeader, Pagination, Select } from '../../components/ui.jsx';
+import { Button, Card, Checkbox, ComboInput, DataTable, EmptyState, ErrorState, Field, Input, Loading, PageHeader, Pagination, RefreshError, Select } from '../../components/ui.jsx';
 import { useConfirm } from '../../components/Modal.jsx';
+import { useToast } from '../../components/Toast.jsx';
 import CarrierForm from '../../components/carriers/CarrierForm.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
+import BulkEmailModal from '../../components/carriers/BulkEmailModal.jsx';
+import { SELECT_ALL_CAP, bulkFilter, bulkTarget, selectAllState } from '../../components/carriers/bulkSelection.js';
 import { AuthorityBadge, PhoneLink, ResourceLinks, STAGES, StageBadge, TagList, equipmentLabel, rememberCarrierNav, useAssignees, useProspectLists, useTags } from '../../components/carriers/shared.jsx';
 
 const FILTER_KEYS = ['q', 'state', 'equipment', 'fleetMin', 'fleetMax', 'authorityStatus', 'authorityAgeMinMonths', 'authorityAgeMaxMonths', 'stage', 'tagId', 'assignedTo', 'source', 'scope', 'noActivity', 'activityDays'];
+const PAGE_SIZE = 25;
 
 export default function CarrierList() {
   const [params, setParams] = useSearchParams();
@@ -22,45 +26,77 @@ export default function CarrierList() {
   const [showFilters, setShowFilters] = useState(false);
   const [creating, setCreating] = useState(() => params.get("new") === "1");
   const [selected, setSelected] = useState(new Set());
+  const [allMatching, setAllMatching] = useState(false); // every carrier matching the filters, across pages
   const [enrollOpen, setEnrollOpen] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
   const [bulkValue, setBulkValue] = useState('');
   const [bulkAction, setBulkAction] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const toast = useToast();
 
   const filters = useMemo(() => Object.fromEntries(FILTER_KEYS.map((k) => [k, params.get(k) || ''])), [params]);
   const page = Number(params.get('page') || 1);
   const sort = { field: params.get('sort') || 'createdAt', dir: params.get('dir') || 'desc' };
-  const query = { ...filters, page, pageSize: 25, sort: sort.field, dir: sort.dir };
+  const query = { ...filters, page, pageSize: PAGE_SIZE, sort: sort.field, dir: sort.dir };
 
-  const list = useQuery({ queryKey: ['carriers', query], queryFn: () => api.get('/api/carriers', query), placeholderData: keepPreviousData });
+  // The signal cancels the request for a search or page the user has already moved past.
+  const list = useQuery({ queryKey: ['carriers', query], queryFn: ({ signal }) => api.get('/api/carriers', query, { signal }), placeholderData: keepPreviousData });
   const tags = useTags();
   const assignees = useAssignees();
   const lists = useProspectLists();
   const activeFilters = FILTER_KEYS.filter((k) => k !== 'q' && filters[k]).length;
 
+  const clearSelection = () => { setSelected(new Set()); setAllMatching(false); setBulkAction(''); setBulkValue(''); };
   const update = (patch) => {
     const next = new URLSearchParams(params);
     for (const [k, v] of Object.entries(patch)) (v === '' || v == null ? next.delete(k) : next.set(k, v));
     if (!('page' in patch)) next.delete('page');
     setParams(next, { replace: true });
     setSelected(new Set());
+    setAllMatching(false);
   };
+
+  const total = list.data?.total ?? 0;
+  const pageRows = list.data?.items || [];
+  const selectedCount = allMatching ? total : selected.size;
+  const target = bulkTarget({ allMatching, ids: selected, filter: bulkFilter(filters, sort) });
+  const banner = selectAllState({ selectedCount: selected.size, pageCount: pageRows.length, total, allMatching });
 
   const bulk = useApiMutation((body) => api.post('/api/carriers/bulk', body), {
     success: (d) => `Updated ${d.affected} carrier${d.affected === 1 ? '' : 's'}${d.inaccessible ? ` (${d.inaccessible} read-only skipped)` : ''}`,
     invalidate: [['carriers'], ['pipeline'], ['tags'], ['prospect-lists']],
-    onSuccess: () => { setSelected(new Set()); setBulkAction(''); setBulkValue(''); },
+    onSuccess: clearSelection,
+  });
+  const callList = useApiMutation((body) => api.post('/api/carriers/bulk', { ...body, action: 'call_list' }), {
+    invalidate: [['prospect-lists']],
+    success: (d) => `Call list “${d.list.name}” is ready with ${d.added} carrier${d.added === 1 ? '' : 's'}${d.noPhone + d.doNotCall + d.overLimit ? ` (${[d.noPhone && `${d.noPhone} without a phone`, d.doNotCall && `${d.doNotCall} do-not-call`, d.overLimit && `${d.overLimit} over the 200 limit`].filter(Boolean).join(', ')} left out)` : ''}`,
+    onSuccess: (d) => { clearSelection(); navigate(`/app/dialer?listId=${encodeURIComponent(d.list.id)}`); },
   });
 
   const runBulk = async () => {
-    const ids = [...selected];
     if (bulkAction === 'enroll_sequence') return setEnrollOpen(true);
-    if (bulkAction === 'delete' && !(await confirm({ title: `Delete ${ids.length} carriers?`, message: 'This permanently removes the carriers with their notes, calls, follow-ups and documents.', danger: true }))) return;
+    if (bulkAction === 'email') return setEmailOpen(true);
+    if (bulkAction === 'call_list') return callList.mutate(target);
+    if (bulkAction === 'delete' && !(await confirm({ title: `Delete ${selectedCount.toLocaleString('en-US')} carrier${selectedCount === 1 ? '' : 's'}?`, message: 'This permanently removes the carriers with their notes, calls, follow-ups and documents.', danger: true }))) return;
     let value = bulkValue;
     if (bulkAction === 'set_do_not_call' || bulkAction === 'set_do_not_email') value = bulkValue !== 'false';
-    bulk.mutate({ action: bulkAction, ids, value });
+    bulk.mutate({ action: bulkAction, ...target, value });
   };
 
-  const exportCsv = () => api.download(`/api/carriers/export.csv${qs(filters)}`, 'carriers.csv');
+  // Same filters and order as the list on screen. One export runs per account at a time: a second one gets a 409,
+  // shown as a toast like any other failure.
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await api.download(`/api/carriers/export.csv${qs({ ...filters, sort: sort.field, dir: sort.dir })}`, 'carriers.csv');
+    } catch (err) {
+      errorToast(toast, err);
+    } finally {
+      setExporting(false);
+    }
+  };
+  const openCarrier = (c) => { rememberCarrierNav(pageRows.map((x) => x.id), `${window.location.pathname}${window.location.search}`); navigate(`/app/carriers/${c.id}`); };
 
   const columns = [
     { key: 'companyName', header: 'Carrier', sortable: true, render: (c) => (
@@ -73,7 +109,7 @@ export default function CarrierList() {
         <TagList tags={c.tags} className="mt-1" />
       </div>
     ) },
-    { key: 'phone', header: 'Phone', render: (c) => (c.doNotCall ? <span className="text-xs text-red-600">Do not call</span> : <PhoneLink phone={c.phone} />) },
+    { key: 'phone', header: 'Phone', render: (c) => (c.doNotCall ? <span className="whitespace-nowrap text-xs text-red-600">Do not call</span> : <PhoneLink phone={c.phone} carrierId={c.id} className="whitespace-nowrap" />) },
     { key: 'state', header: 'Location', sortable: true, render: (c) => <span className="whitespace-nowrap">{[c.city, c.state].filter(Boolean).join(', ') || '—'}</span> },
     { key: 'equipment', header: 'Equipment', render: (c) => <span className="text-[13px]">{equipmentLabel(c.equipment)}</span> },
     { key: 'fleetSize', header: 'Trucks', sortable: true, className: 'text-right tabular', render: (c) => c.fleetSize ?? '—' },
@@ -85,13 +121,14 @@ export default function CarrierList() {
   ];
   if (filters.scope === 'team') columns.push({ key: 'owner', header: 'Owner', render: (c) => c.owner?.name });
 
-  const needsValue = { move_stage: true, add_tag: true, remove_tag: true, assign: true, add_to_list: true, set_do_not_call: true, set_do_not_email: true };
+  const needsValue = { move_stage: true, add_tag: true, remove_tag: true, add_to_list: true };
+  const pending = bulk.isPending || callList.isPending;
 
   return (
     <div>
       <PageHeader title="Carrier list" subtitle="Every carrier in your pipeline. Search by name, MC, USDOT or phone."
         actions={<>
-          <Button variant="secondary" icon={Download} onClick={exportCsv}>Export CSV</Button>
+          <Button variant="secondary" icon={Download} loading={exporting} onClick={exportCsv}>Export CSV</Button>
           <Button variant="secondary" icon={Upload} to="/app/import">Import</Button>
           <Button icon={Plus} onClick={() => setCreating(true)}>Add carrier</Button>
         </>} />
@@ -153,36 +190,68 @@ export default function CarrierList() {
           </div>
         )}
 
-        {selected.size > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-line bg-brand-50/60 p-3 text-sm dark:bg-brand-900/20" role="region" aria-label="Bulk actions">
-            <span className="font-medium">{selected.size} selected</span>
-            <Select aria-label="Bulk action" value={bulkAction} onChange={(e) => { setBulkAction(e.target.value); setBulkValue(''); }} className="w-48">
-              <option value="">Choose action…</option>
-              <option value="move_stage">Move to stage</option>
-              <option value="add_tag">Add tag</option>
-              <option value="remove_tag">Remove tag</option>
-              <option value="add_to_list">Add to prospect list</option>
-              <option value="enroll_sequence">Enroll in sequence</option>
-              <option value="assign">Assign to</option>
-              <option value="set_do_not_call">Set do-not-call</option>
-              <option value="set_do_not_email">Set do-not-email</option>
-              <option value="delete">Delete</option>
-            </Select>
-            {bulkAction === 'move_stage' && <Select aria-label="Stage" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-40"><option value="">Stage…</option>{STAGES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}</Select>}
-            {bulkAction === 'add_tag' && <ComboInput aria-label="Tag name" placeholder="Tag name" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44" options={[...new Set([...(tags.data?.items || []).map((t) => t.name), ...PRESETS.tagNames])]} />}
-            {bulkAction === 'remove_tag' && <Select aria-label="Tag" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-40"><option value="">Tag…</option>{tags.data?.items.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select>}
-            {bulkAction === 'add_to_list' && <Select aria-label="List" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44"><option value="">List…</option>{lists.data?.items.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>}
-            {bulkAction === 'assign' && <Select aria-label="Assignee" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44"><option value="">Unassigned</option>{assignees.data?.items.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select>}
-            {(bulkAction === 'set_do_not_call' || bulkAction === 'set_do_not_email') && <Select aria-label="Value" value={bulkValue || 'true'} onChange={(e) => setBulkValue(e.target.value)} className="w-28"><option value="true">On</option><option value="false">Off</option></Select>}
-            <Button size="sm" disabled={!bulkAction || (needsValue[bulkAction] && !bulkValue && !['assign', 'set_do_not_call', 'set_do_not_email'].includes(bulkAction))} loading={bulk.isPending} onClick={runBulk} variant={bulkAction === 'delete' ? 'danger' : 'primary'}>Apply</Button>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear selection</Button>
+        {selectedCount > 0 && (
+          <div className="border-b border-line bg-brand-50/60 text-sm dark:bg-brand-900/20" role="region" aria-label="Bulk actions">
+            {(banner === 'offer' || banner === 'tooMany' || banner === 'all') && (
+              <p className="border-b border-line/70 px-3 py-2 text-[13px] text-fg-2" role="status">
+                {banner === 'all' && <>All <span className="font-medium text-fg">{total.toLocaleString('en-US')}</span> carriers matching these filters are selected. <button type="button" className="font-medium text-brand-700 hover:underline dark:text-brand-300" onClick={clearSelection}>Clear selection</button></>}
+                {banner === 'offer' && <>All {pageRows.length} on this page are selected. <button type="button" className="font-medium text-brand-700 hover:underline dark:text-brand-300" onClick={() => setAllMatching(true)}>Select all {total.toLocaleString('en-US')} matching carriers</button></>}
+                {banner === 'tooMany' && <>All {pageRows.length} on this page are selected. {total.toLocaleString('en-US')} carriers match; narrow the filters to {SELECT_ALL_CAP.toLocaleString('en-US')} or fewer to select them all.</>}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2 p-3">
+              <span className="font-medium">{selectedCount.toLocaleString('en-US')} selected</span>
+              <Select aria-label="Bulk action" value={bulkAction} onChange={(e) => { setBulkAction(e.target.value); setBulkValue(''); }} className="w-52">
+                <option value="">Choose action…</option>
+                <option value="email">Email with a template</option>
+                <option value="call_list">Call in the power dialer</option>
+                <option value="move_stage">Move to stage</option>
+                <option value="add_tag">Add tag</option>
+                <option value="remove_tag">Remove tag</option>
+                <option value="add_to_list">Add to prospect list</option>
+                <option value="enroll_sequence">Enroll in sequence</option>
+                <option value="assign">Assign to</option>
+                <option value="set_do_not_call">Set do-not-call</option>
+                <option value="set_do_not_email">Set do-not-email</option>
+                <option value="delete">Delete</option>
+              </Select>
+              {bulkAction === 'move_stage' && <Select aria-label="Stage" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-40"><option value="">Stage…</option>{STAGES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}</Select>}
+              {bulkAction === 'add_tag' && <ComboInput aria-label="Tag name" placeholder="Tag name" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44" options={[...new Set([...(tags.data?.items || []).map((t) => t.name), ...PRESETS.tagNames])]} />}
+              {bulkAction === 'remove_tag' && <Select aria-label="Tag" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-40"><option value="">Tag…</option>{tags.data?.items.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select>}
+              {bulkAction === 'add_to_list' && <Select aria-label="List" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44"><option value="">List…</option>{lists.data?.items.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>}
+              {bulkAction === 'assign' && <Select aria-label="Assignee" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} className="w-44"><option value="">Unassigned</option>{assignees.data?.items.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select>}
+              {(bulkAction === 'set_do_not_call' || bulkAction === 'set_do_not_email') && <Select aria-label="Value" value={bulkValue || 'true'} onChange={(e) => setBulkValue(e.target.value)} className="w-28"><option value="true">On</option><option value="false">Off</option></Select>}
+              {bulkAction === 'call_list' && <span className="text-xs text-muted">Makes a call list of up to 200 carriers with a phone number. Every call still starts from your click.</span>}
+              <Button size="sm" disabled={!bulkAction || (needsValue[bulkAction] && !bulkValue)} loading={pending} onClick={runBulk} variant={bulkAction === 'delete' ? 'danger' : 'primary'}>
+                {bulkAction === 'email' ? 'Write email' : bulkAction === 'call_list' ? 'Open dialer' : 'Apply'}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={clearSelection}>Clear selection</Button>
+            </div>
           </div>
         )}
 
-        {list.isLoading ? <Loading /> : list.isError ? <ErrorState error={list.error} onRetry={list.refetch} /> : (
+        {/* A failed refresh (after a bulk action) keeps the loaded page on screen with a notice instead of an error page. */}
+        {list.isLoading ? <Loading /> : list.isError && !list.data ? <ErrorState error={list.error} onRetry={list.refetch} /> : (
           <>
-            <DataTable columns={columns} rows={list.data.items} selected={selected} onSelect={setSelected} sort={sort}
-              onSort={(s) => update({ sort: s.field, dir: s.dir })} onRowClick={(c) => { rememberCarrierNav(list.data.items.map((x) => x.id), `${window.location.pathname}${window.location.search}`); navigate(`/app/carriers/${c.id}`); }}
+            <RefreshError query={list} className="m-3" />
+            <DataTable columns={columns} rows={pageRows} selected={selected} onSelect={(s) => { setAllMatching(false); setSelected(s); }} sort={sort}
+              onSort={(s) => update({ sort: s.field, dir: s.dir })} onRowClick={openCarrier}
+              mobileRow={(c, { selected: on, toggle }) => (
+                <div className="flex items-start gap-3">
+                  <span onClick={(e) => e.stopPropagation()} className="pt-0.5"><Checkbox aria-label={`Select ${c.companyName}`} checked={on} onChange={() => { setAllMatching(false); toggle(); }} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="truncate font-medium">{c.companyName}</span>
+                      <StageBadge stage={c.stage} />
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">{[c.city, c.state].filter(Boolean).join(', ') || 'No location'}{c.dotNumber ? ` · DOT ${c.dotNumber}` : ''}</div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[13px]" onClick={(e) => e.stopPropagation()}>
+                      {c.doNotCall ? <span className="text-xs text-red-600">Do not call</span> : <PhoneLink phone={c.phone} carrierId={c.id} />}
+                      <span className="text-xs text-muted">{c.lastCallAt ? `Called ${relative(c.lastCallAt)}` : 'Never called'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
               empty={(
                 <EmptyState icon={Truck} title={filters.q || activeFilters ? 'No carriers match these filters' : 'No carriers yet'}
                   action={!filters.q && !activeFilters && <div className="flex flex-wrap justify-center gap-2"><Button icon={Radar} to="/app/discover">Find carriers</Button><Button variant="secondary" icon={Upload} to="/app/import">Import CSV</Button><Button variant="secondary" icon={Plus} onClick={() => setCreating(true)}>Add manually</Button></div>}>
@@ -195,7 +264,8 @@ export default function CarrierList() {
       </Card>
 
       {creating && <CarrierForm open onClose={() => setCreating(false)} onSaved={(c) => navigate(`/app/carriers/${c.id}`)} />}
-      <EnrollModal open={enrollOpen} onClose={() => setEnrollOpen(false)} carrierIds={[...selected]} onDone={() => { setSelected(new Set()); setBulkAction(''); }} />
+      <EnrollModal open={enrollOpen} onClose={() => setEnrollOpen(false)} carrierIds={allMatching ? [] : [...selected]} filter={allMatching ? target.filter : undefined} count={selectedCount} onDone={clearSelection} />
+      <BulkEmailModal open={emailOpen} onClose={() => setEmailOpen(false)} target={target} count={selectedCount} onDone={clearSelection} />
     </div>
   );
 }

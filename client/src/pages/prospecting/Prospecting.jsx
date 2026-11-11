@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { useQuery } from '@tanstack/react-query';
-import { Phone, CheckCircle2, Clock, ListPlus, Trash2, Pencil, PhoneCall, Flame, PhoneOutgoing } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Phone, CheckCircle2, Clock, ListPlus, Trash2, Pencil, PhoneCall, Flame, PhoneOutgoing, MessageSquare, Mail, Check } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
+import { errorToast, useApiMutation } from '../../lib/hooks.js';
 import { dateTime, label, relative } from '../../lib/format.js';
-import { Badge, Button, Card, EmptyState, ErrorState, Field, IconButton, Input, Loading, PageHeader, Pagination, Select, StatCard, Tabs, Textarea, cx } from '../../components/ui.jsx';
+import { Badge, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, Loading, PageHeader, Pagination, RefreshError, Select, StatCard, Tabs, Textarea, cx } from '../../components/ui.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
+import { useToast } from '../../components/Toast.jsx';
 import LogCallModal from '../../components/carriers/LogCallModal.jsx';
+import TextLogModal from '../../components/carriers/TextLogModal.jsx';
+import ComposeModal from '../../components/email/ComposeModal.jsx';
 import { PhoneLink, StageBadge, useProspectLists } from '../../components/carriers/shared.jsx';
 
 export default function Prospecting() {
@@ -22,21 +25,54 @@ export default function Prospecting() {
   );
 }
 
+/** What a queue item asks for: call, text, email (follow-ups only; sequence emails are sent by the scheduler) or task. */
+const workOf = (it) => (it.kind === 'sequence' ? it.sequence.type : it.kind === 'follow_up' ? it.followUp.type : 'call');
+
 function Queue() {
+  const toast = useToast();
+  const qc = useQueryClient();
   const lists = useProspectLists();
   const [listId, setListId] = useState('');
   const [includeHot, setIncludeHot] = useState(true);
   const [calling, setCalling] = useState(null);
+  const [texting, setTexting] = useState(null); // { item, body }
+  const [emailing, setEmailing] = useState(null); // queue item
+  const [opening, setOpening] = useState(null);
   const q = useQuery({ queryKey: ['queue', listId, includeHot], queryFn: () => api.get('/api/prospecting/queue', { listId, includeHot: String(includeHot) }), refetchInterval: 120000 });
-  const completeStep = useApiMutation((eid) => api.post(`/api/sequences/enrollments/${eid}/complete-step`), { success: 'Task done', invalidate: [['queue']] });
+  // stepIndex = the step on screen, so a stale click gets 409 instead of completing the next step.
+  const completeStep = useApiMutation(({ eid, stepIndex }) => api.post(`/api/sequences/enrollments/${eid}/complete-step`, { stepIndex }), {
+    success: 'Step done', invalidate: [['queue']],
+    onError: (err) => {
+      errorToast(toast, err);
+      // The row was stale (409: the step already moved on; 400: the enrollment stopped): reload the queue.
+      if (err?.status === 409 || err?.status === 400) qc.invalidateQueries({ queryKey: ['queue'] });
+    },
+  });
   const completeFu = useApiMutation((id) => api.post(`/api/follow-ups/${id}/complete`), { success: 'Follow-up done', invalidate: [['queue'], ['follow-ups']] });
+  const finish = (it) => (it.kind === 'sequence'
+    ? completeStep.mutate({ eid: it.sequence.enrollmentId, stepIndex: it.sequence.stepNumber - 1 })
+    : completeFu.mutate(it.followUp.id));
+
+  /** Open the text for a queue item: a sequence step brings its message (merge fields already filled). */
+  const openText = async (it) => {
+    if (it.kind !== 'sequence') { setTexting({ item: it, body: '' }); return; }
+    setOpening(it.key);
+    try {
+      const { item } = await api.get(`/api/sequences/enrollments/${it.sequence.enrollmentId}`);
+      setTexting({ item: it, body: item?.text?.body || '' });
+    } catch (err) {
+      toast.error(err);
+    } finally { setOpening(null); }
+  };
 
   if (q.isLoading) return <Loading label="Building today's call list…" />;
-  if (q.isError) return <ErrorState error={q.error} onRetry={q.refetch} />;
+  // A failed background refresh keeps the loaded queue on screen (with a retry notice) instead of unmounting it.
+  if (q.isError && !q.data) return <ErrorState error={q.error} onRetry={q.refetch} />;
   const { items, stats } = q.data;
 
   return (
     <div className="space-y-4">
+      <RefreshError query={q} />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Due today" value={stats.due} icon={Clock} />
         <StatCard label="Overdue" value={stats.overdue} icon={Clock} tone={stats.overdue ? 'red' : 'muted'} />
@@ -50,7 +86,7 @@ function Queue() {
           <option value="">All carriers</option>
           {lists.data?.items.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.count})</option>)}
         </Select>
-        <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-brand-600" checked={includeHot} onChange={(e) => setIncludeHot(e.target.checked)} />Include hot leads</label>
+        <Checkbox label="Include hot leads" checked={includeHot} onChange={(e) => setIncludeHot(e.target.checked)} />
         <span className="ml-auto text-xs text-muted">Updated {relative(q.data.generatedAt)}</span>
       </div>
 
@@ -85,21 +121,52 @@ function Queue() {
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <PhoneLink phone={it.carrier.phone} carrierId={it.carrier.id} className="text-sm" />
-                  {(it.kind !== 'sequence' || it.sequence.type === 'call') && (it.followUp?.type ?? 'call') === 'call'
-                    ? <Button size="sm" icon={Phone} onClick={() => setCalling(it.carrier)}>Log call</Button>
-                    : it.kind === 'sequence'
-                      ? <Button size="sm" variant="secondary" onClick={() => completeStep.mutate(it.sequence.enrollmentId)}>Mark task done</Button>
-                      : <Button size="sm" variant="secondary" onClick={() => completeFu.mutate(it.followUp.id)}>Mark done</Button>}
+                  <QueueActions it={it} work={workOf(it)} opening={opening === it.key}
+                    onCall={() => setCalling(it.carrier)} onText={() => openText(it)} onEmail={() => setEmailing(it)} onDone={() => finish(it)} />
                 </div>
               </li>
             ))}
           </ul>
         )}
       </Card>
-      <p className="text-xs text-muted">Calls are placed from your own phone (tap the number). Logging the outcome advances the sequence and schedules the next step automatically. Do-not-call carriers are excluded.</p>
+      <p className="text-xs text-muted">Calls are placed from your own phone (tap the number), and texts are sent from your own messaging app. Logging the outcome advances the sequence and schedules the next step automatically. Do-not-call carriers are excluded.</p>
       <LogCallModal open={!!calling} carrier={calling} onClose={() => setCalling(null)} />
+      {texting && (
+        <TextLogModal carrier={texting.item.carrier} initialBody={texting.body} onClose={() => setTexting(null)}
+          category={texting.item.kind === 'follow_up' ? 'follow_up' : undefined}
+          doneOption={{ label: texting.item.kind === 'sequence' ? 'Mark this sequence step done' : 'Mark this follow-up done', defaultChecked: true }}
+          onLogged={({ done }) => { if (done) finish(texting.item); }} />
+      )}
+      <ComposeModal open={!!emailing} onClose={() => setEmailing(null)} carrierId={emailing?.carrier.id} toEmail={emailing?.carrier.email}
+        subject={emailing?.followUp?.note || ''} templateCategory="follow_up"
+        doneOption={{ label: 'Mark this follow-up done', defaultChecked: true }}
+        onSent={(res, meta) => { if (meta?.done && emailing) finish(emailing); }} />
     </div>
   );
+}
+
+/** The main action for a queue item, plus "Mark done" for texts and emails sent outside DispatchDesk. */
+function QueueActions({ it, work, opening, onCall, onText, onEmail, onDone }) {
+  const blocked = it.carrier.doNotCall;
+  if (work === 'call') return <Button size="sm" icon={Phone} onClick={onCall}>Log call</Button>;
+  if (work === 'text') {
+    return (
+      <>
+        <Button size="sm" icon={MessageSquare} loading={opening} disabled={blocked || !it.carrier.phone} onClick={onText}
+          title={blocked ? 'Do-not-call is on for this carrier' : !it.carrier.phone ? 'No phone number on file' : undefined}>Text</Button>
+        <IconButton icon={Check} label="Mark done without texting from here" onClick={onDone} />
+      </>
+    );
+  }
+  if (work === 'email') {
+    return (
+      <>
+        <Button size="sm" icon={Mail} disabled={!it.carrier.email} onClick={onEmail} title={!it.carrier.email ? 'No email address on file' : undefined}>Email</Button>
+        <IconButton icon={Check} label="Mark done without emailing from here" onClick={onDone} />
+      </>
+    );
+  }
+  return <Button size="sm" variant="secondary" icon={Check} onClick={onDone}>{it.kind === 'sequence' ? 'Mark task done' : 'Mark done'}</Button>;
 }
 
 function Lists() {
@@ -153,9 +220,10 @@ function ListDetail({ id }) {
   const q = useQuery({ queryKey: ['prospect-lists', id, page], queryFn: () => api.get(`/api/prospecting/lists/${id}`, { page, pageSize: 25 }) });
   const remove = useApiMutation((carrierId) => api.del(`/api/prospecting/lists/${id}/items/${carrierId}`), { success: 'Removed from list', invalidate: [['prospect-lists']] });
   if (q.isLoading) return <Card><Loading /></Card>;
-  if (q.isError) return <Card><ErrorState error={q.error} onRetry={q.refetch} /></Card>;
+  if (q.isError && !q.data) return <Card><ErrorState error={q.error} onRetry={q.refetch} /></Card>;
   return (
     <Card title={q.data.list.name} bodyClass="p-0" actions={<Button size="sm" variant="secondary" to="/app/carriers">Add from carrier list</Button>}>
+      <RefreshError query={q} className="mx-4 mt-3" />
       {q.data.list.description && <p className="border-b border-line px-4 py-2 text-sm text-muted">{q.data.list.description}</p>}
       {!q.data.items.length ? <EmptyState title="This list is empty">Select carriers in the carrier list and choose “Add to prospect list”.</EmptyState> : (
         <ul className="divide-y divide-line">

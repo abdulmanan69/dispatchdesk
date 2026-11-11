@@ -3,9 +3,22 @@ import { MapPin, Loader2, Crosshair } from 'lucide-react';
 import { cx } from '../ui.jsx';
 import { geocode, placeLabel } from './fleetApi.js';
 
+// Answers already seen in this tab (the geocoder is a shared, rate-limited free service).
+const seen = new Map();
+const SEEN_MAX = 200;
+async function lookup(q, opts) {
+  const key = q.toLowerCase();
+  if (seen.has(key)) return seen.get(key);
+  const r = await geocode(q, opts);
+  if (seen.size >= SEEN_MAX) seen.delete(seen.keys().next().value);
+  seen.set(key, r);
+  return r;
+}
+
 /**
  * Themed async place picker: type a city, pick a suggestion. value: { city, state, lat, lng } | null.
  * `onPickOnMap` adds a button to choose the point by clicking the map instead.
+ * Searches start at 3 characters after a short pause, and repeated searches are answered from memory.
  */
 export default function PlaceSearch({ value, onChange, placeholder = 'City, state', id, onPickOnMap, picking, autoFocus }) {
   const [text, setText] = useState(placeLabel(value));
@@ -23,16 +36,18 @@ export default function PlaceSearch({ value, onChange, placeholder = 'City, stat
   useEffect(() => {
     if (!typed.current) return undefined;
     const q = text.trim();
-    if (q.length < 2) { setItems([]); return undefined; }
+    if (q.length < 3) { setItems([]); return undefined; }
     let live = true;
+    // Typing on cancels the previous lookup (the geocoder is shared and rate limited).
+    const ctrl = new AbortController();
     const t = setTimeout(async () => {
       setBusy(true);
       try {
-        const r = await geocode(q);
+        const r = await lookup(q, { signal: ctrl.signal });
         if (live) { setItems(r.items || []); setSource(r.source || ''); setActive(0); setOpen(true); }
       } catch { if (live) setItems([]); } finally { if (live) setBusy(false); }
-    }, 250);
-    return () => { live = false; clearTimeout(t); };
+    }, 400);
+    return () => { live = false; clearTimeout(t); ctrl.abort(); };
   }, [text]);
 
   useEffect(() => {

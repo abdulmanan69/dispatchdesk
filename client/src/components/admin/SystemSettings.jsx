@@ -21,20 +21,32 @@ const LABELS = {
   'ai.baseUrl': 'API base URL (OpenAI-compatible)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional)',
   'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
   'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
+  'smtp.dailyLimit': 'Platform emails per day',
   'google.clientId': 'Google OAuth client ID', 'google.clientSecret': 'Google OAuth client secret',
   'microsoft.clientId': 'Microsoft OAuth client ID', 'microsoft.clientSecret': 'Microsoft OAuth client secret', 'microsoft.tenant': 'Microsoft tenant',
   'fmcsa.webKey': 'FMCSA QCMobile webKey', 'fmcsa.socrataAppToken': 'data.transportation.gov app token', 'eia.apiKey': 'EIA API key (diesel and gasoline prices, free at eia.gov/opendata)', 'fred.apiKey': 'FRED API key (truck tonnage index, free at fred.stlouisfed.org)', 'usda.marsApiKey': 'USDA My Market News API key (produce truck rates, free at mymarketnews.ams.usda.gov)',
   'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
 };
+// Short explanations shown under a setting.
+const HINTS = {
+  'app.requireEmailVerification': 'Applies once platform email (SMTP) works. Unverified accounts can sign in and look around, but cannot save changes until they open the verification link. Admins are never blocked.',
+  'app.registrationOpen': 'When off, nobody can create a new account. Existing users can still sign in.',
+  'smtp.dailyLimit': 'Most messages platform email sends per day (UTC), counted across all servers. Part of it is kept for verification and password reset mail. Match it to the daily quota of your SMTP provider.',
+};
 const TEST_LABEL = { smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
 const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
 
-function SettingInput({ s, value, onChange }) {
+const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 } };
+
+// `id` comes from the surrounding Field, so its label names the control.
+function SettingInput({ s, value, onChange, id }) {
   if (s.type === 'bool') return <Switch checked={value === 'true'} onChange={(v) => onChange(String(v))} label={LABELS[s.key] || s.key} />;
   if (s.key === 'search.provider') {
-    return <Select value={value} onChange={(e) => onChange(e.target.value)}><option value="">Disabled</option><option value="tavily">Tavily</option><option value="brave">Brave Search</option></Select>;
+    return <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Disabled</option><option value="tavily">Tavily</option><option value="brave">Brave Search</option></Select>;
   }
-  return <Input type={s.secret ? 'password' : s.key === 'smtp.port' ? 'number' : 'text'} autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)}
+  const numeric = NUMERIC[s.key];
+  return <Input id={id} type={s.secret ? 'password' : numeric ? 'number' : 'text'} inputMode={numeric ? 'numeric' : undefined} min={numeric?.min} max={numeric?.max} step={numeric ? 1 : undefined}
+    autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)}
     placeholder={s.secret ? (s.isSet ? `${s.preview} — leave blank to keep` : 'Not set') : ''} />;
 }
 
@@ -73,7 +85,7 @@ export default function SystemSettings() {
                 {g.help && <p className="mb-3 text-xs text-muted">{g.help}</p>}
                 {g.key === 'billing' && (
                   <div className="mb-3 rounded-md bg-surface-2 p-3 text-xs">
-                    <p className="text-muted">Webhook endpoint to add in Stripe (events: checkout.session.completed, customer.subscription.*, invoice.paid, invoice.payment_failed):</p>
+                    <p className="text-muted">Webhook endpoint to add in Stripe (events: checkout.session.completed, customer.subscription.created, .updated and .deleted, invoice.paid, invoice.payment_failed):</p>
                     <div className="mt-1 flex items-center gap-2"><code className="font-mono">{d.webhookUrl}</code><button type="button" aria-label="Copy webhook URL" onClick={() => copy(d.webhookUrl)} className="text-muted hover:text-fg"><Copy className="size-3.5" /></button></div>
                   </div>
                 )}
@@ -82,9 +94,12 @@ export default function SystemSettings() {
                   {items.map((s) => (
                     <div key={s.key} className={cx(s.type === 'bool' && 'sm:col-span-2')}>
                       {s.type === 'bool' ? (
-                        <SettingInput s={s} value={values[s.key] ?? ''} onChange={(v) => setValues({ ...values, [s.key]: v })} />
+                        <>
+                          <SettingInput s={s} value={values[s.key] ?? ''} onChange={(v) => setValues({ ...values, [s.key]: v })} />
+                          {HINTS[s.key] && <p className="mt-1 pl-[2.875rem] text-xs text-muted">{HINTS[s.key]}</p>}
+                        </>
                       ) : (
-                        <Field label={<span className="flex items-center gap-2">{LABELS[s.key] || s.key}<Badge color={SOURCE[s.source]}>{s.source}</Badge></span>}>
+                        <Field label={<span className="flex items-center gap-2">{LABELS[s.key] || s.key}<Badge color={SOURCE[s.source]}>{s.source}</Badge></span>} hint={HINTS[s.key]}>
                           <SettingInput s={s} value={values[s.key] ?? ''} onChange={(v) => setValues({ ...values, [s.key]: v })} />
                         </Field>
                       )}

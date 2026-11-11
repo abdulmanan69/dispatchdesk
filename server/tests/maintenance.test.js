@@ -1,7 +1,22 @@
-import { describe, it, expect } from 'vitest';
-import { registerUser, createAdmin, prisma } from './helpers.js';
-import { JOBS, isDue, runJob, runMaintenance, jobStatuses } from '../src/jobs/maintenance.js';
-import { withLock, LockBusyError } from '../src/lib/locks.js';
+import { describe, it, expect, vi } from 'vitest';
+
+// runMaintenance runs every job, including the digest and reply detection over mailboxes other suites created in the
+// shared test database: mail servers are mocked so no job waits on a real network connection.
+vi.mock('nodemailer', () => {
+  const createTransport = vi.fn(() => ({ verify: async () => true, sendMail: async (m) => ({ messageId: '<m@test>', accepted: [m.to], rejected: [] }), close: () => {} }));
+  return { default: { createTransport }, createTransport };
+});
+vi.mock('imapflow', () => ({
+  ImapFlow: class {
+    async connect() { throw new Error('IMAP is not reachable in tests'); }
+    async logout() {}
+    close() {}
+  },
+}));
+
+const { registerUser, createAdmin, prisma } = await import('./helpers.js');
+const { JOBS, isDue, runJob, runMaintenance, jobStatuses } = await import('../src/jobs/maintenance.js');
+const { withLock, LockBusyError } = await import('../src/lib/locks.js');
 
 const job = (name) => JOBS.find((j) => j.name === name);
 const DAY = 86400000;
@@ -43,6 +58,23 @@ describe('maintenance jobs', () => {
     expect(notes[0].type).toBe('document_expiring_7');
     expect(notes[0].title).toMatch(/COI for Expiry Haulers LLC expires in 7 days/);
     expect(notes[0].link).toContain(doc.id);
+  });
+
+  it("links a load document to the load's Documents tab and does not repeat an old-style reminder", async () => {
+    const u = await registerUser();
+    const load = await prisma.load.create({ data: { ownerId: u.user.id, originCity: 'Dallas', originState: 'TX', destCity: 'Memphis', destState: 'TN', loadedMiles: 450, rateCents: 150000 } });
+    const mk = (name) => prisma.document.create({ data: {
+      ownerId: u.user.id, uploadedById: u.user.id, loadId: load.id, type: 'other', originalName: name,
+      storedName: `${name}-${Date.now()}`, mimeType: 'application/pdf', sizeBytes: 10, expiresAt: new Date(Date.now() + 5 * DAY),
+    } });
+    const fresh = await mk('permit.pdf');
+    const old = await mk('old.pdf');
+    // A reminder sent before this change used the plain '/app/loads?doc=' link.
+    await prisma.notification.create({ data: { userId: u.user.id, type: 'document_expiring_7', title: 'old', link: `/app/loads?doc=${old.id}` } });
+    await runJob(job('document-expiry'), new Date());
+    const notes = await prisma.notification.findMany({ where: { userId: u.user.id, type: 'document_expiring_7' }, orderBy: { createdAt: 'asc' } });
+    expect(notes).toHaveLength(2);
+    expect(notes[1].link).toBe(`/app/loads?load=${load.id}&tab=documents&doc=${fresh.id}`);
   });
 
   it('records job status, and runMaintenance runs only due jobs', async () => {

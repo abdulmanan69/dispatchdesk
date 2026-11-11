@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Copy, KeyRound, Mail, MessageSquare, Phone, Plus, Radio, RotateCcw, ShieldAlert, ShieldCheck, Smartphone, Square } from 'lucide-react';
 import { api } from '../../lib/api.js';
@@ -8,6 +8,7 @@ import { dateTime, relative } from '../../lib/format.js';
 import { Modal, useConfirm } from '../Modal.jsx';
 import { Badge, Button, Field, Input, Select, Switch, cx } from '../ui.jsx';
 import { SHARE_DURATIONS, SHARE_STATUS } from './fleetApi.js';
+import TextLogModal from '../carriers/TextLogModal.jsx';
 
 const STATUS = { ...SHARE_STATUS, locked: { label: 'Locked: wrong PIN', color: 'red' } };
 const CLAIM_WINDOWS = [{ value: 30, label: '30 minutes' }, { value: 120, label: '2 hours' }, { value: 360, label: '6 hours' }];
@@ -91,8 +92,16 @@ export default function ShareLocation({ truck, tripId, onClose }) {
   const confirm = useConfirm();
   const [form, setForm] = useState({ driverName: '', driverPhone: truck.phone || '', hours: 24, claimMinutes: 120, pin: true, loadId: tripId || truck.currentTrip?.id || truck.nextTrip?.id || '' });
   const [created, setCreated] = useState(null); // { link, message, share, pin }
+  const [texting, setTexting] = useState(false);
   const [resetPin, setResetPin] = useState(null); // { pin, who }
   const shares = useQuery({ queryKey: ['fleet', 'shares', truck.id], queryFn: () => api.get(`/api/fleet/carriers/${truck.id}/shares`) });
+  // The same driver usually drives the truck: start from the name and phone on the last link (until the dispatcher types).
+  const touched = useRef(false);
+  useEffect(() => {
+    const last = shares.data?.items?.find((x) => x.driverName || x.driverPhone);
+    if (!last || touched.current) return;
+    setForm((f) => ({ ...f, driverName: f.driverName || last.driverName || '', driverPhone: last.driverPhone || f.driverPhone }));
+  }, [shares.data]);
   const create = useApiMutation((body) => api.post(`/api/fleet/carriers/${truck.id}/share`, body), {
     invalidate: [['fleet']],
     onSuccess: (d) => { setCreated(d); setResetPin(null); },
@@ -103,7 +112,7 @@ export default function ShareLocation({ truck, tripId, onClose }) {
     success: 'The driver can now open the link on a new phone',
     onSuccess: (d, s) => setResetPin(d.pin ? { pin: d.pin, who: s.driverName || 'the driver' } : null),
   });
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e }));
+  const set = (k) => (e) => { touched.current = true; setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e })); };
 
   const copy = async (text, what) => {
     try { await navigator.clipboard.writeText(text); toast.success(`${what} copied`); } catch { toast.error('Copy failed. Select the text and copy it by hand.'); }
@@ -144,11 +153,18 @@ export default function ShareLocation({ truck, tripId, onClose }) {
             <Button variant="secondary" icon={Mail} href={created.message.email}>Email</Button>
             <Button variant="secondary" icon={Copy} onClick={() => copy(created.message.text, 'Message')}>Copy message</Button>
           </div>
+          <Button size="sm" variant="ghost" icon={MessageSquare} onClick={() => setTexting(true)}>Write it from a driver template</Button>
+          {texting && (
+            // {{track_link}} in a driver template fills in with this link; the text is logged on the carrier.
+            <TextLogModal carrier={{ id: truck.id, companyName: truck.companyName, phone: created.share.driverPhone || truck.phone, state: truck.state, timezone: truck.timezone }}
+              loadId={created.share.loadId || undefined} category="driver" extra={{ track_link: created.link }} initialBody={created.message.text}
+              title={`Text ${created.share.driverName || 'the driver'}`} onClose={() => setTexting(false)} />
+          )}
           <p className="text-xs text-muted">Must be opened by {dateTime(created.share.claimBy || created.share.expiresAt)}; then it lasts {SHARE_DURATIONS.find((d) => d.value === created.share.durationHours)?.label || `${created.share.durationHours} hours`}. The driver can stop sharing anytime; you can stop the link below.</p>
         </div>
       ) : (
         <div className="space-y-4">
-          <p className="text-sm text-fg-2">The driver gets a link that shares their phone's GPS while the page is open, and lets them check in at pickup and delivery. Nothing is shared until they agree, and the link works on one phone only.</p>
+          <p className="text-sm text-fg-2">The driver gets a link that shares their phone's GPS while the page is open, lets them check in at pickup and delivery, and send photos of the BOL, POD and receipts. Nothing is shared until they agree, and the link works on one phone only.</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Driver name"><Input value={form.driverName} onChange={set('driverName')} placeholder="Marco" maxLength={80} /></Field>
             <Field label="Driver phone"><Input value={form.driverPhone} onChange={set('driverPhone')} placeholder="(214) 555-0111" maxLength={30} /></Field>

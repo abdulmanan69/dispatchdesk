@@ -5,6 +5,7 @@ import { fromCents, toCents } from './calc.js';
 import { US_STATES, PRESETS } from '../../lib/format.js';
 import { Button, ComboInput, Field, Input, Select, Textarea } from '../ui.jsx';
 import { Modal } from '../Modal.jsx';
+import { useToast } from '../Toast.jsx';
 
 const EMPTY = { companyName: '', contactName: '', email: '', phone: '', address: '', city: '', state: '', zip: '', mcNumber: '', dotNumber: '', paymentTerms: '', daysToPay: '', creditRating: '', creditLimit: '', notes: '' };
 
@@ -16,9 +17,19 @@ export default function BrokerFormModal({ open, onClose, broker, onSaved }) {
     const b = broker || {};
     setF({ ...EMPTY, ...Object.fromEntries(Object.entries(b).filter(([k, v]) => k in EMPTY && v != null).map(([k, v]) => [k, String(v)])), creditLimit: fromCents(b.creditLimitCents) });
   }, [open, broker]);
+  const toast = useToast();
   const save = useApiMutation(
     (body) => (editing ? api.patch(`/api/brokers/${broker.id}`, body) : api.post('/api/brokers', body)),
-    { success: editing ? 'Broker updated' : 'Broker added', invalidate: [['brokers'], ['broker']], onSuccess: (d) => { onSaved?.(d.broker); onClose(); } },
+    {
+      success: editing ? 'Broker updated' : 'Broker added', invalidate: [['brokers'], ['broker']],
+      onSuccess: (d) => {
+        // Same MC or USDOT already saved in the workspace: point to it (saving is never blocked).
+        const dup = (d.duplicates || []).find((x) => x.id !== d.broker.id);
+        if (dup) toast.info(`${dup.companyName} already has this MC or USDOT number.`, { action: { label: 'Open it', href: `/app/brokers/${dup.id}` } });
+        onSaved?.(d.broker);
+        onClose();
+      },
+    },
   );
   const on = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const submit = (e) => {

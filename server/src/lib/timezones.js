@@ -17,28 +17,116 @@ const STATE_TZ = {
 
 export const US_STATES = Object.keys(STATE_TZ).filter((s) => s.length === 2).slice(0, 52);
 
+/** Zone used when a user or carrier has none (the same default as User.timezone). */
+export const DEFAULT_TZ = 'America/Chicago';
+
+const SERVER_TZ = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
+})();
+
+/** The process time zone (UTC in production containers). Used where older code relied on Date#setHours. */
+export const serverTimezone = () => SERVER_TZ;
+
 export function timezoneForState(state) {
   return STATE_TZ[String(state || '').toUpperCase()] || null;
 }
 
+/*
+ * One Intl.DateTimeFormat per zone, built once. Constructing a formatter costs 100-300 µs; formatting with a
+ * cached one costs a few µs. Only a few dozen zones are ever used, the map is still bounded.
+ */
+const FORMATTERS = new Map();
+const MAX_FORMATTERS = 200;
+
+function formatter(tz) {
+  const key = tz || 'UTC';
+  let f = FORMATTERS.get(key);
+  if (f) return f;
+  try {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: key, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+  } catch {
+    // Unknown zone name (bad data): use UTC instead of failing a request or a background job.
+    if (key === 'UTC') throw new Error('Intl time zone support is missing');
+    f = formatter('UTC');
+  }
+  if (FORMATTERS.size >= MAX_FORMATTERS) FORMATTERS.clear();
+  FORMATTERS.set(key, f);
+  return f;
+}
+
+const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+function rawParts(tz, date) {
+  const out = {};
+  for (const p of formatter(tz).formatToParts(date)) if (p.type !== 'literal') out[p.type] = p.value;
+  return out;
+}
+
 /** Local wall-clock parts of `date` in time zone `tz`. */
 export function localParts(tz, date = new Date()) {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hour12: false, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  });
-  const p = Object.fromEntries(fmt.formatToParts(date).map((x) => [x.type, x.value]));
+  const p = rawParts(tz, date);
   const hour = Number(p.hour) % 24;
-  return { hour, minute: Number(p.minute), weekday: p.weekday, label: `${String(hour).padStart(2, '0')}:${p.minute}`, date: `${p.year}-${p.month}-${p.day}` };
+  return {
+    hour, minute: Number(p.minute), second: Number(p.second), weekday: p.weekday, weekdayIndex: WEEKDAY_INDEX[p.weekday],
+    year: Number(p.year), month: Number(p.month), day: Number(p.day),
+    label: `${String(hour).padStart(2, '0')}:${p.minute}`, date: `${p.year}-${p.month}-${p.day}`,
+  };
 }
 
 /** Minutes offset of tz from UTC at `date` (positive east). */
 export function tzOffsetMinutes(tz, date = new Date()) {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
-  const p = Object.fromEntries(fmt.formatToParts(date).map((x) => [x.type, x.value]));
+  const p = rawParts(tz, date);
   const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
   return Math.round((asUtc - date.getTime()) / 60000);
+}
+
+/**
+ * UTC instant of a local wall-clock time in tz. Out-of-range days/hours roll over (day 32 = next month),
+ * so callers can do calendar arithmetic directly. DST is corrected with a second offset lookup.
+ */
+export function zonedTimeToUtc(tz, year, month, day, hour = 0, minute = 0, second = 0) {
+  const guess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const off = tzOffsetMinutes(tz, new Date(guess));
+  let t = guess - off * 60000;
+  const off2 = tzOffsetMinutes(tz, new Date(t));
+  if (off2 !== off) t = guess - off2 * 60000;
+  return new Date(t);
+}
+
+/** YYYY-MM-DD of `date` in tz. */
+export function localDayKey(tz, date = new Date()) {
+  return localParts(tz || DEFAULT_TZ, date).date;
+}
+
+/** First instant of the local day containing `now`. */
+export function startOfUserDay(tz, now = new Date()) {
+  const zone = tz || DEFAULT_TZ;
+  const p = localParts(zone, now);
+  return zonedTimeToUtc(zone, p.year, p.month, p.day, 0, 0, 0);
+}
+
+/** First instant of the next local day (when a "per day" limit resets). */
+export function startOfNextUserDay(tz, now = new Date()) {
+  const zone = tz || DEFAULT_TZ;
+  const p = localParts(zone, now);
+  return zonedTimeToUtc(zone, p.year, p.month, p.day + 1, 0, 0, 0);
+}
+
+/** Last millisecond of the local day containing `now`. */
+export function endOfUserDay(tz, now = new Date()) {
+  return new Date(startOfNextUserDay(tz, now).getTime() - 1);
+}
+
+/** The same local wall-clock time `days` later (DST-safe: 9:00 stays 9:00). */
+export function addLocalDays(tz, date, days) {
+  const zone = tz || DEFAULT_TZ;
+  const d = new Date(date);
+  const p = localParts(zone, d);
+  const t = zonedTimeToUtc(zone, p.year, p.month, p.day + days, p.hour, p.minute, p.second);
+  return new Date(t.getTime() + d.getUTCMilliseconds());
 }
 
 const WEEKEND = new Set(['Sat', 'Sun']);
@@ -53,17 +141,18 @@ export function isWithinBusinessHours(tz, start = 9, end = 17, date = new Date()
 
 /**
  * Move `date` forward to the next moment inside the business window in tz.
- * Steps in 15 minute increments (bounded to 8 days) which is simple and DST-safe.
+ * Computed directly (at most three formatter calls): stay if inside the window, otherwise jump to the start hour
+ * today or on the next allowed day, skipping weekend days whole. DST is handled by zonedTimeToUtc.
  */
 export function nextBusinessTime(tz, date = new Date(), start = 9, end = 17, skipWeekends = true) {
   if (!tz) return date;
-  let d = new Date(date);
-  for (let i = 0; i < 8 * 24 * 4; i++) {
-    if (isWithinBusinessHours(tz, start, end, d, skipWeekends)) return d;
-    d = new Date(d.getTime() + 15 * 60000);
-    d.setSeconds(0, 0);
-  }
-  return d;
+  const d = new Date(date);
+  const p = localParts(tz, d);
+  const allowed = (wd) => !skipWeekends || (wd !== 0 && wd !== 6);
+  if (allowed(p.weekdayIndex) && p.hour >= start && p.hour < end) return d;
+  let add = allowed(p.weekdayIndex) && p.hour < start ? 0 : 1;
+  while (!allowed((p.weekdayIndex + add) % 7)) add++;
+  return zonedTimeToUtc(tz, p.year, p.month, p.day + add, start, 0, 0);
 }
 
 /** Calling recommendation for a carrier based on local time. */
@@ -81,4 +170,17 @@ export function callWindow(tz, date = new Date()) {
   else if (p.hour < 17) recommendation = 'Good window — afternoon follow-ups.';
   else recommendation = 'Late — OK for callbacks you already scheduled.';
   return { timezone: tz, localTime: p.label, localWeekday: p.weekday, callable, recommendation };
+}
+
+/**
+ * callWindow for many rows that share one `now` (list endpoints): computed once per zone.
+ * Usage: const cw = callWindowMemo(now); items.forEach((it) => { it.callWindow = cw(tz); });
+ */
+export function callWindowMemo(now = new Date()) {
+  const cache = new Map();
+  return (tz) => {
+    const k = tz || '';
+    if (!cache.has(k)) cache.set(k, callWindow(tz || null, now));
+    return cache.get(k);
+  };
 }

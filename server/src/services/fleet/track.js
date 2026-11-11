@@ -140,6 +140,7 @@ const FLAG_TEXT = {
   stale_clock: "Phone clock doesn't match",
   far_from_trip: 'Far from the loaded trip route',
   locked: 'Locked after wrong PINs',
+  off_route: 'Off the planned road route',
 };
 export const flagText = (type) => FLAG_TEXT[type] || type;
 
@@ -159,7 +160,8 @@ export function milesToSegment(p, a, b) {
 }
 
 /**
- * Judge a fix. `reference` is the last trusted position ({ lat, lng, at, accuracy }); `trip` has { status, origin, dest } points.
+ * Judge a fix. `reference` is the last trusted position ({ lat, lng, at, accuracy }); `trip` has { status, origin, dest }
+ * points and, when the load has a road route, `offRouteMiles` (distance from that route, used instead of the straight line).
  * Returns { flags: [{ type, detail }], trusted } where trusted=false means the fix must not move the truck.
  */
 export function evaluateFix({ fix, reference, trip, deviceKind, now = new Date() }) {
@@ -184,8 +186,8 @@ export function evaluateFix({ fix, reference, trip, deviceKind, now = new Date()
     }
   }
   // A loaded truck should be on its lane; before pickup a long empty run is normal, so only in-transit trips are checked.
-  if (trip?.status === 'in_transit' && trip.origin && trip.dest) {
-    const off = milesToSegment(fix, trip.origin, trip.dest);
+  if (trip?.status === 'in_transit' && (trip.offRouteMiles != null || (trip.origin && trip.dest))) {
+    const off = trip.offRouteMiles != null ? trip.offRouteMiles : milesToSegment(fix, trip.origin, trip.dest);
     if (off > FAR_FROM_TRIP_MILES) flags.push({ type: 'far_from_trip', detail: `${Math.round(off)} mi off the route` });
   }
   return { flags, trusted };

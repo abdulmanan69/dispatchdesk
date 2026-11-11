@@ -46,7 +46,7 @@ export async function ownerWhere(user, scope = 'mine', field = 'ownerId') {
   return ids.length === 1 ? { [field]: ids[0] } : { [field]: { in: ids } };
 }
 
-async function canReadOwner(user, ownerId) {
+export async function canReadOwner(user, ownerId) {
   if (ownerId === user.id) return true;
   if (!canViewTeam(user)) return false;
   return (await teamMemberIds(user)).includes(ownerId);
@@ -56,6 +56,15 @@ async function canWriteOwner(user, ownerId, assignedToId) {
   if (ownerId === user.id || assignedToId === user.id) return true;
   if (!isTeamLead(user)) return false;
   return (await teamMemberIds(user)).includes(ownerId);
+}
+
+/**
+ * True when `user` may read `carrier` ({ ownerId, assignedToId }). `user` needs `teamMembership` (with `team`) loaded,
+ * as the session user has. Used where no request user exists, e.g. a public link checked against the link's owner.
+ */
+export async function userCanReadCarrier(user, carrier) {
+  if (!user || !carrier) return false;
+  return carrier.assignedToId === user.id || canReadOwner(user, carrier.ownerId);
 }
 
 /** Load a carrier the user may access, or throw 404 (never leak existence). */

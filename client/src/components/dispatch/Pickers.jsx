@@ -30,7 +30,8 @@ export function CarrierPicker({ value, onChange, id, stage, placeholder = 'Searc
   const term = useDebounced(text);
   const q = useQuery({
     queryKey: ['carriers', 'picker', term, stage],
-    queryFn: () => api.get('/api/carriers', { q: term || undefined, stage, pageSize: 10 }),
+    // The signal cancels the request for a search term the user has already typed past.
+    queryFn: ({ signal }) => api.get('/api/carriers', { q: term || undefined, stage, pageSize: 10 }, { signal }),
     enabled: open,
   });
   useEffect(() => { if (!value) setText(initialLabel || ''); }, [value, initialLabel]);

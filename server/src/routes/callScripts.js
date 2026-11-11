@@ -15,7 +15,10 @@ const scriptSchema = z.object({
   body: z.string().trim().min(1, 'Required').max(20000),
 });
 
-/** Original starter scripts. Merge fields: {{company}} {{first_name}} {{my_name}} {{mc}} {{city}} {{state}}. */
+/**
+ * Original starter scripts. Merge fields use the shared names from services/email/render.js
+ * ({{company}} {{first_name}} {{my_name}} {{mc}} {{city}} {{state}} ...); the dialer fills them from the carrier on screen.
+ */
 export const STARTER_SCRIPTS = [
   {
     name: 'Cold call: owner-operator intro',

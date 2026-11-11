@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useNavigation } from 'react-router';
 import { Menu, X, Moon, Sun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { applyTheme } from '../context/theme.js';
@@ -36,6 +36,13 @@ function ThemeButton() {
   );
 }
 
+/** Thin bar at the top while the next page's code loads (pages load on demand). */
+function RouteProgress() {
+  const navigation = useNavigation();
+  if (navigation.state === 'idle') return null;
+  return <div className="pointer-events-none fixed inset-x-0 top-0 z-[70] h-0.5 animate-pulse bg-brand-600" role="progressbar" aria-label="Loading page" />;
+}
+
 export default function PublicLayout() {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
@@ -55,6 +62,7 @@ export default function PublicLayout() {
   }, [pathname, hash]);
   return (
     <div className="flex min-h-full flex-col">
+      <RouteProgress />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm">Skip to content</a>
       <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">

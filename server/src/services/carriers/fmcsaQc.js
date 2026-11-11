@@ -64,6 +64,37 @@ export function mapCarrier(c, authority) {
   };
 }
 
+const thousands = (v) => {
+  const n = Number(String(v ?? '').replace(/[^\d.]/g, ''));
+  return String(v ?? '').trim() !== '' && Number.isFinite(n) ? Math.round(n * 1000) : null;
+};
+const yn = (v) => (String(v || '').toUpperCase() === 'Y' ? true : String(v || '').toUpperCase() === 'N' ? false : null);
+
+/**
+ * Insurance and operating status on file with FMCSA for one USDOT number (QCMobile, needs the webKey).
+ * Amounts are dollars (QCMobile reports thousands). Returns null when not configured or not found; fields QCMobile
+ * leaves out stay null so the UI can say "unknown" instead of guessing.
+ */
+export async function readinessDetails(dot, fetchImpl) {
+  const dotNumber = normDot(dot);
+  if (!dotNumber || !(await getSetting('fmcsa.webKey'))) return null;
+  const res = await get(`/carriers/${dotNumber}`, fetchImpl);
+  const c = res?.content?.carrier;
+  if (!c) return null;
+  const auth = await get(`/carriers/${dotNumber}/authority`, fetchImpl).catch(() => null);
+  return {
+    authorityStatus: authorityFrom(auth?.content),
+    allowedToOperate: yn(c.allowedToOperate),
+    bipdOnFile: thousands(c.bipdInsuranceOnFile),
+    bipdRequired: thousands(c.bipdRequiredAmount),
+    cargoOnFile: thousands(c.cargoInsuranceOnFile),
+    cargoRequired: yn(c.cargoInsuranceRequired),
+    bondOnFile: thousands(c.bondInsuranceOnFile),
+    outOfServiceDate: trimOrNull(c.oosDate, 40),
+    safetyRating: trimOrNull(c.safetyRating, 40),
+  };
+}
+
 export async function lookup({ dot, mc }, fetchImpl) {
   let dotNumber = normDot(dot);
   if (!dotNumber && mc) {

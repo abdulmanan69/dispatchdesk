@@ -107,7 +107,7 @@ export default function ImportCsv() {
             <StatCard label="Created" value={result.created} icon={CheckCircle2} tone="green" />
             <StatCard label="Updated" value={result.updated} />
             <StatCard label="Skipped (duplicates)" value={result.skipped} tone="muted" />
-            <StatCard label="Errors" value={result.errors.length} tone={result.errors.length ? 'red' : 'muted'} />
+            <StatCard label="Errors" value={result.errorCount ?? result.errors.length} tone={result.errors.length ? 'red' : 'muted'} />
           </div>
           <p className="mt-3 text-sm text-muted">
             Mapped: {Object.entries(result.mapping).map(([h, f]) => `${h} → ${f}`).join(', ')}
@@ -117,6 +117,7 @@ export default function ImportCsv() {
             <div className="mt-3 max-h-64 overflow-y-auto rounded-md border border-line">
               <table className="w-full text-sm"><thead><tr className="border-b border-line text-left text-xs text-muted"><th className="px-3 py-2">Line</th><th className="px-3 py-2">Problem</th></tr></thead>
                 <tbody>{result.errors.map((e) => <tr key={e.line} className="border-b border-line/60 last:border-0"><td className="px-3 py-1.5 tabular">{e.line}</td><td className="px-3 py-1.5">{e.error}</td></tr>)}</tbody></table>
+              {result.errorCount > result.errors.length && <p className="px-3 py-2 text-xs text-muted">Showing the first {result.errors.length} of {result.errorCount} problems.</p>}
             </div>
           )}
           <div className="mt-4 flex gap-2"><Button to="/app/carriers">View carrier list</Button><Button variant="secondary" to="/app/prospecting">Start prospecting</Button></div>

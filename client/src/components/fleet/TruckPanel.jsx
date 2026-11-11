@@ -1,12 +1,17 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, ExternalLink, FileText, Lock, MessageSquare, Navigation, Pencil, Radio, Send, StickyNote, X } from 'lucide-react';
+import { Activity, ExternalLink, FileText, Link2, Lock, Megaphone, MessageSquare, Navigation, Pencil, Radio, Route as RouteIcon, Send, StickyNote, X } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { dateTime, label, money, relative } from '../../lib/format.js';
-import { Badge, Button, LocalClock, cx } from '../ui.jsx';
+import { dateTime, label, money, relative, bytes } from '../../lib/format.js';
+import { Badge, Button, LocalClock, Loading, cx } from '../ui.jsx';
 import CallButton from '../calling/CallButton.jsx';
 import ShareLocation, { CONFIDENCE } from './ShareLocation.jsx';
-import { STATUS, TRIP_STATUS, NEXT_TRIP_STATUS, placeLabel, sinceText } from './fleetApi.js';
+import TripPlan from './TripPlan.jsx';
+import CheckCallModal from './CheckCallModal.jsx';
+import TrackingLinkModal from './TrackingLinkModal.jsx';
+import TextLogModal from '../carriers/TextLogModal.jsx';
+import ReloadIdeas from '../carriers/ReloadIdeas.jsx';
+import { STATUS, TRIP_STATUS, NEXT_TRIP_STATUS, placeLabel, sinceText, isStale, hoursText } from './fleetApi.js';
 
 export function StatusChip({ status, className }) {
   const s = STATUS[status] || STATUS.unknown;
@@ -24,7 +29,16 @@ function TripLine({ trip, onAdvance, busy }) {
         <span className="tabular text-xs text-muted">{money(trip.rateCents, { digits: 0 })}{trip.rpmAllIn != null ? ` · $${trip.rpmAllIn.toFixed(2)}/mi` : ''}</span>
       </div>
       <div className="mt-0.5 font-medium">{trip.origin.city}, {trip.origin.state} → {trip.dest.city}, {trip.dest.state}</div>
-      <div className="text-xs text-muted">{trip.pickupDate ? `Pickup ${dateTime(trip.pickupDate)}` : 'Pickup not scheduled'}{trip.loadedMiles ? ` · ${trip.loadedMiles} mi` : ''}{trip.deadheadMiles ? ` + ${trip.deadheadMiles} empty` : ''}</div>
+      <div className="text-xs text-muted">
+        {trip.pickupDate ? `Pickup ${dateTime(trip.pickupDate)}` : 'Pickup not scheduled'}
+        {trip.route?.miles ? ` · ${trip.route.miles.toLocaleString('en-US')} ${trip.route.estimate ? 'mi (estimate)' : 'road mi'}` : trip.loadedMiles ? ` · ${trip.loadedMiles} mi` : ''}
+        {trip.route?.minutes ? ` · ${hoursText(trip.route.minutes)} drive` : ''}
+        {trip.deadheadMiles ? ` + ${trip.deadheadMiles} empty` : ''}
+      </div>
+      {trip.route && !trip.route.current && (
+        <div className="text-[11px] text-muted">{trip.route.stateOnly ? 'Only the state is known for a stop, so there is no road route: straight-line estimate' : 'Road route is being worked out'}</div>
+      )}
+      {trip.route?.current && trip.route.estimate && <div className="text-[11px] text-muted">Routing service had no answer: straight-line estimate</div>}
       {next && <Button size="sm" variant="secondary" className="mt-2" loading={busy} onClick={() => onAdvance(trip.id, next)}>Mark {TRIP_STATUS[next].label.toLowerCase()}</Button>}
     </div>
   );
@@ -55,13 +69,13 @@ function LiveRow({ truck }) {
   if (l.shareStatus === 'locked') {
     return <p className="flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-[12.5px] text-red-700 dark:border-red-900 dark:text-red-300"><Lock className="size-3.5" aria-hidden />Link locked after 5 wrong PINs. Create a new link or reset the device.</p>;
   }
-  const tone = l.sharing && !l.stale ? 'text-c-green' : 'text-muted';
+  const live = l.sharing && !isStale(l);
   return (
     <div className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className={cx('flex items-center gap-1.5 font-medium', tone)}>
-          <span className={cx('size-2 rounded-full', l.sharing && !l.stale ? 'animate-pulse bg-c-green' : 'bg-c-gray')} />
-          {l.sharing && !l.stale ? 'Live GPS' : l.shareStatus === 'pending' ? 'Link sent, not opened' : l.shareStatus === 'paused' ? 'Driver paused sharing' : l.shareStatus === 'expired' ? 'Link expired' : 'GPS not updating'}
+        <span className={cx('flex items-center gap-1.5 font-medium', live ? 'text-c-green' : 'text-muted')}>
+          <span className={cx('size-2 rounded-full', live ? 'bg-c-green' : 'bg-c-gray')} />
+          {live ? 'Live GPS' : l.shareStatus === 'pending' ? 'Link sent, not opened' : l.shareStatus === 'paused' ? 'Driver paused sharing' : l.shareStatus === 'expired' ? 'Link expired' : 'GPS not updating'}
         </span>
         {l.lastAt && <span className="text-muted">{sinceText(l.lastAt)}</span>}
         {l.speedMph != null && <span className="tabular text-muted">{l.speedMph} mph</span>}
@@ -79,9 +93,37 @@ function LiveRow({ truck }) {
   );
 }
 
-function Timeline({ carrierId }) {
-  const q = useQuery({ queryKey: ['fleet', 'checkins', carrierId], queryFn: () => api.get(`/api/fleet/carriers/${carrierId}/checkins`), refetchInterval: 60000 });
-  const items = q.data?.items || [];
+const EVENT_TEXT = {
+  arrived_pickup: 'Arrived at pickup', loaded: 'Loaded', departed_pickup: 'Left pickup', arrived_delivery: 'Arrived at delivery', delivered: 'Delivered',
+  issue: 'Issue', check_call: 'Check call', detention_start: 'Detention started', detention_stop: 'Detention stopped', document: 'Document', status: 'Status', note: 'Note',
+};
+const EVENT_DOT = { issue: 'bg-c-red', check_call: 'bg-c-purple', document: 'bg-c-teal', status: 'bg-c-blue', delivered: 'bg-c-green', loaded: 'bg-c-green' };
+
+/** Load timeline: check-ins, check calls, documents and status changes for the truck's trip. */
+function Timeline({ trip, carrierId }) {
+  const ev = useQuery({ queryKey: ['fleet', 'events', trip?.id], queryFn: () => api.get(`/api/fleet/trips/${trip.id}/events`), enabled: !!trip, refetchInterval: 60000 });
+  const act = useQuery({ queryKey: ['fleet', 'checkins', carrierId], queryFn: () => api.get(`/api/fleet/carriers/${carrierId}/checkins`), enabled: !trip, refetchInterval: 60000 });
+  if (trip) {
+    if (ev.isLoading) return <Loading className="py-4" />;
+    // A truck assigned to you whose load belongs to someone else: say so instead of "no updates".
+    if (ev.isError && !ev.data) return <p className="text-xs text-muted">{ev.error?.status === 404 ? 'Updates on this trip are visible to the load owner only.' : 'Could not load the updates on this trip.'}</p>;
+    const items = ev.data?.items || [];
+    if (!items.length) return <p className="text-xs text-muted">No updates on this trip yet. Drivers check in from their link at pickup and delivery.</p>;
+    return (
+      <ol className="space-y-2">
+        {items.slice(0, 12).map((e) => (
+          <li key={e.id} className="flex gap-2 text-[12.5px]">
+            <span className={cx('mt-1 size-2 shrink-0 rounded-full', EVENT_DOT[e.type] || 'bg-c-gray')} />
+            <span className="min-w-0">
+              <span className="block"><span className="font-medium">{EVENT_TEXT[e.type] || e.type}</span>{e.note ? ` · ${e.note}` : ''}</span>
+              <span className="text-[11px] text-muted">{relative(e.at)} · {e.source === 'driver_link' ? 'driver' : e.source === 'system' ? 'automatic' : 'dispatch'}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  const items = act.data?.items || [];
   if (!items.length) return <p className="text-xs text-muted">No check-ins yet. Drivers check in from their link at pickup and delivery.</p>;
   return (
     <ol className="space-y-2">
@@ -95,12 +137,48 @@ function Timeline({ carrierId }) {
   );
 }
 
-/** Everything a dispatcher does for one truck: live position, trip, calls and messages, check-ins. */
-export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, advancing, onTrail, trailOn }) {
+const DOC_TEXT = { bol: 'BOL', pod: 'POD', lumper_receipt: 'Lumper receipt', scale_ticket: 'Scale ticket', fuel_receipt: 'Fuel receipt', rate_confirmation: 'Rate confirmation', other: 'Document' };
+
+/** Paperwork on the trip, including photos the driver sent from their link. */
+function TripDocuments({ trip }) {
+  const q = useQuery({ queryKey: ['documents', 'load', trip.id], queryFn: () => api.get('/api/documents', { loadId: trip.id }), staleTime: 30000 });
+  const items = q.data?.items || [];
+  // Loading, or a load you cannot open (a truck assigned to you on someone else's load): no misleading "no POD yet".
+  if (q.isLoading || (q.isError && !q.data)) return null;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-fg-2">Paperwork</p>
+      {items.length === 0 ? <p className="text-xs text-muted">No BOL or POD yet. Drivers can send photos from their link.</p> : (
+        <ul className="space-y-1">
+          {items.slice(0, 6).map((d) => (
+            <li key={d.id}>
+              <a href={`/api/documents/${d.id}/download?inline=1`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 rounded-md px-1.5 py-1 text-[12.5px] hover:bg-surface-2">
+                <FileText className="size-3.5 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{DOC_TEXT[d.type] || label(d.type)} · {d.originalName}</span>
+                {d.source === 'driver_link' && <Badge color="teal">From driver</Badge>}
+                <span className="shrink-0 text-[11px] text-muted">{bytes(d.sizeBytes)}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Everything a dispatcher does for one truck: live position, trip progress and ETAs, calls and messages, check-ins. */
+export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, advancing, onTrail, trailOn, onShowRoute }) {
   const [share, setShare] = useState(null); // { tripId }
   const [tab, setTab] = useState('trip');
+  const [modal, setModal] = useState(null); // 'checkcall' | 'tracking' | 'text'
   const trip = truck.currentTrip || truck.nextTrip;
-  const digits = String(truck.phone || '').replace(/\D/g, '');
+  // An empty truck (nothing in transit) gets reload ideas for where it is now.
+  const empty = !truck.currentTrip && truck.truckStatus !== 'off_duty' && truck.truckStatus !== 'maintenance';
+  const planQ = useQuery({
+    queryKey: ['fleet', 'plan', truck.id, trip?.id || '', trip?.status || ''],
+    queryFn: () => api.get(`/api/fleet/carriers/${truck.id}/plan`),
+    enabled: !!trip, refetchInterval: 60000, placeholderData: (prev) => prev,
+  });
   return (
     <div className="dd-enter absolute left-3 top-14 z-[5] flex max-h-[calc(100%-120px)] w-[min(380px,calc(100%-24px))] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-xl">
       <div className="border-b border-line p-4" style={{ borderTop: `3px solid ${(STATUS[truck.truckStatus] || STATUS.unknown).color}` }}>
@@ -123,13 +201,13 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
         <div className="mt-3"><LiveRow truck={truck} /></div>
         <div className="mt-3 flex flex-wrap gap-2">
           {truck.phone && <CallButton variant="button" phone={truck.phone} carrierId={truck.id} label="Call" size="sm" />}
-          {digits && <Button size="sm" variant="secondary" icon={MessageSquare} href={`sms:+1${digits.slice(-10)}`}>Text</Button>}
+          {truck.phone && <Button size="sm" variant="secondary" icon={MessageSquare} onClick={() => setModal('text')}>Text</Button>}
           <Button size="sm" icon={Radio} onClick={() => setShare({})}>{truck.live?.sharing ? 'Live link' : 'Share live location'}</Button>
         </div>
       </div>
 
       <div className="flex border-b border-line px-2" role="tablist">
-        {[['trip', 'Trip'], ['activity', 'Check-ins'], ['more', 'More']].map(([k, l]) => (
+        {[['trip', 'Trip'], ['activity', 'Updates'], ['more', 'More']].map(([k, l]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
             className={cx('-mb-px border-b-2 px-3 py-2 text-[13px] transition-ui', tab === k ? 'border-brand-600 font-medium text-fg' : 'border-transparent text-muted hover:text-fg')}>{l}</button>
         ))}
@@ -139,13 +217,23 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
         {tab === 'trip' && (
           <>
             {trip ? <TripLine trip={trip} busy={advancing} onAdvance={onAdvance} /> : <p className="text-sm text-muted">No trip planned for this truck.</p>}
+            {trip && planQ.isLoading && <Loading className="py-3" label="Working out ETAs…" />}
+            {trip && planQ.data && <TripPlan data={planQ.data} onCheckCall={() => setModal('checkcall')} />}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" icon={Navigation} onClick={onPlan}>Plan trip</Button>
+              {trip && <Button size="sm" variant="secondary" icon={RouteIcon} onClick={onShowRoute}>Show route</Button>}
               {trip && <Button size="sm" variant="secondary" icon={Send} onClick={() => setShare({ tripId: trip.id })}>Send trip to driver</Button>}
+              {trip && <Button size="sm" variant="secondary" icon={Link2} onClick={() => setModal('tracking')}>Tracking link</Button>}
+              {empty && <Button size="sm" variant="secondary" icon={Megaphone} to={`/app/truck-posts?truck=${truck.id}`}>Post truck</Button>}
             </div>
+            {trip && <TripDocuments trip={trip} />}
+            {empty && truck.location?.state && (
+              <ReloadIdeas compact state={truck.location.state} city={truck.location.city} equipment={(truck.equipment || '').split(',')[0] || undefined}
+                title={`Loads out of ${placeLabel(truck.location)}`} />
+            )}
           </>
         )}
-        {tab === 'activity' && <Timeline carrierId={truck.id} />}
+        {tab === 'activity' && <Timeline trip={trip} carrierId={truck.id} />}
         {tab === 'more' && (
           <div className="grid gap-2">
             <Button size="sm" variant="secondary" icon={Pencil} onClick={onEdit}>Update status or location</Button>
@@ -157,6 +245,12 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
         )}
       </div>
       {share && <ShareLocation truck={truck} tripId={share.tripId} onClose={() => setShare(null)} />}
+      {modal === 'checkcall' && trip && <CheckCallModal trip={truck.currentTrip || trip} truck={truck} onClose={() => setModal(null)} onSaved={() => planQ.refetch()} />}
+      {modal === 'tracking' && trip && <TrackingLinkModal trip={trip} onClose={() => setModal(null)} />}
+      {modal === 'text' && (
+        <TextLogModal carrier={{ id: truck.id, companyName: truck.companyName, phone: truck.phone, state: truck.state, timezone: truck.timezone }}
+          loadId={trip?.id} category="driver" title={`Text ${truck.companyName}`} onClose={() => setModal(null)} />
+      )}
     </div>
   );
 }

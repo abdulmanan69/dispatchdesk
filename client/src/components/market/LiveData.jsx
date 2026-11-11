@@ -148,7 +148,8 @@ export function WeatherAtPlace() {
   const [query, setQuery] = useState('');
   const [place, setPlace] = useState(null);
   useEffect(() => { const t = setTimeout(() => setQuery(text.trim()), 450); return () => clearTimeout(t); }, [text]);
-  const geo = useQuery({ queryKey: ['market', 'geocode', query], queryFn: () => api.get('/api/market/geocode', { q: query }), enabled: query.length >= 2 && !place, staleTime: 86400000, retry: false });
+  // The signal cancels the previous lookup when the user keeps typing (geocoding is rate limited upstream).
+  const geo = useQuery({ queryKey: ['market', 'geocode', query], queryFn: ({ signal }) => api.get('/api/market/geocode', { q: query }, { signal }), enabled: query.length >= 2 && !place, staleTime: 86400000, retry: false });
   const wx = useQuery({ queryKey: ['market', 'weather', place?.lat, place?.lng], queryFn: () => api.get('/api/market/weather', { lat: place.lat, lng: place.lng }), enabled: !!place, staleTime: 600000, retry: false });
   const c = wx.data?.current;
   return (

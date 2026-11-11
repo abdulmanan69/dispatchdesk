@@ -4,7 +4,7 @@ import { ah } from '../lib/errors.js';
 import { parse, z } from '../lib/validate.js';
 import { requirePermission } from '../middleware/auth.js';
 import { stages } from '../services/pipeline.js';
-import { carrierFilterSchema, carrierWhere, listInclude, serializeCarrier } from '../services/carriers/query.js';
+import { carrierFilterSchema, carrierWhere, listSelect, serializeCarrier } from '../services/carriers/query.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -24,7 +24,8 @@ r.get('/board', ah(async (req, res) => {
   const columns = await Promise.all(list.map(async (s) => {
     const where = await carrierWhere(req.user, { ...f, stage: s.key });
     const [items, total] = await Promise.all([
-      prisma.carrier.findMany({ where, include: { ...listInclude, opportunity: { select: { estimatedValueCents: true, status: true } } }, orderBy: [{ priority: 'desc' }, { stageChangedAt: 'desc' }], take: f.perStage }),
+      // List columns only (no FMCSA snapshot JSON or location data on board cards).
+      prisma.carrier.findMany({ where, select: { ...listSelect, opportunity: { select: { estimatedValueCents: true, status: true } } }, orderBy: [{ priority: 'desc' }, { stageChangedAt: 'desc' }], take: f.perStage }),
       prisma.carrier.count({ where }),
     ]);
     return { key: s.key, name: s.name, color: s.color, total, items: items.map(serializeCarrier) };

@@ -24,7 +24,8 @@ export async function runAutomations(user, trigger, { carrier, value = null, dep
   const results = [];
   for (const rule of rules) {
     try {
-      await execute(user, rule, carrier, depth);
+      const skipped = await execute(user, rule, carrier, depth);
+      if (skipped) { results.push({ id: rule.id, ok: true, skipped }); continue; }
       await prisma.automation.update({ where: { id: rule.id }, data: { runCount: { increment: 1 }, lastRunAt: new Date() } });
       results.push({ id: rule.id, ok: true });
     } catch (err) {
@@ -35,10 +36,16 @@ export async function runAutomations(user, trigger, { carrier, value = null, dep
   return results;
 }
 
+/** Run one rule. Returns a reason string when the rule was skipped for this carrier, otherwise nothing. */
 async function execute(user, rule, carrier, depth) {
   const due = new Date(Date.now() + (rule.delayDays || 0) * 86400000);
   switch (rule.action) {
     case 'create_follow_up': {
+      // Automation follow-ups are calls: never schedule one for a do-not-call carrier (a 'do_not_call' call outcome
+      // has just canceled its pending call and text follow-ups).
+      const doNotCall = carrier.doNotCall
+        ?? (await prisma.carrier.findUnique({ where: { id: carrier.id }, select: { doNotCall: true } }))?.doNotCall;
+      if (doNotCall) return 'do_not_call';
       await prisma.followUp.create({ data: { carrierId: carrier.id, userId: carrier.assignedToId || carrier.ownerId, dueAt: due, type: 'call', note: rule.actionValue || `Automation: ${rule.name}` } });
       await prisma.carrier.update({ where: { id: carrier.id }, data: { nextFollowUpAt: due } });
       break;

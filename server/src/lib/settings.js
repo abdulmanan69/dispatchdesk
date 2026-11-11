@@ -23,6 +23,9 @@ export const SETTING_DEFS = {
   'smtp.user': { group: 'email', default: () => config.smtp.user || '' },
   'smtp.pass': { group: 'email', secret: true, default: () => config.smtp.pass || '' },
   'smtp.from': { group: 'email', default: () => config.smtp.from || '' },
+  // Platform mail budget per UTC day (verification, password reset, digests). services/email/system.js keeps a share
+  // of it for verification and reset mail.
+  'smtp.dailyLimit': { group: 'email', default: () => process.env.PLATFORM_MAIL_DAILY_LIMIT || '300' },
   'google.clientId': { group: 'integrations', default: () => config.google.clientId },
   'google.clientSecret': { group: 'integrations', secret: true, default: () => config.google.clientSecret },
   'microsoft.clientId': { group: 'integrations', default: () => config.microsoft.clientId },
@@ -40,9 +43,14 @@ export const SETTING_DEFS = {
 let cache = null;
 let cacheAt = 0;
 
+// The SystemSetting table also holds rows that grow with the number of users and are always read by key elsewhere:
+// per-user data (user.<id>.*), cross-process locks (lock.*), job status, push keys and Stripe event markers.
+// They are never platform settings, so the 5 s cache loads only the defined keys (a primary-key lookup).
+const SETTING_KEYS = Object.keys(SETTING_DEFS);
+
 async function load() {
   if (cache && Date.now() - cacheAt < 5000) return cache;
-  const rows = await prisma.systemSetting.findMany();
+  const rows = await prisma.systemSetting.findMany({ where: { key: { in: SETTING_KEYS } } });
   cache = new Map(rows.map((r) => [r.key, r]));
   cacheAt = Date.now();
   return cache;

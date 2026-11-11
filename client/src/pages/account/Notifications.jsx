@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Bell, Trash2, Check } from 'lucide-react';
+import { Bell, Trash2, Check, Settings } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { dateTime, relative, label } from '../../lib/format.js';
@@ -23,7 +23,10 @@ export default function Notifications() {
   return (
     <div>
       <PageHeader title="Notifications" subtitle="Follow-up reminders, team updates, billing and system messages"
-        actions={q.data?.unread > 0 && <Button variant="secondary" icon={Check} loading={readAll.isPending} onClick={() => readAll.mutate()}>Mark all read</Button>} />
+        actions={<>
+          {q.data?.unread > 0 && <Button variant="secondary" icon={Check} loading={readAll.isPending} onClick={() => readAll.mutate()}>Mark all read</Button>}
+          <Button variant="ghost" icon={Settings} to="/app/settings?tab=notifications" aria-label="Notification settings"><span className="hidden sm:inline">Settings</span></Button>
+        </>} />
       <Card bodyClass="p-0">
         <div className="px-4 pt-2">
           <Tabs value={filter} onChange={(v) => { setFilter(v); setPage(1); }} tabs={[{ value: 'all', label: 'All' }, { value: 'unread', label: 'Unread', count: q.data?.unread }]} />

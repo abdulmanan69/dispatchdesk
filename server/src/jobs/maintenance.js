@@ -34,7 +34,7 @@ async function documentExpiry(now) {
   const soon = new Date(now.getTime() + 31 * DAY);
   const docs = await prisma.document.findMany({
     where: { expiresAt: { not: null, lte: soon, gte: new Date(now.getTime() - 2 * DAY) } },
-    select: { id: true, ownerId: true, type: true, originalName: true, expiresAt: true, carrierId: true, carrier: { select: { companyName: true } } },
+    select: { id: true, ownerId: true, type: true, originalName: true, expiresAt: true, carrierId: true, loadId: true, carrier: { select: { companyName: true } } },
     take: 5000,
   });
   let sent = 0;
@@ -43,8 +43,11 @@ async function documentExpiry(now) {
     const stage = days <= 0 ? 'expired' : days <= 1 ? '1' : days <= 7 ? '7' : days <= 30 ? '30' : null;
     if (!stage) continue;
     const type = `document_expiring_${stage}`;
-    const link = d.carrierId ? `/app/carriers/${d.carrierId}?doc=${d.id}` : `/app/loads?doc=${d.id}`;
-    const already = await prisma.notification.findFirst({ where: { userId: d.ownerId, type, link }, select: { id: true } });
+    // Carrier documents open the carrier's Documents tab; load documents open the load's Documents tab.
+    const link = d.carrierId ? `/app/carriers/${d.carrierId}?doc=${d.id}`
+      : d.loadId ? `/app/loads?load=${d.loadId}&tab=documents&doc=${d.id}` : `/app/loads?doc=${d.id}`;
+    // `/app/loads?doc=` was the link for every load document before; match it too so nobody is notified twice.
+    const already = await prisma.notification.findFirst({ where: { userId: d.ownerId, type, link: { in: [link, `/app/loads?doc=${d.id}`] } }, select: { id: true } });
     if (already) continue;
     const what = `${d.type.replace(/_/g, ' ').toUpperCase()}${d.carrier ? ` for ${d.carrier.companyName}` : ''}`;
     await notify(d.ownerId, {
@@ -93,6 +96,14 @@ export const JOBS = [
     }),
   },
   {
+    // Routine, high-volume timeline entries (emails sent, sequence steps, follow-up changes, AI notes) older than
+    // 18 months; calls, notes, stage changes and documents stay. Uses the Activity(type, createdAt) index.
+    name: 'activity-retention', label: 'Delete routine activity entries (emails sent, sequence and follow-up changes, truck posts) older than 18 months', dailyAtUtc: 8,
+    run: async (now) => ({
+      deleted: await deleteInBatches('activity', { type: { in: ['email', 'sequence', 'follow_up', 'ai', 'truck_post'] }, createdAt: { lt: new Date(now.getTime() - 548 * DAY) } }),
+    }),
+  },
+  {
     name: 'audit-retention', label: `Delete audit log entries older than ${Number(process.env.AUDIT_RETENTION_DAYS || 365)} days`, dailyAtUtc: 8,
     run: async (now) => ({ deleted: await deleteInBatches('auditLog', { createdAt: { lt: new Date(now.getTime() - Number(process.env.AUDIT_RETENTION_DAYS || 365) * DAY) } }) }),
   },
@@ -115,15 +126,28 @@ export const JOBS = [
 ];
 
 // Feature modules add jobs by dropping a file into ./extra (export const jobs = [...]); loaded once at startup.
+// Each file loads on its own: one broken module must not keep the other feature jobs from running.
 const EXTRA_DIR = new URL('./extra/', import.meta.url);
+let extraFiles = [];
 try {
   const fs = await import('node:fs');
-  for (const f of fs.readdirSync(EXTRA_DIR).filter((n) => n.endsWith('.js')).sort()) {
-    const mod = await import(new URL(f, EXTRA_DIR).href);
-    for (const j of mod.jobs || []) if (!JOBS.some((x) => x.name === j.name)) JOBS.push(j);
-  }
+  extraFiles = fs.readdirSync(EXTRA_DIR).filter((n) => n.endsWith('.js')).sort();
 } catch (err) {
-  console.error(`[maintenance] could not load extra jobs: ${err.message}`);
+  if (err.code !== 'ENOENT') console.error(`[maintenance] could not list extra jobs: ${err.message}`);
+}
+for (const f of extraFiles) {
+  try {
+    const mod = await import(new URL(f, EXTRA_DIR).href);
+    for (const j of mod.jobs || []) {
+      if (!j?.name || typeof j.run !== 'function' || !(j.everyMs || j.dailyAtUtc != null)) {
+        console.error(`[maintenance] extra job in ${f} is missing name, run() or a schedule; skipped`);
+        continue;
+      }
+      if (!JOBS.some((x) => x.name === j.name)) JOBS.push(j);
+    }
+  } catch (err) {
+    console.error(`[maintenance] could not load extra jobs from ${f}: ${err.message}`);
+  }
 }
 
 const stateKey = (name) => `job.${name}`;
@@ -141,14 +165,28 @@ async function writeState(name, state) {
 
 /** True when the job should run at `now`, given when it last started. */
 export function isDue(job, lastRunAt, now) {
-  const last = lastRunAt ? new Date(lastRunAt).getTime() : 0;
-  if (job.everyMs) return now.getTime() - last >= job.everyMs;
-  const slot = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), job.dailyAtUtc, 0, 0));
-  if (now < slot) slot.setUTCDate(slot.getUTCDate() - 1); // today's slot not reached yet: compare with yesterday's
-  return last < slot.getTime();
+  return overdueMs(job, lastRunAt, now) >= 0;
 }
 
-export async function runJob(job, now = new Date()) {
+/**
+ * How long the job has been due (ms; negative = not due yet). Never-run jobs count as due since the epoch, so they go
+ * first. Used to pick the most starved jobs first and shown as lag in Admin -> Setup.
+ */
+export function overdueMs(job, lastRunAt, now) {
+  const last = lastRunAt ? new Date(lastRunAt).getTime() : 0;
+  if (job.everyMs) return now.getTime() - (last + job.everyMs);
+  const slot = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), job.dailyAtUtc, 0, 0));
+  if (now < slot) slot.setUTCDate(slot.getUTCDate() - 1); // today's slot not reached yet: compare with yesterday's
+  return last < slot.getTime() ? now.getTime() - slot.getTime() : -1;
+}
+
+/**
+ * Lanes: latency-sensitive jobs (check-call reminders, the morning digest, reply detection) declare
+ * `lane: 'priority'` and run on their own timer, so a long backup or a lead-generation crawl never delays them.
+ */
+export const jobLane = (job) => (job.lane === 'priority' ? 'priority' : 'default');
+
+export async function runJob(job, now = new Date(), { lagMs = null } = {}) {
   const started = Date.now();
   try {
     return await withLock(stateKey(job.name), 2 * HOUR, async () => {
@@ -156,10 +194,10 @@ export async function runJob(job, now = new Date()) {
       try {
         // Normalize (PRAGMA rows contain BigInt, which JSON cannot carry).
         const result = JSON.parse(JSON.stringify((await job.run(now)) ?? null, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)));
-        await writeState(job.name, { ...prev, lastRunAt: now.toISOString(), lastOk: true, lastError: null, durationMs: Date.now() - started, result });
+        await writeState(job.name, { ...prev, lastRunAt: now.toISOString(), lastOk: true, lastError: null, durationMs: Date.now() - started, lagMs, result });
         return { ok: true, result };
       } catch (err) {
-        await writeState(job.name, { ...prev, lastRunAt: now.toISOString(), lastOk: false, lastError: String(err.message || err).slice(0, 500), durationMs: Date.now() - started });
+        await writeState(job.name, { ...prev, lastRunAt: now.toISOString(), lastOk: false, lastError: String(err.message || err).slice(0, 500), durationMs: Date.now() - started, lagMs });
         return { ok: false, error: err.message };
       }
     });
@@ -169,18 +207,41 @@ export async function runJob(job, now = new Date()) {
   }
 }
 
-/** Called from every scheduler tick: runs at most a few due jobs so a tick never takes long. */
-export async function runMaintenance(now = new Date(), log = () => {}, { maxJobs = 3 } = {}) {
-  const ran = [];
+/**
+ * Called from the scheduler's lane timers: runs at most `maxJobs` due jobs of one lane, the most overdue first (not
+ * in list order, so jobs late in the list are not starved), up to `concurrency` at a time. Each job holds its own
+ * database lock, so running them side by side is safe. `lane: null` considers every job (tests, manual runs).
+ */
+// Jobs running in this process right now: a lane tick never starts one twice (the DB lock covers other processes).
+const inFlight = new Set();
+
+export async function runMaintenance(now = new Date(), log = () => {}, { maxJobs = 3, lane = null, concurrency = 3 } = {}) {
+  const due = [];
   for (const job of JOBS) {
-    if (ran.length >= maxJobs) break;
+    if (lane && jobLane(job) !== lane) continue;
+    if (inFlight.has(job.name)) continue;
     const state = await readState(job.name);
-    if (!isDue(job, state.lastRunAt, now)) continue;
-    const r = await runJob(job, now);
-    if (!r.ok && r.error) log('job', job.name, r.error);
-    ran.push(job.name);
+    const lag = overdueMs(job, state.lastRunAt, now);
+    if (lag >= 0) due.push({ job, lag });
   }
-  return ran;
+  due.sort((a, b) => b.lag - a.lag);
+  const picked = due.slice(0, maxJobs);
+  let i = 0;
+  const worker = async () => {
+    while (i < picked.length) {
+      const { job, lag } = picked[i++];
+      inFlight.add(job.name);
+      try {
+        // A never-run job has no meaningful lag (it would be "since 1970").
+        const r = await runJob(job, now, { lagMs: lag > 365 * DAY ? null : lag });
+        if (!r.ok && r.error) log('job', job.name, r.error);
+      } finally {
+        inFlight.delete(job.name);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, picked.length)) }, worker));
+  return picked.map((p) => p.job.name);
 }
 
 export async function jobStatuses() {
@@ -192,7 +253,7 @@ export async function jobStatuses() {
       name: job.name, label: job.label,
       schedule: job.everyMs ? `every ${job.everyMs >= HOUR ? `${job.everyMs / HOUR} h` : `${job.everyMs / MIN} min`}` : `daily at ${String(job.dailyAtUtc).padStart(2, '0')}:00 UTC`,
       lastRunAt: s.lastRunAt || null, lastOk: s.lastOk ?? null, lastError: s.lastError || null, durationMs: s.durationMs ?? null, result: s.result ?? null,
-      due: isDue(job, s.lastRunAt, now),
+      due: isDue(job, s.lastRunAt, now), lane: jobLane(job), lagMs: s.lagMs ?? null,
     });
   }
   return out;

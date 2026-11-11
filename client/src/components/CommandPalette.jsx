@@ -8,11 +8,23 @@ import {
   Crosshair,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { label as statusLabel } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { cx } from './ui.jsx';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const OPEN_EVENT = 'dd:palette';
+const NO_RECORDS = { q: '', carriers: [], loads: [], brokers: [], loading: false };
+
+/**
+ * What to send to each list endpoint for one query: "#4417" finds load reference 4417 and "MC 123456" (or MC#123456)
+ * finds the broker with that MC number. A term shorter than 2 characters is not searched.
+ */
+export function searchTerms(query) {
+  const q = query.trim();
+  const keep = (s) => (s.length >= 2 ? s : null);
+  return { carriers: keep(q), loads: keep(q.replace(/^#\s*/, '')), brokers: keep(q.replace(/^mc[\s#:-]*(?=\d)/i, '')) };
+}
 
 const ACTIONS = [
   { id: 'a-carrier', group: 'Actions', label: 'Add carrier', to: '/app/carriers?new=1', icon: Plus, keywords: 'new create lead' },
@@ -78,11 +90,12 @@ export default function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
-  const [carriers, setCarriers] = useState({ q: '', items: [], loading: false });
+  const [found, setFound] = useState(NO_RECORDS);
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const navigate = useNavigate();
   const { can } = useAuth();
+  const canSearch = can('crm.use');
 
   useEffect(() => {
     const onKey = (e) => {
@@ -97,28 +110,35 @@ export default function CommandPalette() {
 
   useEffect(() => {
     if (!open) return undefined;
-    setQuery(''); setActive(0); setCarriers({ q: '', items: [], loading: false });
+    setQuery(''); setActive(0); setFound(NO_RECORDS);
     const prev = document.activeElement;
     const t = setTimeout(() => inputRef.current?.focus(), 10);
     return () => { clearTimeout(t); prev?.focus?.(); };
   }, [open]);
 
-  // Debounced live carrier search.
+  // Debounced live search of carriers, loads (reference, city, commodity) and brokers (name, MC) through the list
+  // endpoints, which apply their own access rules. A failed or forbidden list just shows no rows.
   useEffect(() => {
     const q = query.trim();
-    if (!open || q.length < 2) { setCarriers({ q, items: [], loading: false }); return undefined; }
-    setCarriers((c) => ({ ...c, loading: true }));
+    const terms = searchTerms(q);
+    if (!open || !canSearch || !terms.carriers) { setFound({ ...NO_RECORDS, q }); return undefined; }
+    setFound((f) => ({ ...f, loading: true }));
     let cancelled = false;
+    // Each keystroke cancels the previous search requests instead of letting them finish unseen.
+    const ctrl = new AbortController();
     const t = setTimeout(async () => {
-      try {
-        const res = await api.get('/api/carriers', { q, pageSize: 6 });
-        if (!cancelled) setCarriers({ q, items: res.items || [], loading: false });
-      } catch {
-        if (!cancelled) setCarriers({ q, items: [], loading: false });
-      }
+      const opts = { signal: ctrl.signal };
+      const list = (url, params) => (params.q ? api.get(url, params, opts).then((res) => res.items || []) : Promise.resolve([]));
+      const [carriers, loads, brokers] = await Promise.allSettled([
+        list('/api/carriers', { q: terms.carriers, pageSize: 6 }),
+        list('/api/loads', { q: terms.loads, pageSize: 4 }),
+        list('/api/brokers', { q: terms.brokers, pageSize: 4 }),
+      ]);
+      const rows = (r) => (r.status === 'fulfilled' ? r.value : []);
+      if (!cancelled) setFound({ q, carriers: rows(carriers), loads: rows(loads), brokers: rows(brokers), loading: false });
     }, 200);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [query, open]);
+    return () => { cancelled = true; clearTimeout(t); ctrl.abort(); };
+  }, [query, open, canSearch]);
 
   const results = useMemo(() => {
     const q = query.trim();
@@ -126,15 +146,23 @@ export default function CommandPalette() {
       .map((it) => ({ ...it, s: score(q, `${it.label} ${it.keywords || ''}`) }))
       .filter((it) => it.s >= 0)
       .sort((a, b) => (q ? b.s - a.s : 0));
-    const carrierItems = carriers.items.map((c) => ({
+    const carrierItems = found.carriers.map((c) => ({
       id: `c-${c.id}`, group: 'Carriers', label: c.companyName, to: `/app/carriers/${c.id}`, icon: Truck,
       meta: [c.mcNumber && `MC ${c.mcNumber}`, c.dotNumber && `DOT ${c.dotNumber}`, c.state].filter(Boolean).join(' · '),
     }));
+    const loadItems = found.loads.map((l) => ({
+      id: `l-${l.id}`, group: 'Loads', label: `${l.originCity}, ${l.originState} → ${l.destCity}, ${l.destState}`, to: `/app/loads?load=${l.id}`, icon: Package,
+      meta: [l.referenceNumber && `#${l.referenceNumber}`, statusLabel(l.status)].filter(Boolean).join(' · '),
+    }));
+    const brokerItems = found.brokers.map((b) => ({
+      id: `b-${b.id}`, group: 'Brokers', label: b.companyName, to: `/app/brokers/${b.id}`, icon: Building2,
+      meta: [b.vetting?.doNotUse && 'Do not use', b.mcNumber && `MC ${b.mcNumber}`, [b.city, b.state].filter(Boolean).join(', ')].filter(Boolean).join(' · '),
+    }));
     const limited = q ? base.slice(0, 8) : base.filter((x) => x.group === 'Actions').concat(base.filter((x) => x.group === 'Go to').slice(0, 6));
-    return [...carrierItems, ...limited];
-  }, [query, carriers.items, can]);
+    return [...carrierItems, ...loadItems, ...brokerItems, ...limited];
+  }, [query, found, can]);
 
-  useEffect(() => { setActive(0); }, [query, carriers.items.length]);
+  useEffect(() => { setActive(0); }, [query, found]);
   useEffect(() => {
     listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [active]);
@@ -159,8 +187,8 @@ export default function CommandPalette() {
           <Search className="size-4 shrink-0 text-muted" aria-hidden />
           <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={onKeyDown}
             role="combobox" aria-expanded="true" aria-controls="cmd-list" aria-activedescendant={activeId} aria-autocomplete="list"
-            placeholder="Search carriers, pages and actions" className="h-12 flex-1 bg-transparent text-sm outline-none placeholder:text-muted" />
-          {carriers.loading && <span className="font-mono text-xs text-muted">Searching</span>}
+            placeholder="Search carriers, loads, brokers and pages" className="h-12 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted" />
+          {found.loading && <span className="font-mono text-xs text-muted">Searching</span>}
           <Keycap>Esc</Keycap>
         </div>
         <ul ref={listRef} id="cmd-list" role="listbox" aria-label="Results" className="max-h-[56vh] overflow-y-auto p-2">

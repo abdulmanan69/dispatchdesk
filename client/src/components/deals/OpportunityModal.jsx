@@ -4,50 +4,67 @@ import { useQuery } from '@tanstack/react-query';
 import { BadgeCheck, Trash2, Phone, Mail, ExternalLink } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
-import { dateTime, label, phoneFmt, relative, toLocalInput, PRESETS } from '../../lib/format.js';
+import { dateTime, label, phoneFmt, relative, PRESETS } from '../../lib/format.js';
 import { Badge, Button, Checkbox, ComboInput, Field, Input, Loading, ErrorState, Select, Textarea } from '../ui.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
 import { CarrierPicker } from '../dispatch/Pickers.jsx';
 import { fromCents, toCents } from '../dispatch/calc.js';
+import ComposeModal from '../email/ComposeModal.jsx';
+import CarrierTimeInput from '../calling/CarrierTimeInput.jsx';
+import { tzOf } from '../calling/callWindow.js';
 
 export const OPP_STATUSES = ['open', 'negotiating', 'trial', 'won', 'lost'];
 export const OPP_COLOR = { open: 'blue', negotiating: 'amber', trial: 'violet', won: 'green', lost: 'red' };
-const inv = [['opportunities'], ['customers'], ['pipeline'], ['carriers'], ['dashboard']];
+const inv = [['opportunities'], ['customers'], ['pipeline'], ['carriers'], ['dashboard'], ['follow-ups']];
 
-function OppFields({ f, setF }) {
+/**
+ * Opportunity fields. `timezone` is the carrier's zone (tzOf): the next follow-up is typed in the carrier's local time
+ * when it differs from yours ("call me back Tuesday at 10" means their 10), and f.nextFollowUpAt holds an ISO string.
+ */
+function OppFields({ f, setF, timezone }) {
   const on = (k) => (e) => setF({ ...f, [k]: e.target.value });
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <Field label="Estimated monthly value ($)" hint="Expected dispatch revenue per month"><Input type="number" min="0" step="1" value={f.value} onChange={on('value')} /></Field>
       <Field label="Dispatch fee (%)"><Input type="number" min="0" max="100" step="0.1" value={f.dispatchFeePercent} onChange={on('dispatchFeePercent')} /></Field>
       <Field label="Probability (%)"><Input type="number" min="0" max="100" step="5" value={f.probability} onChange={on('probability')} /></Field>
-      <Field label="Next follow-up"><Input type="datetime-local" value={f.nextFollowUpAt} onChange={on('nextFollowUpAt')} /></Field>
+      <Field label="Next follow-up" hint="Adds a call follow-up with a reminder (Follow-ups page, call queue). Clearing it cancels that follow-up.">
+        {(id) => <CarrierTimeInput id={id} value={f.nextFollowUpAt} onChange={(v) => setF({ ...f, nextFollowUpAt: v })} timezone={timezone} aria-label="Next follow-up" />}
+      </Field>
       <Field label="Notes" className="sm:col-span-2"><Textarea rows={3} value={f.notes} onChange={on('notes')} maxLength={5000} /></Field>
     </div>
   );
 }
 
+/** ISO string for the follow-up input ('' when unset or invalid). */
+const isoOrEmpty = (v) => {
+  const d = v ? new Date(v) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString() : '';
+};
+
 const toBody = (f) => ({
   estimatedValueCents: toCents(f.value) ?? 0,
   dispatchFeePercent: f.dispatchFeePercent === '' ? null : f.dispatchFeePercent,
   probability: f.probability === '' ? null : f.probability,
-  nextFollowUpAt: f.nextFollowUpAt ? new Date(f.nextFollowUpAt).toISOString() : null,
+  nextFollowUpAt: isoOrEmpty(f.nextFollowUpAt) || null,
   notes: f.notes || null,
 });
 
 export function NewOpportunityModal({ open, onClose, carrier }) {
   const [carrierId, setCarrierId] = useState(carrier?.id || null);
+  // The picked carrier (state, stored time zone) sets the zone the follow-up time is typed in.
+  const [picked, setPicked] = useState(carrier || null);
   const [f, setF] = useState({ value: '', dispatchFeePercent: '', probability: '25', nextFollowUpAt: '', notes: '' });
-  useEffect(() => { if (open) { setCarrierId(carrier?.id || null); setF({ value: '', dispatchFeePercent: '', probability: '25', nextFollowUpAt: '', notes: '' }); } }, [open, carrier]);
+  useEffect(() => { if (open) { setCarrierId(carrier?.id || null); setPicked(carrier || null); setF({ value: '', dispatchFeePercent: '', probability: '25', nextFollowUpAt: '', notes: '' }); } }, [open, carrier]);
   const create = useApiMutation((body) => api.post('/api/opportunities', body), { success: 'Opportunity created', invalidate: inv, onSuccess: onClose });
   return (
     <Modal open={open} onClose={onClose} title="New opportunity"
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={create.isPending} disabled={!carrierId} onClick={() => create.mutate({ carrierId, ...toBody(f) })}>Create opportunity</Button></>}>
       <div className="space-y-3">
         <Field label="Carrier" required hint="Opening an opportunity moves the carrier to the Opportunities stage.">
-          <CarrierPicker value={carrierId} initialLabel={carrier?.companyName} onChange={(v) => setCarrierId(v)} />
+          <CarrierPicker value={carrierId} initialLabel={carrier?.companyName} onChange={(v, c) => { setCarrierId(v); setPicked(v ? c || null : null); }} />
         </Field>
-        <OppFields f={f} setF={setF} />
+        <OppFields f={f} setF={setF} timezone={tzOf(picked)} />
       </div>
     </Modal>
   );
@@ -60,9 +77,10 @@ export function OpportunityModal({ id, onClose }) {
   const q = useQuery({ queryKey: ['opportunities', 'detail', id], queryFn: () => api.get(`/api/opportunities/${id}`), enabled: !!id });
   const [f, setF] = useState(null);
   const [lost, setLost] = useState({ open: false, reason: '', archive: false });
+  const [requesting, setRequesting] = useState(false);
   useEffect(() => {
     const o = q.data?.opportunity;
-    if (o) setF({ value: fromCents(o.estimatedValueCents), dispatchFeePercent: o.dispatchFeePercent ?? '', probability: String(o.probability), nextFollowUpAt: toLocalInput(o.nextFollowUpAt), notes: o.notes || '', status: o.status });
+    if (o) setF({ value: fromCents(o.estimatedValueCents), dispatchFeePercent: o.dispatchFeePercent ?? '', probability: String(o.probability), nextFollowUpAt: isoOrEmpty(o.nextFollowUpAt), notes: o.notes || '', status: o.status });
   }, [q.data]);
   const save = useApiMutation((body) => api.patch(`/api/opportunities/${id}`, body), { success: 'Opportunity saved', invalidate: inv });
   const convert = useApiMutation(() => api.post(`/api/opportunities/${id}/convert`, { dispatchFeePercent: f?.dispatchFeePercent === '' ? null : f?.dispatchFeePercent }), {
@@ -90,6 +108,12 @@ export function OpportunityModal({ id, onClose }) {
             {o.carrier.email && <span className="inline-flex items-center gap-1 text-muted"><Mail className="size-3.5" />{o.carrier.email}</span>}
             <Link to={`/app/carriers/${o.carrier.id}`} className="ml-auto inline-flex items-center gap-1 text-brand-700 hover:underline dark:text-brand-300">Carrier profile <ExternalLink className="size-3.5" /></Link>
           </div>
+          {!closed && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-surface-2/40 px-3 py-2 text-sm">
+              <span className="min-w-0 flex-1 text-muted">Ready to sign? Ask for the agreement, W-9, insurance and authority in one email from your mailbox.</span>
+              <Button size="sm" variant="secondary" icon={Mail} onClick={() => setRequesting(true)}>Request onboarding documents</Button>
+            </div>
+          )}
           {o.lostReason && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">Lost: {o.lostReason}</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Stage">
@@ -98,7 +122,7 @@ export function OpportunityModal({ id, onClose }) {
               </Select>
             </Field>
           </div>
-          <OppFields f={f} setF={setF} />
+          <OppFields f={f} setF={setF} timezone={tzOf(o.carrier)} />
 
           <section>
             <h3 className="mb-2 text-sm font-medium">Contact history</h3>
@@ -127,6 +151,27 @@ export function OpportunityModal({ id, onClose }) {
           <Checkbox label="Also archive this carrier" checked={lost.archive} onChange={(e) => setLost({ ...lost, archive: e.target.checked })} />
         </div>
       </Modal>
+      {o && (
+        <ComposeModal open={requesting} onClose={() => setRequesting(false)} carrierId={o.carrier.id} toEmail={o.carrier.email || ''} templateCategory="carrier"
+          subject="Getting set up: documents for dispatch" body={onboardingBody(f?.dispatchFeePercent)} />
+      )}
     </Modal>
   );
+}
+
+/** One email asking a carrier that is ready to sign for its onboarding paperwork (the user reviews and sends it). */
+export function onboardingBody(feePercent) {
+  const fee = feePercent !== '' && feePercent != null ? ` at the ${feePercent}% dispatch fee we discussed` : '';
+  return [
+    'Hi {{first_name}},',
+    '',
+    `Thanks for talking with us. To start dispatching your truck${fee}, please send:`,
+    '- The signed dispatch agreement',
+    '- W-9',
+    '- Certificate of insurance',
+    '- MC authority letter',
+    '- Your factoring company and notice of assignment, if you factor',
+    '',
+    'A photo or PDF reply to this email is fine. Thank you.',
+  ].join('\n');
 }

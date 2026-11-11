@@ -5,7 +5,7 @@ import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../Toast.jsx';
 import { Modal } from '../Modal.jsx';
-import { Button, Field, Input, Select, cx } from '../ui.jsx';
+import { Button, Field, Input, Select, Switch, cx } from '../ui.jsx';
 
 /** Monochrome letter mark used instead of provider logos. */
 export function ProviderMark({ name, className }) {
@@ -62,7 +62,7 @@ function Picker({ options, onPick }) {
           ))}
         </div>
       </section>
-      <p className="flex items-start gap-2 text-xs text-muted"><ShieldCheck className="mt-0.5 size-3.5 shrink-0" />Passwords and tokens are encrypted at rest and never shown again. Sign-in connections only get permission to send mail.</p>
+      <p className="flex items-start gap-2 text-xs text-muted"><ShieldCheck className="mt-0.5 size-3.5 shrink-0" />Passwords and tokens are encrypted at rest and never shown again. Sign-in connections only get permission to send mail, so reply and bounce detection needs an app-password connection.</p>
     </div>
   );
 }
@@ -84,11 +84,13 @@ function OAuthUnavailable({ oauth, options, onPick }) {
 }
 
 const SECURITY = [['ssl', 'SSL/TLS (usually port 465)'], ['starttls', 'STARTTLS (usually port 587)']];
+const IMAP_SECURITY = [['ssl', 'SSL/TLS (port 993)'], ['starttls', 'STARTTLS (port 143)']];
 
 function SmtpStep({ preset, onDone }) {
   const [f, setF] = useState({
     fromEmail: '', fromName: '', password: '', label: '', host: preset.host, port: String(preset.port), security: preset.secure ? 'ssl' : 'starttls',
     user: '', dailyLimit: String(preset.dailyLimit || 50), cooldownSeconds: '30',
+    imap: false, imapHost: preset.imap?.host || '', imapSecurity: preset.imap?.secure === false ? 'starttls' : 'ssl',
   });
   const [advanced, setAdvanced] = useState(preset.key === 'smtp');
   const [check, setCheck] = useState(null);
@@ -97,6 +99,7 @@ function SmtpStep({ preset, onDone }) {
     provider: preset.key, fromEmail: f.fromEmail.trim(), fromName: f.fromName || undefined, password: f.password, label: f.label || undefined,
     host: f.host || undefined, port: Number(f.port) || undefined, secure: f.security === 'ssl', user: f.user || undefined,
     dailyLimit: Number(f.dailyLimit) || 50, cooldownSeconds: Number(f.cooldownSeconds) || 0,
+    ...(f.imap ? { imapEnabled: true, imapHost: f.imapHost.trim(), imapPort: f.imapSecurity === 'ssl' ? 993 : 143, imapSecure: f.imapSecurity === 'ssl' } : {}),
   });
   const verify = useApiMutation((b) => api.post('/api/email/accounts/smtp/verify', b), {
     onSuccess: (d) => setCheck({ ok: true, message: d.message }),
@@ -108,7 +111,7 @@ function SmtpStep({ preset, onDone }) {
     onSuccess: onDone,
     onError: (e) => setCheck({ ok: false, message: e.message }),
   });
-  const ready = f.fromEmail.trim() && f.password && (f.host || preset.host);
+  const ready = f.fromEmail.trim() && f.password && (f.host || preset.host) && (!f.imap || f.imapHost.trim());
   return (
     <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); if (ready) connect.mutate(body()); }}>
       <div className="flex items-start gap-3">
@@ -150,6 +153,19 @@ function SmtpStep({ preset, onDone }) {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-line p-4">
+        <Switch checked={f.imap} onChange={(v) => { setCheck(null); setF((x) => ({ ...x, imap: v })); }}
+          label={<span className="text-[13px] font-medium">Detect replies and bounces</span>} />
+        <p className="text-xs text-muted">Optional. Every few minutes the app reads new inbox messages over IMAP with the same password; nothing is marked read or sent. A reply stops that carrier&apos;s sequence and a bounce adds the address to your do-not-email list.</p>
+        {f.imap && (
+          <div className="grid gap-3 sm:grid-cols-[1fr_200px]">
+            <Field label="IMAP server" required><Input value={f.imapHost} onChange={set('imapHost')} placeholder="imap.example.com" autoComplete="off" /></Field>
+            <Field label="Security"><Select value={f.imapSecurity} onChange={set('imapSecurity')}>{IMAP_SECURITY.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
+          </div>
+        )}
+        {f.imap && preset.imap?.note && <p className="flex items-start gap-2 text-xs text-muted"><Info className="mt-0.5 size-3.5 shrink-0" />{preset.imap.note}</p>}
       </div>
 
       {check && (
