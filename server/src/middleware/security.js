@@ -14,7 +14,7 @@ export const CSRF_COOKIE = 'dd_csrf';
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Endpoints authenticated by other means (signatures) are exempt.
 // Twilio callbacks are authenticated by X-Twilio-Signature instead.
-const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//, /^\/api\/public\/track\//, /^\/api\/public\/load-track\//, /^\/api\/public\/portal\//, /^\/api\/public\/calendar\//]; // track: the secret link token is the credential
+const EXEMPT = [/^\/api\/billing\/webhook$/, /^\/api\/public\/unsubscribe/, /^\/api\/telephony\/twilio\//, /^\/api\/public\/track\//, /^\/api\/public\/load-track\//, /^\/api\/public\/portal\//, /^\/api\/public\/calendar\//, /^\/api\/public\/onboarding\//]; // track: the secret link token is the credential
 
 /** Lower-case path with repeated slashes collapsed, for security checks that must not be skipped by case or slash tricks. */
 export const normalizedPath = (req) => String(req.path || '').toLowerCase().replace(/\/{2,}/g, '/');

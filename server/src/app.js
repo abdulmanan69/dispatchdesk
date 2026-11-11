@@ -63,6 +63,9 @@ import calendarFeedRoutes from './routes/calendarFeed.js';
 import todayRoutes from './routes/today.js';
 import authorityKitRoutes from './routes/authorityKit.js';
 import truckPostRoutes from './routes/truckPosts.js';
+import onboardingLinkRoutes from './routes/onboardingLinks.js';
+import publicOnboardingRoutes from './routes/publicOnboarding.js';
+import planEtaRoutes from './routes/planEta.js';
 import onboardingRoutes from './routes/onboarding.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -171,9 +174,9 @@ export function createApp() {
   // After the session is known, so each signed-in user (or API token) has its own budget even behind one office NAT.
   // Secret-link endpoints are budgeted per link instead (the driver link has its own limiter in routes/track.js).
   app.use('/api', apiLimiter);
-  app.use(/^\/api\/public\/(load-track|portal|calendar)(?=\/)/, publicLinkLimiter);
+  app.use(/^\/api\/public\/(load-track|portal|calendar|onboarding)(?=\/)/, publicLinkLimiter);
   // Per address, counting only unknown or expired links: guessing tokens cannot get a fresh bucket per guess.
-  app.use(/^\/api\/public\/(track|load-track|portal|calendar)(?=\/)/, linkMissLimiter);
+  app.use(/^\/api\/public\/(track|load-track|portal|calendar|onboarding)(?=\/)/, linkMissLimiter);
   app.use(forApi(requireVerifiedEmail));
 
   app.get('/api/health', async (req, res) => {
@@ -191,6 +194,7 @@ export function createApp() {
   app.use('/api/public/load-track', loadTrackRoutes); // broker/shipper tracking links (token in URL, no session)
   app.use('/api/public/portal', portalRoutes); // carrier portal links (token in URL, no session)
   app.use('/api/public/calendar', calendarFeedRoutes); // private iCalendar feeds (token in URL, no session)
+  app.use('/api/public/onboarding', publicOnboardingRoutes); // carrier onboarding + e-signature links (token in URL, no session)
   app.use('/api/public', publicRoutes);
   app.use('/api/billing', billingRoutes); // /plans is public, the rest checks auth itself
   app.use('/api/training', trainingRoutes); // catalogue + request form are public
@@ -236,6 +240,8 @@ export function createApp() {
   app.use('/api/authority-kit', requireAuth, authorityKitRoutes);
   app.use('/api/truck-posts', requireAuth, truckPostRoutes);
   app.use('/api/onboarding', requireAuth, onboardingRoutes);
+  app.use('/api/onboarding-links', requireAuth, onboardingLinkRoutes);
+  app.use('/api/plan-eta', requireAuth, planEtaRoutes);
 
   app.use('/api', notFoundApi);
 

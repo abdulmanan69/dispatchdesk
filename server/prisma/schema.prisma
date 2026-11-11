@@ -62,6 +62,9 @@ model User {
   calendarTokenHash String?   @unique // private iCalendar feed (sha256 of the token)
   notifyPush        Boolean   @default(true)
   notifyDigest      Boolean   @default(true) // one daily email digest instead of per-reminder emails
+  pushPrefs         String? // JSON { "<notification type>": false } per type; a missing type is on
+  companyName       String? // fills {{my_company}} in templates for users without a team
+  agreementTemplate String? // last dispatch agreement text used for onboarding links
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -102,6 +105,7 @@ model User {
   loadEvents         LoadEvent[]
   loadShares         LoadShare[]
   documents          Document[]            @relation("DocumentOwner")
+  onboardingLinks    OnboardingLink[]
   uploadedDocuments  Document[]            @relation("DocumentUploader")
   trainingCourses    TrainingCourse[]
   trainingProgress   TrainingProgress[]
@@ -126,6 +130,7 @@ model User {
 
   @@index([roleId])
   @@index([createdAt])
+  @@index([timezone])
 }
 
 model Session {
@@ -357,25 +362,26 @@ model Carrier {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  owner          User                 @relation("CarrierOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  assignedTo     User?                @relation("CarrierAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  stage          PipelineStage        @relation(fields: [stageId], references: [id])
-  contacts       CarrierContact[]
-  notes          CarrierNote[]
-  tags           CarrierTag[]
-  opportunity    Opportunity?
-  customer       Customer?
-  calls          Call[]
-  callAttempts   CallAttempt[]
-  emails         Email[]
-  enrollments    SequenceEnrollment[]
-  followUps      FollowUp[]
-  activities     Activity[]
-  loads          Load[]
-  documents      Document[]
-  listItems      ProspectListItem[]
-  locationShares LocationShare[]
-  invoices       Invoice[]
+  owner           User                 @relation("CarrierOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  assignedTo      User?                @relation("CarrierAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  stage           PipelineStage        @relation(fields: [stageId], references: [id])
+  contacts        CarrierContact[]
+  notes           CarrierNote[]
+  tags            CarrierTag[]
+  opportunity     Opportunity?
+  customer        Customer?
+  calls           Call[]
+  callAttempts    CallAttempt[]
+  emails          Email[]
+  enrollments     SequenceEnrollment[]
+  followUps       FollowUp[]
+  activities      Activity[]
+  loads           Load[]
+  documents       Document[]
+  onboardingLinks OnboardingLink[]
+  listItems       ProspectListItem[]
+  locationShares  LocationShare[]
+  invoices        Invoice[]
 
   @@unique([ownerId, dotNumber])
   @@unique([ownerId, mcNumber])
@@ -386,6 +392,7 @@ model Carrier {
   @@index([state])
   @@index([ownerId, createdAt])
   @@index([ownerId, isFleet])
+  @@index([ownerId, email])
 }
 
 model CarrierContact {
@@ -401,6 +408,7 @@ model CarrierContact {
   carrier   Carrier  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
 
   @@index([carrierId])
+  @@index([email])
 }
 
 model CarrierNote {
@@ -715,6 +723,7 @@ model EmailAccount {
   emails          Email[]
 
   @@index([userId])
+  @@index([imapEnabled, status])
 }
 
 model EmailTemplate {
@@ -779,6 +788,7 @@ model Email {
   @@index([brokerId])
   @@index([userId, updatedAt])
   @@index([messageId])
+  @@index([userId, repliedAt])
 }
 
 model EmailSuppression {
@@ -884,6 +894,8 @@ model Broker {
   invoices         Invoice[]
 
   @@index([ownerId, companyName])
+  @@index([ownerId, mcNumber])
+  @@index([watch, id])
 }
 
 model Load {
@@ -917,7 +929,7 @@ model Load {
   fitWarnings         String? // JSON warnings from the carrier-rules check at save time
   fitAckAt            DateTime?
   fitAckById          String?
-  routeGeometry       String? // encoded polyline of the road route (pickup -> delivery)
+  routeGeometry       String? // DEPRECATED: moved to LoadRoute.geometry (kept so old rows need no table rebuild; always null now)
   routeMiles          Float?
   routeMinutes        Int?
   routeSource         String? // osrm | estimate
@@ -946,6 +958,7 @@ model Load {
   events              LoadEvent[]
   shares              LoadShare[]
   invoices            Invoice[]
+  route               LoadRoute?
 
   @@index([ownerId, status])
   @@index([brokerId])
@@ -953,6 +966,7 @@ model Load {
   @@index([ownerId, originState, destState])
   @@index([ownerId, pickupDate])
   @@index([ownerId, deliveryDate])
+  @@index([ownerId, referenceNumber])
 }
 
 model Document {
@@ -980,6 +994,48 @@ model Document {
   @@index([loadId])
   @@index([uploadedById])
   @@index([expiresAt])
+}
+
+/// Road route geometry for a load, kept out of the Load row so load lists and joins stay small.
+model LoadRoute {
+  loadId    String   @id
+  geometry  String // encoded polyline (pickup -> delivery)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  load      Load     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+}
+
+/// Carrier onboarding link: the carrier reads and e-signs the dispatch agreement and uploads W9 / COI / MC authority.
+/// Only the sha256 of the token is stored. The signed text is snapshotted with its hash for the audit trail.
+model OnboardingLink {
+  id              String    @id @default(cuid())
+  ownerId         String
+  carrierId       String
+  tokenHash       String    @unique
+  status          String    @default("pending") // pending | signed | revoked
+  agreementTitle  String
+  agreementBody   String // exact text shown to the carrier
+  agreementHash   String // sha256 of agreementBody
+  feePercent      Float?
+  requestedDocs   String? // comma list: w9,coi,mc_authority,voided_check
+  viewedAt        DateTime?
+  consentAt       DateTime? // agreed to sign electronically (ESIGN / UETA)
+  signerName      String?
+  signerTitle     String?
+  signerEmail     String?
+  signatureData   String? // typed name, or a drawn signature as compact SVG path data
+  signedAt        DateTime?
+  signerIp        String?
+  signerUserAgent String?
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  owner           User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  carrier         Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, status])
+  @@index([carrierId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1134,7 @@ model MarketplaceListing {
   websiteUrl   String?
   imagePath    String?
   status       String               @default("active") // active | hidden | removed
+  sizeBytes    Int                  @default(0) // stored image bytes, summed for the storage quota
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
   seller       User                 @relation(fields: [sellerId], references: [id], onDelete: Cascade)
@@ -1200,6 +1257,7 @@ model AIMessage {
 model AIKnowledgeDocument {
   id           String             @id @default(cuid())
   ownerId      String
+  sizeBytes    Int                @default(0) // stored file size, so storage use is one SUM instead of reading the disk
   scope        String             @default("private") // private (owner only) | global (admin-approved, everyone)
   approved     Boolean            @default(true)
   title        String

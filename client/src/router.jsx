@@ -17,6 +17,7 @@ export const router = createBrowserRouter([
   { path: '/track/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/track/DriverTrack.jsx')) },
   { path: '/t/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/track/LoadTrack.jsx')) },
   { path: '/portal/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/portal/CarrierPortal.jsx')) },
+  { path: '/onboard/:token', errorElement: <RouteError />, hydrateFallbackElement: boot, lazy: page(() => import('./pages/onboard/CarrierOnboarding.jsx')) },
   {
     lazy: layout(() => import('./layouts/PublicLayout.jsx')),
     errorElement: <RouteError />,
