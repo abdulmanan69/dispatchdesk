@@ -14,6 +14,7 @@ import {
 } from '../services/fleet/track.js';
 import { truckUpdateForTrip, TRIP_FLOW, nearestPlace, pointFor, routeIsCurrent } from '../services/fleet/index.js';
 import { measuredRoute, projectOnRoute, OFF_ROUTE_MILES } from '../services/fleet/progress.js';
+import { withRouteGeometry } from '../services/fleet/route.js';
 import { normalizeClocks, hoursText } from '../services/fleet/hos.js';
 import { recordLoadEvent } from '../services/fleet/events.js';
 import { invalidateToday } from '../services/fleet/today.js';
@@ -248,9 +249,12 @@ const pingSchema = z.object({
 const isLegacy = (share) => !share.deviceHash && !share.firstBoundAt && !!share.consentAt;
 
 /** Distance (miles) from the trip's road route, when the trip is in transit and has a current road route. */
-function offRouteMiles(trip, fix) {
-  if (trip?.status !== 'in_transit' || trip.routeSource !== 'osrm' || !routeIsCurrent(trip)) return null;
-  const snap = projectOnRoute(measuredRoute(trip), fix);
+async function offRouteMiles(trip, fix) {
+  if (trip?.status !== 'in_transit' || trip.routeSource !== 'osrm') return null;
+  // The road route's shape lives in LoadRoute: one primary-key read, only for in-transit trips with a road route.
+  const [routed] = await withRouteGeometry([trip]);
+  if (!routeIsCurrent(routed)) return null;
+  const snap = projectOnRoute(measuredRoute(routed), fix);
   return snap ? snap.offMiles : null;
 }
 
@@ -272,7 +276,7 @@ r.post('/:token/ping', ah(async (req, res) => {
 
   const trip = await tripFor(share);
   // Road-route distance is plain in-process math on the stored route: no routing call per ping.
-  const off = offRouteMiles(trip, p);
+  const off = await offRouteMiles(trip, p);
   const tripPts = trip && {
     status: trip.status,
     origin: pointFor(trip.originCity, trip.originState, trip.originLat, trip.originLng),

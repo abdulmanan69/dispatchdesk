@@ -1,5 +1,5 @@
 import { prisma } from '../../db.js';
-import { ensureLoadRoute } from '../../services/fleet/route.js';
+import { ensureLoadRoute, withRouteGeometry } from '../../services/fleet/route.js';
 import { routable } from '../../services/fleet/index.js';
 
 /**
@@ -12,14 +12,17 @@ import { routable } from '../../services/fleet/index.js';
  *   Loads with a stop known only by its state are marked routeSource 'none' and left as straight estimates.
  *   It walks users with a saved cursor (a few hundred per step, through the Load(ownerId, status) index) and stops as
  *   soon as it has enough candidates, so a run never reads or sorts every active load on the platform.
- * - route-geometry-cleanup: clears the stored road polyline of finished and canceled loads (status changes in the app
- *   already do; this catches the rest and older rows), in small rowid batches with a saved cursor and a time budget.
+ * - route-geometry-cleanup: deletes the stored road polyline (LoadRoute row) of finished and canceled loads (status
+ *   changes in the app already do; this catches the rest and older rows), walking LoadRoute in small rowid batches
+ *   with a saved cursor and a time budget.
  */
 const MIN = 60_000;
 const BACKFILL_KEY = 'fleet.backfill.isFleet';
 const ROUTES_KEY = 'fleet.routes.cursor';
 const CLEANUP_KEY = 'fleet.routes.cleanup';
 const BATCH = 2000;
+// LoadRoute rows are 10-20 KB each: smaller delete batches keep each write lock short.
+const ROUTE_BATCH = 500;
 const ACTIVE = ['planned', 'booked', 'in_transit'];
 const FINISHED = ['delivered', 'invoiced', 'paid', 'canceled'];
 
@@ -112,10 +115,11 @@ export async function refreshRoutes(now = new Date(), { maxLoads = 8, budgetMs =
   const stateOnly = loads.filter((l) => !routable(l)).map((l) => l.id);
   if (stateOnly.length) await prisma.load.updateMany({ where: { id: { in: stateOnly } }, data: { routeSource: 'none', routeComputedAt: now } });
   const skip = new Set(stateOnly);
-  const due = loads
+  // The stored shapes of the batch in one query (ensureLoadRoute compares them with the stops).
+  const due = await withRouteGeometry(loads
     .filter((l) => !skip.has(l.id))
     .sort((a, b) => lastTry(a) - lastTry(b) || new Date(a.createdAt) - new Date(b.createdAt))
-    .slice(0, maxLoads);
+    .slice(0, maxLoads));
   let computed = 0;
   let roads = 0;
   for (const l of due) {
@@ -130,8 +134,8 @@ export async function refreshRoutes(now = new Date(), { maxLoads = 8, budgetMs =
 }
 
 /**
- * Clear routeGeometry on finished and canceled loads, walking Load by rowid from a saved cursor (wraps around). Miles,
- * minutes and the route source stay. Returns { cleared, after, wrapped }.
+ * Delete the stored road route (LoadRoute row) of finished and canceled loads, walking LoadRoute by rowid from a saved
+ * cursor (wraps around). Miles, minutes and the route source stay on the Load. Returns { cleared, after, wrapped }.
  */
 export async function clearFinishedGeometry({ budgetMs = 3000 } = {}) {
   const state = await readState(CLEANUP_KEY);
@@ -141,10 +145,12 @@ export async function clearFinishedGeometry({ budgetMs = 3000 } = {}) {
   let wrapped = false;
   const statuses = FINISHED.map((x) => `'${x}'`).join(', ');
   while (Date.now() - started < budgetMs) {
-    const [{ last } = {}] = await prisma.$queryRawUnsafe(`SELECT MAX(rid) AS "last" FROM (SELECT rowid AS rid FROM "Load" WHERE rowid > ? ORDER BY rowid LIMIT ${BATCH})`, after);
+    const [{ last } = {}] = await prisma.$queryRawUnsafe(`SELECT MAX(rid) AS "last" FROM (SELECT rowid AS rid FROM "LoadRoute" WHERE rowid > ? ORDER BY rowid LIMIT ${ROUTE_BATCH})`, after);
     if (last == null) { after = 0; wrapped = true; break; }
+    // One primary-key lookup on Load per route row (correlated EXISTS, never a scan of all finished loads).
     cleared += Number(await prisma.$executeRawUnsafe(
-      `UPDATE "Load" SET "routeGeometry" = NULL WHERE rowid > ? AND rowid <= ? AND "status" IN (${statuses}) AND "routeGeometry" IS NOT NULL`,
+      `DELETE FROM "LoadRoute" WHERE rowid > ? AND rowid <= ?
+         AND EXISTS (SELECT 1 FROM "Load" l WHERE l."id" = "LoadRoute"."loadId" AND l."status" IN (${statuses}))`,
       after, Number(last),
     ));
     after = Number(last);

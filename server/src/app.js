@@ -108,7 +108,9 @@ export function createApp() {
       useDefaults: true,
       directives: {
         'default-src': ["'self'"],
-        'script-src': ["'self'"],
+        // 'wasm-unsafe-eval' lets WebAssembly compile (in-browser OCR of scanned rate cons, pdf.js image decoders);
+        // it does not allow eval() or inline scripts. Scripts still come only from this origin.
+        'script-src': ["'self'", "'wasm-unsafe-eval'"],
         'style-src': ["'self'", "'unsafe-inline'"],
         'font-src': ["'self'", 'data:'], // fonts are self-hosted under /assets
         'img-src': ["'self'", 'data:', 'blob:', 'https:'],
@@ -141,6 +143,14 @@ export function createApp() {
     let buildId = 'dev';
     try { buildId = String(Math.round(fs.statSync(path.join(CLIENT_DIST, 'index.html')).mtimeMs)); } catch { /* no index.html */ }
     precompressInBackground(assetsDir, buildId, assets);
+    // The in-browser OCR engine (client/public/ocr, ~8 MB of JS) has fixed file names, so it gets a 1-day cache
+    // instead of the immutable one, and is served from .br/.gz copies instead of being gzipped on every download.
+    const ocrDir = path.join(CLIENT_DIST, 'ocr');
+    if (fs.existsSync(ocrDir)) {
+      const ocr = precompressedAssets(ocrDir, { cacheControl: 'public, max-age=86400' });
+      app.use('/ocr', ocr);
+      precompressInBackground(ocrDir, `${buildId}-ocr`, ocr);
+    }
   }
 
   // gzip JSON and static assets (skips already-compressed types and server-sent streams).

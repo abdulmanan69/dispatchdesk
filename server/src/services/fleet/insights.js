@@ -1,7 +1,7 @@
 import { prisma } from '../../db.js';
 import { routeIsCurrent } from './index.js';
 import { measuredRoute, paceFromPings, planTruck, hosFromEvent, dwellFromEvents } from './progress.js';
-import { scheduleLoadRoute } from './route.js';
+import { scheduleLoadRoute, withRouteGeometry } from './route.js';
 
 /**
  * Database-backed inputs for trip plans (ETAs, risk, hours of service), check-call status and detention.
@@ -100,21 +100,25 @@ export async function stopEvents(loadIds) {
 export async function plansFor(carriers, { now = Date.now(), withEvents = true } = {}) {
   const withTrips = carriers.filter((c) => (c.loads || []).some((l) => ACTIVE.includes(l.status)));
   if (!withTrips.length) return {};
-  const loadIds = withTrips.flatMap((c) => c.loads.filter((l) => ACTIVE.includes(l.status)).map((l) => l.id));
+  const activeLoads = withTrips.flatMap((c) => c.loads.filter((l) => ACTIVE.includes(l.status)));
+  const loadIds = activeLoads.map((l) => l.id);
   const liveShares = withTrips.map((c) => (c.locationShares || [])[0]).filter((s) => s && s.status === 'sharing');
-  const [hos, paces, events] = await Promise.all([
+  const [hos, paces, events, routed] = await Promise.all([
     latestHos(loadIds),
     pacesFor(liveShares.map((s) => s.id), now),
     withEvents ? stopEvents(loadIds) : Promise.resolve({}),
+    // Road route shapes (LoadRoute) in one query, for rows that were read without them.
+    withRouteGeometry(activeLoads),
   ]);
+  const withShape = new Map(routed.map((l) => [l.id, l]));
   const out = {};
   for (const c of withTrips) {
-    const trips = c.loads.filter((l) => ACTIVE.includes(l.status)).sort(tripOrder);
+    const trips = c.loads.filter((l) => ACTIVE.includes(l.status)).map((l) => withShape.get(l.id) || l).sort(tripOrder);
     const routes = {};
     for (const l of trips) {
       if (routeIsCurrent(l)) routes[l.id] = measuredRoute(l);
       // Pickup or delivery moved on another page: the stored road route is stale, so work it out again (bounded queue).
-      else if (l.routeGeometry) scheduleLoadRoute(l);
+      else if (l.route) scheduleLoadRoute(l);
     }
     // Hours belong to the driver: the newest report on any of the truck's loads counts.
     const report = trips.map((l) => hos[l.id]).filter(Boolean).sort((a, b) => b.at - a.at)[0] || null;

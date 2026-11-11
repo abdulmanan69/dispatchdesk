@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { BadgeCheck, Trash2, Phone, Mail, ExternalLink } from 'lucide-react';
+import { BadgeCheck, Trash2, Phone, Mail, ExternalLink, FileSignature } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { dateTime, label, phoneFmt, relative, PRESETS } from '../../lib/format.js';
@@ -12,6 +12,8 @@ import { fromCents, toCents } from '../dispatch/calc.js';
 import ComposeModal from '../email/ComposeModal.jsx';
 import CarrierTimeInput from '../calling/CarrierTimeInput.jsx';
 import { tzOf } from '../calling/callWindow.js';
+import OnboardingLinkModal from '../onboarding/OnboardingLinkModal.jsx';
+import OnboardingPanel from '../onboarding/OnboardingPanel.jsx';
 
 export const OPP_STATUSES = ['open', 'negotiating', 'trial', 'won', 'lost'];
 export const OPP_COLOR = { open: 'blue', negotiating: 'amber', trial: 'violet', won: 'green', lost: 'red' };
@@ -78,6 +80,7 @@ export function OpportunityModal({ id, onClose }) {
   const [f, setF] = useState(null);
   const [lost, setLost] = useState({ open: false, reason: '', archive: false });
   const [requesting, setRequesting] = useState(false);
+  const [agreement, setAgreement] = useState(false);
   useEffect(() => {
     const o = q.data?.opportunity;
     if (o) setF({ value: fromCents(o.estimatedValueCents), dispatchFeePercent: o.dispatchFeePercent ?? '', probability: String(o.probability), nextFollowUpAt: isoOrEmpty(o.nextFollowUpAt), notes: o.notes || '', status: o.status });
@@ -110,10 +113,14 @@ export function OpportunityModal({ id, onClose }) {
           </div>
           {!closed && (
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-surface-2/40 px-3 py-2 text-sm">
-              <span className="min-w-0 flex-1 text-muted">Ready to sign? Ask for the agreement, W-9, insurance and authority in one email from your mailbox.</span>
-              <Button size="sm" variant="secondary" icon={Mail} onClick={() => setRequesting(true)}>Request onboarding documents</Button>
+              <span className="min-w-0 flex-1 text-muted">Ready to sign? Send the dispatch agreement to e-sign with a document upload link, or ask for the paperwork in one email from your mailbox.</span>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" icon={FileSignature} onClick={() => setAgreement(true)}>Send agreement to sign</Button>
+                <Button size="sm" variant="secondary" icon={Mail} onClick={() => setRequesting(true)}>Request onboarding documents</Button>
+              </div>
             </div>
           )}
+          <OnboardingPanel carrier={o.carrier} showCreate={false} hideWhenEmpty title="Agreement links" />
           {o.lostReason && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">Lost: {o.lostReason}</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Stage">
@@ -151,6 +158,10 @@ export function OpportunityModal({ id, onClose }) {
           <Checkbox label="Also archive this carrier" checked={lost.archive} onChange={(e) => setLost({ ...lost, archive: e.target.checked })} />
         </div>
       </Modal>
+      {o && (
+        <OnboardingLinkModal open={agreement} onClose={() => setAgreement(false)} carrier={o.carrier}
+          feePercent={f?.dispatchFeePercent === '' || f?.dispatchFeePercent == null ? null : f.dispatchFeePercent} />
+      )}
       {o && (
         <ComposeModal open={requesting} onClose={() => setRequesting(false)} carrierId={o.carrier.id} toEmail={o.carrier.email || ''} templateCategory="carrier"
           subject="Getting set up: documents for dispatch" body={onboardingBody(f?.dispatchFeePercent)} />

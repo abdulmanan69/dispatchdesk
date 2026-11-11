@@ -12,6 +12,8 @@ import { encrypt, decrypt } from '../lib/crypto.js';
  * - notify() calls enqueuePush(). Each worker keeps a small bounded queue and sends in batches (debounced 1.5 s), at
  *   most 10 requests at a time. Within a batch, notifications of the same user and type collapse into one push. The
  *   queue is best-effort: a lost push never loses the in-app notification, which is the record.
+ * - Each batch reads the users' push settings (User.notifyPush and the per-category User.pushPrefs, see
+ *   PUSH_CATEGORIES) from the database, so settings changed on any worker apply at once without cache invalidation.
  * - Subscriptions that answer 404/410 are deleted; other failures count up and the subscription is deleted after
  *   MAX_FAILURES in a row. A success resets the count.
  * - Endpoints must belong to a known browser push service (https, default port), so a crafted endpoint cannot make
@@ -20,6 +22,60 @@ import { encrypt, decrypt } from '../lib/crypto.js';
 
 export const MAX_DEVICES = 5;
 export const MAX_FAILURES = 5;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Push categories (per-type settings)
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * User-facing push categories and the notification types (notify() `type`) each covers. User.pushPrefs stores
+ * { "<category key>": false } for the categories turned off; a missing key means on. A type in no list falls under
+ * 'other'. Only the push is skipped: the in-app notification is always created.
+ */
+export const PUSH_CATEGORIES = Object.freeze([
+  { key: 'driver_issues', label: 'Driver issues and off-route alerts', types: ['fleet_issue'] },
+  { key: 'driver_updates', label: 'Driver check-ins and check calls due', types: ['fleet', 'check_call_due'] },
+  { key: 'email_replies', label: 'Email replies and bounces', types: ['email_reply', 'email_bounce', 'mailbox_required'] },
+  { key: 'follow_ups', label: 'Follow-ups due and missed calls', types: ['follow_up_due', 'call'] },
+  { key: 'invoices', label: 'Invoices past due', types: ['invoice_overdue'] },
+  { key: 'documents', label: 'Documents expiring', prefixes: ['document_expiring'] },
+  { key: 'fmcsa', label: 'FMCSA watchlist changes', types: ['fmcsa_change'] },
+  { key: 'onboarding', label: 'Carrier onboarding (signatures and documents)', types: ['onboarding'] },
+  { key: 'team', label: 'Team and assigned carriers', types: ['team', 'assignment'] },
+  { key: 'other', label: 'Everything else (billing, automations, lead generators, marketplace, community, training)' },
+]);
+export const PUSH_CATEGORY_KEYS = PUSH_CATEGORIES.map((c) => c.key);
+const TYPE_CATEGORY = new Map(PUSH_CATEGORIES.flatMap((c) => (c.types || []).map((t) => [t, c.key])));
+const PREFIX_CATEGORY = PUSH_CATEGORIES.flatMap((c) => (c.prefixes || []).map((p) => [p, c.key]));
+
+/** The push category of a notification type ('other' when it is in no list). */
+export function pushCategory(type) {
+  const t = String(type || '');
+  if (TYPE_CATEGORY.has(t)) return TYPE_CATEGORY.get(t);
+  const hit = PREFIX_CATEGORY.find(([p]) => t === p || t.startsWith(`${p}_`));
+  return hit ? hit[1] : 'other';
+}
+
+/** Set of category keys turned off in a User.pushPrefs value (unknown keys and bad JSON are ignored). */
+export function pushOffCategories(raw) {
+  if (!raw) return new Set();
+  let prefs;
+  try { prefs = JSON.parse(raw); } catch { return new Set(); }
+  if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return new Set();
+  return new Set(PUSH_CATEGORY_KEYS.filter((k) => prefs[k] === false));
+}
+
+/** Stored form of the off set: only categories turned off, null when everything is on. */
+export function serializePushPrefs(off) {
+  const keys = PUSH_CATEGORY_KEYS.filter((k) => off.has(k));
+  return keys.length ? JSON.stringify(Object.fromEntries(keys.map((k) => [k, false]))) : null;
+}
+
+/** { enabled, categories: [{ key, label, on }] } for GET/PUT /api/push/preferences. */
+export function pushPreferencesView(user) {
+  const off = pushOffCategories(user?.pushPrefs);
+  return { enabled: !!user?.notifyPush, categories: PUSH_CATEGORIES.map((c) => ({ key: c.key, label: c.label, on: !off.has(c.key) })) };
+}
 const MAX_QUEUE = 2000;
 const BATCH_SIZE = 100;
 const BATCH_DELAY_MS = 1500;
@@ -262,8 +318,15 @@ async function drain() {
     }
     const userIds = [...new Set(items.map((i) => i.userId))];
     if (!userIds.length) return;
+    // Push settings are read from the user rows on every batch (no cache), so a change made on any worker applies to
+    // the next batch everywhere. A category turned off skips only the push; the in-app notification already exists.
+    const users = await prisma.user.findMany({ where: { id: { in: userIds }, notifyPush: true, status: 'active' }, select: { id: true, pushPrefs: true } });
+    const offFor = new Map(users.map((u) => [u.id, pushOffCategories(u.pushPrefs)]));
+    items = items.filter((i) => offFor.has(i.userId) && !offFor.get(i.userId).has(pushCategory(i.type)));
+    const sendTo = [...new Set(items.map((i) => i.userId))];
+    if (!sendTo.length) return;
     const subs = await prisma.pushSubscription.findMany({
-      where: { userId: { in: userIds }, user: { notifyPush: true, status: 'active' } },
+      where: { userId: { in: sendTo } },
       orderBy: { createdAt: 'desc' }, select: subSelect,
     });
     if (!subs.length) return;

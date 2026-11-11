@@ -28,10 +28,17 @@ export const EARNED_STATUSES = ['delivered', 'invoiced', 'paid'];
 const BOOKED_STATUSES = ['booked', 'in_transit'];
 
 /** Compliance checklist from a carrier's documents: missing / on file / expiring / expired. */
-export function docChecklist(documents, now = new Date()) {
+/**
+ * Required-document checklist. `signed` (optional) is the latest e-signed onboarding link for the carrier
+ * ({ id, signedAt }): a dispatch agreement signed online counts as the agreement on file when no file was uploaded.
+ */
+export function docChecklist(documents, now = new Date(), signed = null) {
   return REQUIRED_DOCS.map((type) => {
     const docs = documents.filter((d) => d.type === type).sort((a, b) => b.createdAt - a.createdAt);
     const latest = docs[0];
+    if (type === 'agreement' && !latest && signed) {
+      return { type, status: 'on_file', documentId: null, expiresAt: null, signedOnline: true, onboardingLinkId: signed.id, signedAt: signed.signedAt };
+    }
     let status = 'missing';
     if (latest) {
       status = 'on_file';
@@ -142,10 +149,13 @@ r.get('/', ah(async (req, res) => {
     prisma.customer.count({ where }),
     prisma.customer.groupBy({ by: ['status'], where: await ownerWhere(req.user, q.scope), _count: true }),
   ]);
-  const revenue = await revenueFor(rows.map((c) => c.carrierId));
+  const [revenue, signedLinks] = await Promise.all([
+    revenueFor(rows.map((c) => c.carrierId)),
+    signedAgreements(rows.map((c) => c.carrierId)),
+  ]);
   const items = rows.map(({ carrier, portalTokenHash, ...c }) => {
     const { documents, fmcsaSnapshot, fmcsaCheckedAt, ...carrierInfo } = carrier;
-    const checklist = docChecklist(documents);
+    const checklist = docChecklist(documents, new Date(), signedLinks.get(c.carrierId));
     return {
       ...c, carrier: carrierInfo,
       compliance: { missing: checklist.filter((x) => x.status === 'missing').length, expiring: checklist.filter((x) => x.status === 'expiring' || x.status === 'expired').length },
@@ -155,6 +165,20 @@ r.get('/', ah(async (req, res) => {
   });
   res.json({ ...pageResult(items, total, q), summary: Object.fromEntries(statusCounts.map((s) => [s.status, s._count])) });
 }));
+
+/** Latest e-signed onboarding link per carrier ({ id, signedAt }), one indexed query for a page of carriers. */
+async function signedAgreements(carrierIds) {
+  const ids = [...new Set(carrierIds)].filter(Boolean);
+  const out = new Map();
+  if (!ids.length) return out;
+  const rows = await prisma.onboardingLink.findMany({
+    where: { carrierId: { in: ids }, status: 'signed' },
+    orderBy: { signedAt: 'desc' },
+    select: { id: true, carrierId: true, signedAt: true },
+  });
+  for (const r of rows) if (!out.has(r.carrierId)) out.set(r.carrierId, { id: r.id, signedAt: r.signedAt });
+  return out;
+}
 
 /** Carrier rules for the load check card (null customer when the carrier is not a customer). */
 r.get('/rules', ah(async (req, res) => {
@@ -205,7 +229,7 @@ r.get('/:id', ah(async (req, res) => {
   res.json({
     customer: { ...cust, carrier: carrierInfo, lanes, rules: rulesOf(customer, carrier), portal: portalStatus(customer) },
     documents,
-    checklist: docChecklist(documents),
+    checklist: docChecklist(documents, new Date(), (await signedAgreements([customer.carrierId])).get(customer.carrierId)),
     loads: loadsWithFee,
     revenue: revenueView(revenue.get(customer.carrierId)),
     brokers: [...brokers.values()],

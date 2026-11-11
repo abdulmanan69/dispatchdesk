@@ -11,6 +11,7 @@ import { useToast } from '../Toast.jsx';
 import { calculateLoad, toCents, fromCents, LOAD_STATUSES } from './calc.js';
 import { BrokerSelect, CarrierPicker } from './Pickers.jsx';
 import FitCard, { useCarrierRules } from './FitCard.jsx';
+import LegalEtaCard from './LegalEtaCard.jsx';
 import RateConImport from './RateConImport.jsx';
 import { RateConVetting } from './BrokerVetting.jsx';
 import { formatWindow, zonedInput, zoneAbbr } from './zoned.js';
@@ -66,6 +67,26 @@ export function formToBody(f) {
     fuelPricePerGallon: blankNull(f.fuelPricePerGallon), mpg: blankNull(f.mpg), otherCostsCents: toCents(f.otherCosts),
     dispatchFeePercent: blankNull(f.dispatchFeePercent), status: f.status, notes: blankNull(f.notes),
     brokerId: f.brokerId || null, carrierId: f.carrierId || null,
+  };
+}
+
+/**
+ * The form as the legal ETA card's input, or null until origin, destination and a delivery appointment are filled.
+ * Appointment times stay facility-local wall times (the server applies each facility's zone). Without a pickup time
+ * the check starts at 8:00 on the pickup date (said in its assumptions). Deadhead from the truck's last position is
+ * included only for a load not yet under way whose truck is available and whose pickup time is set.
+ */
+export function formToEtaInput(f, { loadId = null, truck = null } = {}) {
+  if (!f.originCity.trim() || !f.originState || !f.destCity.trim() || !f.destState || !f.deliveryWindowStart) return null;
+  const deadhead = truck?.lat != null && truck.status === 'available' && f.pickupWindowStart && ['planned', 'booked'].includes(f.status)
+    ? { from: { lat: truck.lat, lng: truck.lng } } : null;
+  return {
+    loadId, carrierId: f.carrierId || null,
+    origin: { city: f.originCity.trim(), state: f.originState }, dest: { city: f.destCity.trim(), state: f.destState },
+    pickupWindowStart: f.pickupWindowStart || null, pickupWindowEnd: f.pickupWindowEnd || null,
+    deliveryWindowStart: f.deliveryWindowStart, deliveryWindowEnd: f.deliveryWindowEnd || null,
+    startAt: !f.pickupWindowStart && f.pickupDate ? `${f.pickupDate}T08:00` : null,
+    deadhead,
   };
 }
 
@@ -339,6 +360,8 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
   const calc = useMemo(() => formCalc(form), [form]);
   const fitLoad = useMemo(() => formToFitLoad(form), [form]);
   const rules = useCarrierRules(form.carrierId);
+  const truck = rules.data?.carrier?.truck;
+  const etaInput = useMemo(() => formToEtaInput(form, { loadId: editing ? load.id : null, truck }), [form, editing, load?.id, truck]);
 
   // Picking a customer carrier fills its dispatch fee when the field is empty.
   useEffect(() => {
@@ -430,6 +453,11 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
           <div className="rounded-md border border-line bg-surface-2/40 p-3">
             <FitCard load={fitLoad} carrierId={form.carrierId} loadId={editing ? load.id : undefined} stored={editing ? load.fit : undefined} />
           </div>
+          {etaInput && (
+            <div className="rounded-md border border-line bg-surface-2/40 p-3">
+              <LegalEtaCard input={etaInput} />
+            </div>
+          )}
           <div className="rounded-md border border-line bg-surface-2/40 p-3">
             <h3 className="mb-1 text-sm font-medium">Load economics</h3>
             <CalcSummary calc={calc} />

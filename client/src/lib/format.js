@@ -102,4 +102,4 @@ export const PRESETS = {
   tagNames: ['Hot', 'New authority', 'Owner-operator', 'Reefer', 'Flatbed', 'Call back', 'Spanish speaking', 'Needs factoring', 'Referred'],
 };
 
-export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'other'];
+export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'voided_check', 'noa', 'other'];

@@ -8,12 +8,14 @@ const h = vi.hoisted(() => ({
   setUser: null,
   get: null,
   patch: null,
+  put: null,
 }));
 
 vi.mock('../../lib/api.js', () => ({
   api: {
     get: (...args) => h.get(...args),
     patch: (...args) => h.patch(...args),
+    put: (...args) => h.put(...args),
     post: vi.fn(async () => ({})),
     del: vi.fn(async () => ({})),
   },
@@ -57,7 +59,13 @@ beforeEach(() => {
   h.setUser = vi.fn();
   h.get = vi.fn(async (url) => (url === '/api/push/subscriptions' ? { items: [], max: 5, notifyPush: true } : {}));
   h.patch = vi.fn(async (url, body) => ({ user: { ...h.user, ...body } }));
+  h.put = vi.fn(async () => ({}));
 });
+
+const CATEGORIES = [
+  { key: 'driver_issues', label: 'Driver issues and off-route alerts', on: true },
+  { key: 'invoices', label: 'Invoices past due', on: false },
+];
 
 describe('Settings, notifications tab', () => {
   it('shows the daily digest switch bound to the profile', async () => {
@@ -89,5 +97,25 @@ describe('Settings, notifications tab', () => {
     await waitFor(() => expect(h.patch).toHaveBeenCalledWith('/api/profile', { notifyPush: false }));
     await waitFor(() => expect(h.setUser).toHaveBeenCalledWith(expect.objectContaining({ notifyPush: false })));
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Send push notifications' })).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  it('shows one switch per push category, saves a change, and disables them while push is off', async () => {
+    let prefs = { enabled: true, categories: CATEGORIES };
+    h.get = vi.fn(async (url) => (url === '/api/push/subscriptions' ? { items: [], max: 5, notifyPush: prefs.enabled } : url === '/api/push/preferences' ? prefs : {}));
+    h.put = vi.fn(async (url, body) => ({ ...prefs, categories: prefs.categories.map((c) => (c.key in body.categories ? { ...c, on: body.categories[c.key] } : c)) }));
+    const { unmount } = renderNotifications();
+    const issues = await screen.findByRole('switch', { name: 'Driver issues and off-route alerts' });
+    expect(issues).toHaveAttribute('aria-checked', 'true');
+    expect(issues).not.toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Invoices past due' })).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(issues);
+    await waitFor(() => expect(h.put).toHaveBeenCalledWith('/api/push/preferences', { categories: { driver_issues: false } }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Driver issues and off-route alerts' })).toHaveAttribute('aria-checked', 'false'));
+    unmount();
+
+    prefs = { enabled: false, categories: CATEGORIES };
+    renderNotifications();
+    expect(await screen.findByRole('switch', { name: 'Driver issues and off-route alerts' })).toBeDisabled();
+    expect(screen.getByText('Turn on push notifications above to choose what is sent.')).toBeInTheDocument();
   });
 });

@@ -314,6 +314,7 @@ r.post('/knowledge', knowledgeUpload.single('file'), ah(async (req, res) => {
     data: {
       ownerId: req.user.id, scope: b.scope, approved: true, title: b.title || req.file.originalname.replace(/\.[^.]+$/, ''),
       originalName: req.file.originalname.slice(0, 200), storedName: req.file.filename, mimeType: req.file.mimetype, status: 'processing',
+      sizeBytes: req.file.size || 0, // summed for the storage quota (lib/plans.js)
     },
   });
   const processed = await ingestDocument(doc.id);

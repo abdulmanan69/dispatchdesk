@@ -43,7 +43,8 @@ describe('stored road polylines', () => {
     load = await prisma.load.create({
       data: {
         ownerId: A.user.id, brokerId: broker.id, carrierId: carrier.id, originCity: 'Dallas', originState: 'TX', destCity: 'Memphis', destState: 'TN',
-        rateCents: 100000, loadedMiles: 450, status: 'in_transit', routeGeometry: GEOMETRY, routeMiles: 452, routeMinutes: 410, routeSource: 'osrm', routeComputedAt: new Date(),
+        rateCents: 100000, loadedMiles: 450, status: 'in_transit', routeMiles: 452, routeMinutes: 410, routeSource: 'osrm', routeComputedAt: new Date(),
+        route: { create: { geometry: GEOMETRY } },
       },
     });
   });
@@ -67,14 +68,16 @@ describe('stored road polylines', () => {
 
   it('are cleared when the trip is finished, by the status change and by the cleanup job', async () => {
     await A.agent.patch(`/api/loads/${load.id}`).send({ status: 'delivered' });
-    const done = await prisma.load.findUnique({ where: { id: load.id } });
-    expect(done).toMatchObject({ status: 'delivered', routeGeometry: null, routeMiles: 452 });
+    const done = await prisma.load.findUnique({ where: { id: load.id }, include: { route: true } });
+    expect(done).toMatchObject({ status: 'delivered', route: null, routeMiles: 452 });
     expect(done.deliveryDate).not.toBeNull();
-    const other = await prisma.load.create({ data: { ownerId: A.user.id, originCity: 'A', originState: 'TX', destCity: 'B', destState: 'TX', rateCents: 1, loadedMiles: 1, status: 'paid', routeGeometry: GEOMETRY } });
-    const active = await prisma.load.create({ data: { ownerId: A.user.id, originCity: 'A', originState: 'TX', destCity: 'B', destState: 'TX', rateCents: 1, loadedMiles: 1, status: 'booked', routeGeometry: GEOMETRY } });
-    for (let i = 0; i < 20 && (await prisma.load.findUnique({ where: { id: other.id } })).routeGeometry; i++) await clearFinishedGeometry();
+    const other = await prisma.load.create({ data: { ownerId: A.user.id, originCity: 'A', originState: 'TX', destCity: 'B', destState: 'TX', rateCents: 1, loadedMiles: 1, status: 'paid', route: { create: { geometry: GEOMETRY } } } });
+    const active = await prisma.load.create({ data: { ownerId: A.user.id, originCity: 'A', originState: 'TX', destCity: 'B', destState: 'TX', rateCents: 1, loadedMiles: 1, status: 'booked', route: { create: { geometry: GEOMETRY } } } });
+    const routeOf = async (id) => (await prisma.loadRoute.findUnique({ where: { loadId: id } }))?.geometry ?? null;
+    for (let i = 0; i < 20 && (await routeOf(other.id)); i++) await clearFinishedGeometry();
+    expect(await routeOf(other.id)).toBeNull();
+    expect(await routeOf(active.id)).toBe(GEOMETRY);
     expect((await prisma.load.findUnique({ where: { id: other.id } })).routeGeometry).toBeNull();
-    expect((await prisma.load.findUnique({ where: { id: active.id } })).routeGeometry).toBe(GEOMETRY);
   });
 
   it('packed measured routes still snap positions', () => {

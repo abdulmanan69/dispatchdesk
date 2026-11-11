@@ -14,9 +14,9 @@ import {
   TRUCK_STATUSES, ACTIVE_TRIP_STATUSES, TRIP_FLOW, pointFor, estimateMiles, crowMiles, searchPlaces, truckView, tripView, availableBy,
   routeIsCurrent, loadEnds, routable,
 } from '../services/fleet/index.js';
-import { ensureLoadRoute, scheduleLoadRoute, deadheadRoute } from '../services/fleet/route.js';
+import { ensureLoadRoute, scheduleLoadRoute, deadheadRoute, ROUTE_INCLUDE } from '../services/fleet/route.js';
 import { healFleetFlags } from '../services/fleet/flags.js';
-import { encodePolyline, decodePolyline, simplifyToBudget } from '../services/fleet/polyline.js';
+import { encodePolyline, decodePolyline, simplifyToBudget, routeGeometryOf } from '../services/fleet/polyline.js';
 import { plansFor, planSummary, lastContacts, checkCallSettings, checkCallDue, saveCheckCallSettings, stopEvents, openDwell, latestHos, CHECKCALL_HOURS } from '../services/fleet/insights.js';
 import { normalizeClocks, hoursText } from '../services/fleet/hos.js';
 import { recordLoadEvent } from '../services/fleet/events.js';
@@ -40,7 +40,8 @@ const lat = z.coerce.number().min(-90).max(90);
 const lng = z.coerce.number().min(-180).max(180);
 const place = z.object({ city: z.string().trim().min(1).max(100), state, lat: lat.nullable().optional(), lng: lng.nullable().optional() });
 
-const tripLoadInclude = { broker: { select: { id: true, companyName: true } } };
+// Trip views check the stored road route (route.current): its shape comes from LoadRoute in one batched query.
+const tripLoadInclude = { broker: { select: { id: true, companyName: true } }, ...ROUTE_INCLUDE };
 const truckInclude = {
   customer: { select: { id: true, status: true } },
   stage: { select: { key: true } },
@@ -386,11 +387,12 @@ const DISPLAY_MAX_CHARS = 8_000_000;
 const displayCache = new Map(); // `${id}:${computedAt}:${length}` -> encoded
 let displayChars = 0;
 function displayGeometry(l) {
-  const key = `${l.id}:${new Date(l.routeComputedAt).getTime()}:${l.routeGeometry.length}`;
+  const geometry = routeGeometryOf(l);
+  const key = `${l.id}:${new Date(l.routeComputedAt).getTime()}:${geometry.length}`;
   const hit = displayCache.get(key);
   if (hit !== undefined) { displayCache.delete(key); displayCache.set(key, hit); return hit; }
-  const pts = decodePolyline(l.routeGeometry);
-  const out = pts.length > DISPLAY_POINTS ? encodePolyline(simplifyToBudget(pts, DISPLAY_POINTS, 100)) : l.routeGeometry;
+  const pts = decodePolyline(geometry);
+  const out = pts.length > DISPLAY_POINTS ? encodePolyline(simplifyToBudget(pts, DISPLAY_POINTS, 100)) : geometry;
   displayCache.set(key, out);
   displayChars += out.length;
   while (displayCache.size > DISPLAY_MAX_ENTRIES || displayChars > DISPLAY_MAX_CHARS) {
@@ -410,7 +412,7 @@ function displayGeometry(l) {
 r.get('/routes', ah(async (req, res) => {
   const q = parse(z.object({ ids: idList(100) }), req.query);
   if (!q.ids.length) return res.json({ items: [] });
-  const rows = await prisma.load.findMany({ where: { AND: [{ id: { in: q.ids } }, await readableLoadWhere(req.user)] } });
+  const rows = await prisma.load.findMany({ where: { AND: [{ id: { in: q.ids } }, await readableLoadWhere(req.user)] }, include: ROUTE_INCLUDE });
   const items = [];
   for (const l of rows) {
     if (routeIsCurrent(l)) {

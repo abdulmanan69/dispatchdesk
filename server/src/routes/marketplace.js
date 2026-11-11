@@ -13,8 +13,10 @@ const r = Router();
 // Replacing a listing image frees the old one, so only the difference counts toward storage.
 const imageUpload = uploader('image', 'marketplace', 5, {
   quotaCredit: async (req) => {
-    const l = await prisma.marketplaceListing.findUnique({ where: { id: String(req.params.id) }, select: { sellerId: true, imagePath: true } });
-    return l && l.sellerId === req.user?.id ? storedFileSize('marketplace', l.imagePath) : 0;
+    const l = await prisma.marketplaceListing.findUnique({ where: { id: String(req.params.id) }, select: { sellerId: true, imagePath: true, sizeBytes: true } });
+    if (!l || l.sellerId !== req.user?.id || !l.imagePath) return 0;
+    // The stored size (what the quota counts); images from before the column existed are measured on disk.
+    return l.sizeBytes || storedFileSize('marketplace', l.imagePath);
   },
 });
 /** Keep only keys present in the request body (undefined values dropped). */
@@ -166,14 +168,14 @@ r.post('/listings/:id/image', requireAuth, imageUpload.single('file'), ah(async 
   if (!req.file) throw badRequest('No image uploaded');
   verifyFileSignature(req.file);
   if (l.imagePath) removeFile('marketplace', l.imagePath);
-  const updated = await prisma.marketplaceListing.update({ where: { id: l.id }, data: { imagePath: req.file.filename }, include: { seller: sellerSelect } });
+  const updated = await prisma.marketplaceListing.update({ where: { id: l.id }, data: { imagePath: req.file.filename, sizeBytes: req.file.size || 0 }, include: { seller: sellerSelect } });
   res.json({ listing: listingOut(updated, req) });
 }));
 
 r.delete('/listings/:id/image', requireAuth, ah(async (req, res) => {
   const l = await loadOwnListing(req);
   removeFile('marketplace', l.imagePath);
-  const updated = await prisma.marketplaceListing.update({ where: { id: l.id }, data: { imagePath: null }, include: { seller: sellerSelect } });
+  const updated = await prisma.marketplaceListing.update({ where: { id: l.id }, data: { imagePath: null, sizeBytes: 0 }, include: { seller: sellerSelect } });
   res.json({ listing: listingOut(updated, req) });
 }));
 

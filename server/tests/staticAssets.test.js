@@ -24,12 +24,16 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, 'assets', 'tiny-9f.css'), 'a{color:red}');
   fs.writeFileSync(path.join(dir, 'favicon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   fs.writeFileSync(path.join(dir, 'sw.js'), 'self.addEventListener("push", () => {});\n');
+  // In-browser OCR engine files: fixed names, so they must not get the immutable cache.
+  fs.mkdirSync(path.join(dir, 'ocr'));
+  fs.writeFileSync(path.join(dir, 'ocr', 'worker.min.js'), JS);
   // A file whose path looks like an API route: API requests must never be answered (or even looked up) as static files.
   fs.mkdirSync(path.join(dir, 'api'));
   fs.writeFileSync(path.join(dir, 'api', 'health'), 'static shadow');
   ({ precompressAssets: precompress } = await import('../src/middleware/static.js'));
   const report = await precompress(path.join(dir, 'assets'));
   expect(report.compressed).toBe(1); // the tiny CSS file is not worth compressing
+  await precompress(path.join(dir, 'ocr'));
   process.env.CLIENT_DIST = dir;
   const { createApp } = await import('../src/app.js');
   app = createApp();
@@ -51,6 +55,14 @@ describe('static client files', () => {
       expect(res.headers.vary).toMatch(/Accept-Encoding/i);
       expect(decode(res.body, enc)).toBe(JS);
     }
+  });
+
+  it('serves the OCR engine precompressed with a 1-day cache (fixed file names)', async () => {
+    const res = await request(app).get('/ocr/worker.min.js').set('Accept-Encoding', 'br').buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-encoding']).toBe('br');
+    expect(res.headers['cache-control']).toBe('public, max-age=86400');
+    expect(decode(res.body, 'br')).toBe(JS);
   });
 
   it('falls back to the original file when the browser accepts no encoding', async () => {

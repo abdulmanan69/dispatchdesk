@@ -154,3 +154,91 @@ export function hoursText(min) {
   if (!h) return `${r} min`;
   return r ? `${h} h ${r} min` : `${h} h`;
 }
+
+// ---------------------------------------------------------------------------
+// Legal ETA for a planned trip (before booking)
+// ---------------------------------------------------------------------------
+
+/** An arrival within this many minutes of the end of the delivery window is "at risk". */
+export const PLAN_RISK_SLACK_MIN = 60;
+
+/**
+ * Clocks from hours left typed for a plan, { drive, duty, cycle } in hours (any may be missing).
+ * Null when nothing was entered: the plan then assumes a rested driver with full clocks.
+ */
+export function clocksFromHours(hours) {
+  if (!hours) return null;
+  const toMin = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 60));
+  return normalizeClocks({ driveLeftMin: toMin(hours.drive), shiftLeftMin: toMin(hours.duty), cycleLeftMin: toMin(hours.cycle) });
+}
+
+/**
+ * on_time | at_risk | late for an arrival against a window { start, end } (ms or dates; a single appointment time
+ * is a window with only a start). 'no_window' without one; null without an arrival.
+ */
+export function verdictFor(etaMs, window, slackMin = PLAN_RISK_SLACK_MIN) {
+  if (etaMs == null) return null;
+  const s = window?.start != null ? new Date(window.start).getTime() : null;
+  const e = window?.end != null ? new Date(window.end).getTime() : null;
+  const end = e ?? s;
+  if (end == null || Number.isNaN(end)) return 'no_window';
+  if (etaMs > end) return 'late';
+  if (etaMs > end - slackMin * MIN) return 'at_risk';
+  return 'on_time';
+}
+
+/**
+ * Drive ETA and legal ETA for a trip that is not booked yet: optional deadhead to the pickup, waiting for the pickup
+ * appointment, loading (on duty), then the loaded drive.
+ *   startMs        when the driver sets off (from the deadhead start, or at the pickup without deadhead)
+ *   deadheadMin    driving minutes to the pickup (0 or null: the driver is already there)
+ *   pickupWindow   { start, end } (ms) or null; the driver waits for the start
+ *   dwellMin       on duty at the pickup (loading); 30 minutes or more also counts as the 30-minute break
+ *   driveMin       loaded driving minutes, pickup to delivery
+ *   deliveryWindow { start, end } (ms) or null
+ *   clocks         hours left (minutes, see normalizeClocks) as of clocksAtMs (default startMs); null = rested driver
+ * Returns { driveEtaMs, legalEtaMs, pickup: { driveEtaMs, legalEtaMs, verdict } | null, breaks, resets, restarts,
+ * verdict, slackMin (window end minus legal ETA; negative when late), extraMin (legal minus drive ETA), startMs, events }.
+ */
+export function planTrip({
+  startMs, deadheadMin = 0, pickupWindow = null, dwellMin = 120, driveMin, deliveryWindow = null,
+  clocks = null, clocksAtMs = null, slackMin = PLAN_RISK_SLACK_MIN,
+}) {
+  const pickStart = pickupWindow?.start != null ? new Date(pickupWindow.start).getTime() : null;
+  const dh = Math.max(0, Number(deadheadMin) || 0);
+  let start = startMs;
+  // A rested driver waiting at the pickup before doing anything is still off duty: the wait does not start the 14-hour
+  // window, so the plan starts at the appointment.
+  if (!clocks && !dh && pickStart != null && pickStart > start) start = pickStart;
+  const segments = [];
+  // Hours left reported earlier than the start: the gap is off duty (10 hours or more is a full reset).
+  let simStart = start;
+  if (clocks && clocksAtMs != null && clocksAtMs < start) {
+    simStart = clocksAtMs;
+    segments.push({ waitUntil: start });
+  }
+  if (dh > 0) segments.push({ drive: dh });
+  segments.push({ mark: 'pickup' });
+  if (pickStart != null) segments.push({ waitUntil: pickStart });
+  segments.push({ onDuty: Math.max(0, Number(dwellMin) || 0) }, { drive: Math.max(0, Number(driveMin) || 0) }, { mark: 'delivery' });
+
+  const plain = simulate(simStart, segments, null, { legal: false });
+  const legal = simulate(simStart, segments, clocks || freshClocks(), { legal: true });
+  const driveEtaMs = plain.marks.delivery;
+  const legalEtaMs = legal.marks.delivery;
+  const verdict = verdictFor(legalEtaMs, deliveryWindow, slackMin);
+  const wEnd = deliveryWindow ? (deliveryWindow.end ?? deliveryWindow.start) : null;
+  return {
+    startMs: start,
+    driveEtaMs,
+    legalEtaMs,
+    pickup: dh > 0 ? { driveEtaMs: plain.marks.pickup, legalEtaMs: legal.marks.pickup, verdict: verdictFor(legal.marks.pickup, pickupWindow, slackMin) } : null,
+    breaks: legal.breaks,
+    resets: legal.rests,
+    restarts: legal.restarts,
+    verdict,
+    slackMin: wEnd != null ? Math.round((new Date(wEnd).getTime() - legalEtaMs) / MIN) : null,
+    extraMin: Math.round((legalEtaMs - driveEtaMs) / MIN),
+    events: legal.events.filter((e) => ['break', 'rest', 'restart'].includes(e.type)).slice(0, 20),
+  };
+}

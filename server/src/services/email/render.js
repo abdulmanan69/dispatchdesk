@@ -25,7 +25,7 @@ export const FIELDS = [
   { key: 'equipment', group: 'contact', label: 'Equipment types', sample: 'dry van, reefer' },
   { key: 'my_name', group: 'you', label: 'Your name', sample: 'Jordan Lee' },
   { key: 'my_first_name', group: 'you', label: 'Your first name', sample: 'Jordan' },
-  { key: 'my_company', group: 'you', label: 'Your company (your team name)', sample: 'Lee Dispatch Services' },
+  { key: 'my_company', group: 'you', label: 'Your company (team name, or the company name in Settings)', sample: 'Lee Dispatch Services' },
   { key: 'my_phone', group: 'you', label: 'Your phone', sample: '(555) 010-0199' },
   { key: 'my_email', group: 'you', label: 'Your email (default mailbox)', sample: 'jordan@leedispatch.example' },
   { key: 'signature', group: 'you', label: 'Your email signature (your name when you have none)', sample: 'Jordan Lee\nLee Dispatch Services', channels: ['email'] },
@@ -127,6 +127,14 @@ export function prettyPhone(p) {
   return n.length === 10 && !/[a-z]/i.test(raw) ? `(${n.slice(0, 3)}) ${n.slice(3, 6)}-${n.slice(6)}` : raw;
 }
 
+/** {{my_company}}: the team name when the user is in a team, else User.companyName, else null (left unresolved). */
+export function myCompany(user) {
+  const team = String(user?.teamMembership?.team?.name || '').trim();
+  if (team) return team;
+  const own = String(user?.companyName || '').trim();
+  return own || null;
+}
+
 /**
  * Values for every field the context can fill.
  * Base fields (carrier/broker and your own) are always present outside strict mode so old templates render
@@ -158,8 +166,9 @@ export function mergeValues({ carrier, broker, user, load, invoice, extra, accou
 
   base('my_name', user?.name);
   base('my_first_name', String(user?.name || '').split(/\s+/)[0]);
-  // No company column: the team name. Without a team it is blank when sending and flagged in previews.
-  base('my_company', user?.teamMembership?.team?.name);
+  // The team name for team members, else the company name from Settings. Without either it is blank when sending
+  // and flagged in previews.
+  base('my_company', myCompany(user));
   base('my_phone', prettyPhone(user?.phone));
   opt('my_email', account?.fromEmail || user?.email);
   if (channel === 'email') base('signature', user?.emailSignature || user?.name);
@@ -208,8 +217,8 @@ export function sampleValues({ user, channel = 'email' } = {}) {
   if (user?.name) { v.my_name = user.name; v.my_first_name = user.name.split(/\s+/)[0]; }
   if (user?.phone) v.my_phone = prettyPhone(user.phone);
   if (user?.email) v.my_email = user.email;
-  if (user?.teamMembership?.team?.name) v.my_company = user.teamMembership.team.name;
-  v.signature = channel === 'email' ? (user?.emailSignature || user?.name || v.signature) : '';
+  if (myCompany(user)) v.my_company = myCompany(user);
+  v.signature =channel === 'email' ? (user?.emailSignature || user?.name || v.signature) : '';
   return v;
 }
 

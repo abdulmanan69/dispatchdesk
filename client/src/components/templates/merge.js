@@ -58,8 +58,13 @@ export function scriptValues({ carrier, contacts, user } = {}) {
     my_first_name: String(user?.name || '').split(/\s+/)[0],
     my_phone: user?.phone || '',
     my_email: user?.email || '',
-    my_company: user?.team?.name || '',
+    my_company: myCompany(user),
   };
+}
+
+/** {{my_company}}: the team name for team members, else the company name from Settings, else '' (token left as typed). */
+export function myCompany(user) {
+  return String(user?.team?.name || '').trim() || String(user?.companyName || '').trim() || '';
 }
 
 // GSM 03.38 basic character set (plus the extension table, which counts double). Anything else forces UCS-2.

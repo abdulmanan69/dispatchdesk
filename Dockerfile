@@ -41,7 +41,7 @@ COPY server/ ./
 COPY --from=client-build /build/client/dist /app/client/dist
 # Brotli and gzip copies of the hashed client bundles, written once here instead of by the server after each deploy.
 # The server's own background pass then finds them up to date and skips them (DISABLE_PRECOMPRESS=true turns it off).
-RUN node /app/server/src/middleware/static.js /app/client/dist/assets
+RUN node /app/server/src/middleware/static.js /app/client/dist/assets && node /app/server/src/middleware/static.js /app/client/dist/ocr
 # Browser extension source, zipped on demand by GET /api/extension/download
 COPY extension/ /app/extension/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

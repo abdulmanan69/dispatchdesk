@@ -61,11 +61,12 @@ export function calculateLoad(input = {}) {
 }
 
 /**
- * Attach computed economics to a Load row. The stored road polyline (routeGeometry, 10+ KB) is never part of an API
- * view: the map gets geometry from /api/fleet/routes only.
+ * Attach computed economics to a Load row. The stored road polyline (LoadRoute, 10+ KB) is never part of an API view:
+ * the map gets geometry from /api/fleet/routes only. The deprecated Load.routeGeometry column (always null) and an
+ * attached load.route are dropped so rows keep their API shape.
  */
 export const withCalc = (load) => {
   if (!load) return load;
-  const { routeGeometry: _geometry, ...rest } = load;
+  const { routeGeometry: _geometry, route: _route, ...rest } = load;
   return { ...rest, calc: calculateLoad(load) };
 };

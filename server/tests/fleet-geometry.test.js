@@ -129,7 +129,7 @@ describe('progress, ETA and risk', () => {
 
   const load = (over = {}) => ({
     id: 'L1', status: 'in_transit', originCity: 'Dallas', originState: 'TX', destCity: 'Memphis', destState: 'TN',
-    originLat: 32.777, originLng: -96.797, destLat: 35.15, destLng: -90.049, routeGeometry: enc, routeMiles: route.total, routeMinutes: 600,
+    originLat: 32.777, originLng: -96.797, destLat: 35.15, destLng: -90.049, route: { geometry: enc }, routeMiles: route.total, routeMinutes: 600,
     routeSource: 'osrm', routeComputedAt: new Date(now), freeTimeHours: 2, createdAt: new Date(now - 86400000), ...over,
   });
 

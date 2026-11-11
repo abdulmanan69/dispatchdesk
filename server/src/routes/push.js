@@ -6,7 +6,10 @@ import { prisma } from '../db.js';
 import { ah, badRequest, forbidden, notFound } from '../lib/errors.js';
 import { parse, z } from '../lib/validate.js';
 import { invalidateUserSessions } from '../middleware/auth.js';
-import { getVapidKeys, saveSubscription, sendTestPush, validEndpoint, validKeys, MAX_DEVICES } from '../services/push.js';
+import {
+  getVapidKeys, saveSubscription, sendTestPush, validEndpoint, validKeys, MAX_DEVICES,
+  PUSH_CATEGORY_KEYS, pushOffCategories, serializePushPrefs, pushPreferencesView,
+} from '../services/push.js';
 
 /**
  * Web Push for the signed-in user: VAPID public key, this user's devices (subscriptions), the push on/off
@@ -64,6 +67,44 @@ r.delete('/subscriptions/:id', ah(async (req, res) => {
   const del = await prisma.pushSubscription.deleteMany({ where: { id: String(req.params.id), userId: req.user.id } });
   if (!del.count) throw notFound('Device not found');
   res.json({ ok: true });
+}));
+
+const prefsSelect = { notifyPush: true, pushPrefs: true };
+
+/** The account-wide push switch and the per-category switches: { enabled, categories: [{ key, label, on }] }. */
+r.get('/preferences', ah(async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: prefsSelect });
+  res.json(pushPreferencesView(user));
+}));
+
+const categoryKey = z.enum(PUSH_CATEGORY_KEYS);
+const preferencesSchema = z.strictObject({
+  enabled: z.boolean().optional(),
+  // { "<category key>": true | false }, or the list GET returns ([{ key, on }]). Only known keys are accepted.
+  categories: z.union([
+    z.partialRecord(categoryKey, z.boolean()),
+    z.array(z.object({ key: categoryKey, on: z.boolean() })).max(PUSH_CATEGORY_KEYS.length * 2),
+  ]).optional(),
+});
+
+/** Change the push switch and/or categories; categories not sent keep their setting. Returns the GET shape. */
+r.put('/preferences', ah(async (req, res) => {
+  const body = parse(preferencesSchema, req.body || {});
+  const data = {};
+  if (body.enabled !== undefined) data.notifyPush = body.enabled;
+  if (body.categories !== undefined) {
+    const changes = Array.isArray(body.categories) ? body.categories.map((c) => [c.key, c.on]) : Object.entries(body.categories);
+    const current = await prisma.user.findUnique({ where: { id: req.user.id }, select: { pushPrefs: true } });
+    const off = pushOffCategories(current?.pushPrefs);
+    for (const [key, on] of changes) { if (on) off.delete(key); else off.add(key); }
+    data.pushPrefs = serializePushPrefs(off);
+  }
+  const user = Object.keys(data).length
+    ? await prisma.user.update({ where: { id: req.user.id }, data, select: prefsSelect })
+    : await prisma.user.findUnique({ where: { id: req.user.id }, select: prefsSelect });
+  // Cached sessions carry notifyPush (GET /api/auth/me): drop them in every process. The send path reads the user row.
+  if (data.notifyPush !== undefined) invalidateUserSessions(req.user.id);
+  res.json(pushPreferencesView(user));
 }));
 
 /** Same field as PATCH /api/profile { notifyPush } (what the Settings page uses); kept for API clients. */

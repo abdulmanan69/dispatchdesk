@@ -11,6 +11,8 @@ import DocumentsPanel, { documentRequestBody } from '../../components/documents/
 import LoadFormModal from '../../components/dispatch/LoadForm.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
 import StatementsPanel from '../../components/deals/StatementsPanel.jsx';
+import OnboardingPanel from '../../components/onboarding/OnboardingPanel.jsx';
+import { recordUrl } from '../../components/onboarding/onboardingLinks.js';
 import { rulesSummary } from '../../components/dispatch/fit.js';
 import { loadColumns, loadMobileRow } from '../dispatch/Loads.jsx';
 import { CUSTOMER_COLOR, FmcsaBadge } from './Customers.jsx';
@@ -152,6 +154,10 @@ export default function CustomerDetail() {
   const [composing, setComposing] = useState(null);
   const q = useQuery({ queryKey: ['customer', id], queryFn: () => api.get(`/api/customers/${id}`) });
   const remove = useApiMutation(() => api.del(`/api/customers/${id}`), { success: 'Customer removed and carrier archived', invalidate: [['customers'], ['pipeline']], onSuccess: () => navigate('/app/customers') });
+  // A dispatch agreement e-signed through an onboarding link counts as the agreement on file.
+  const carrierId = q.data?.customer?.carrier?.id;
+  const links = useQuery({ queryKey: ['onboarding-links', carrierId], queryFn: () => api.get('/api/onboarding-links', { carrierId }), enabled: !!carrierId });
+  const signedLink = (links.data?.items || []).find((l) => l.status === 'signed') || null;
 
   return (
     <QueryState query={q}>
@@ -159,7 +165,8 @@ export default function CustomerDetail() {
         const { customer, checklist, revenue, loads, brokers, activities, fmcsa } = data;
         const c = customer.carrier;
         const primary = c.contacts.find((x) => x.isPrimary) || c.contacts[0];
-        const missing = checklist.filter((x) => x.status !== 'on_file').map((x) => x.type);
+        const signedOnline = (item) => item.type === 'agreement' && item.status === 'missing' && !!signedLink;
+        const missing = checklist.filter((x) => x.status !== 'on_file' && !signedOnline(x)).map((x) => x.type);
         const rules = rulesSummary(customer.rules || {});
         const addLoad = () => setLoadModal({ initial: { carrierId: c.id, carrierLabel: c.companyName, dispatchFeePercent: customer.dispatchFeePercent } });
         return (
@@ -202,6 +209,15 @@ export default function CustomerDetail() {
                   <Card title="Paperwork checklist" actions={<Button size="sm" variant="link" onClick={() => setTab('documents')}>Manage</Button>}>
                     <ul className="space-y-2">
                       {checklist.map((item) => {
+                        if (signedOnline(item)) {
+                          return (
+                            <li key={item.type} className="flex items-center gap-2 text-sm">
+                              <CheckCircle2 className="size-4 text-c-green" aria-hidden />
+                              <span className="flex-1">{DOC_NAME[item.type]}</span>
+                              <a href={recordUrl(signedLink.id)} target="_blank" rel="noopener noreferrer" className="text-xs text-c-green hover:underline">Signed online · {date(signedLink.signedAt)}</a>
+                            </li>
+                          );
+                        }
                         const st = CHECK[item.status];
                         return (
                           <li key={item.type} className="flex items-center gap-2 text-sm">
@@ -243,7 +259,14 @@ export default function CustomerDetail() {
 
             {tab === 'statements' && <StatementsPanel customer={customer} />}
 
-            {tab === 'documents' && <Card title="Documents"><DocumentsPanel carrierId={c.id} missing={missing} carrierEmail={c.email} /></Card>}
+            {tab === 'documents' && (
+              <div className="space-y-4">
+                <Card>
+                  <OnboardingPanel carrier={{ id: c.id, companyName: c.companyName, email: c.email }} feePercent={customer.dispatchFeePercent} />
+                </Card>
+                <Card title="Documents"><DocumentsPanel carrierId={c.id} missing={missing} carrierEmail={c.email} /></Card>
+              </div>
+            )}
 
             {tab === 'loads' && (
               <Card bodyClass="p-0" title="Load history" actions={<Button size="sm" icon={Plus} onClick={addLoad}>Add load</Button>}>

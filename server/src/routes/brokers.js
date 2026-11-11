@@ -98,8 +98,13 @@ r.get('/', ah(async (req, res) => {
   const where = { ...(await ownerWhere(req.user, q.scope)) };
   if (q.q) where.OR = [{ companyName: { contains: q.q } }, { contactName: { contains: q.q } }, { mcNumber: { contains: q.q } }, { email: { contains: q.q } }, { phone: { contains: q.q } }];
   if (q.state) where.state = q.state.toUpperCase();
-  if (q.mc) where.mcNumber = normMc(q.mc) || '-';
-  const orderBy = { name: { companyName: 'asc' }, created: { createdAt: 'desc' }, updated: { updatedAt: 'desc' } }[q.sort];
+  if (q.mc) {
+    // By MC: the matches come from the Broker(ownerId, mcNumber) index first, and the sorted page reads only those
+    // rows (with the sort in one query, SQLite walks every broker of the workspace in name order instead).
+    where.mcNumber = normMc(q.mc) || '-';
+    where.id = { in: (await prisma.broker.findMany({ where: { ownerId: where.ownerId, mcNumber: where.mcNumber }, select: { id: true }, take: 500 })).map((b) => b.id) };
+  }
+  const orderBy ={ name: { companyName: 'asc' }, created: { createdAt: 'desc' }, updated: { updatedAt: 'desc' } }[q.sort];
   const [rows, total] = await Promise.all([prisma.broker.findMany({ where, orderBy, ...paginate(q) }), prisma.broker.count({ where })]);
   const stats = await statsFor(rows.map((b) => b.id));
   const items = rows.map(({ fmcsaSnapshot, flags, ...b }) => {

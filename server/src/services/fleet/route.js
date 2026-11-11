@@ -8,10 +8,15 @@ import { loadEnds, routeIsCurrent } from './index.js';
  * Road routes for loads (pickup -> delivery) and for deadhead legs (truck -> pickup).
  *
  * A load's route is computed once through the OSRM-backed helper in services/market/live.js (cached, throttled to the
- * public server's fair-use budget, straight-line fallback marked as an estimate) and stored on the Load:
- * routeGeometry (encoded polyline whose first and last points are exactly the load's pickup and delivery coordinates),
- * routeMiles, routeMinutes, routeSource ('osrm' | 'estimate') and routeComputedAt. Moving the pickup or delivery makes
- * the stored route stale (routeIsCurrent() is false) and it is computed again.
+ * public server's fair-use budget, straight-line fallback marked as an estimate) and stored in two places, written in
+ * one transaction: the shape in LoadRoute.geometry (encoded polyline whose first and last points are exactly the
+ * load's pickup and delivery coordinates; its own table so load lists and joins stay small), and the summary on the
+ * Load: routeMiles, routeMinutes, routeSource ('osrm' | 'estimate') and routeComputedAt. Load.routeGeometry is
+ * deprecated and always null. Moving the pickup or delivery makes the stored route stale (routeIsCurrent() is false)
+ * and it is computed again.
+ *
+ * Code that needs the shape reads it as load.route.geometry: include ROUTE_INCLUDE in the load query, or attach it to
+ * rows already read with withRouteGeometry() (one query per list).
  *
  *   ensureLoadRoute(load, { force }) -> stored fields | null   compute now (one in flight per load and process)
  *   scheduleLoadRoute(load)                                    same, in the background (bounded queue)
@@ -19,11 +24,27 @@ import { loadEnds, routeIsCurrent } from './index.js';
  * routeIsCurrent(load) and routeMeta(load) live in ./index.js (they are part of the trip views).
  */
 
-/** Route fields for a pickup/delivery pair, without writing anything. */
+/** Prisma include that attaches the stored shape to load rows as load.route = { geometry } | null. */
+export const ROUTE_INCLUDE = Object.freeze({ route: { select: { geometry: true } } });
+
+/**
+ * Rows with the stored road route attached as load.route ({ geometry } or null), read in one query for the rows that
+ * do not carry it yet. Only rows with a route attempt (routeComputedAt) are looked up: without one there is no
+ * current route. Returns new objects for the rows it attaches to (the caller's rows are not changed).
+ */
+export async function withRouteGeometry(loads) {
+  const list = (loads || []).filter(Boolean);
+  const ids = [...new Set(list.filter((l) => l.route === undefined && l.routeComputedAt).map((l) => l.id))];
+  const rows = ids.length ? await prisma.loadRoute.findMany({ where: { loadId: { in: ids } }, select: { loadId: true, geometry: true } }) : [];
+  const byId = new Map(rows.map((r) => [r.loadId, r.geometry]));
+  return (loads || []).map((l) => (!l || l.route !== undefined ? l : { ...l, route: byId.has(l.id) ? { geometry: byId.get(l.id) } : null }));
+}
+
+/** Route fields for a pickup/delivery pair, without writing anything: { geometry, routeMiles, routeMinutes, routeSource, routeComputedAt }. */
 export async function computeRouteFields(from, to) {
   const r = await routeEncoded(from, to);
   return {
-    routeGeometry: encodePolyline(pinEnds(decodePolyline(r.encoded), from, to)),
+    geometry: encodePolyline(pinEnds(decodePolyline(r.encoded), from, to)),
     routeMiles: r.miles,
     routeMinutes: r.minutes,
     routeSource: r.estimate ? 'estimate' : 'osrm',
@@ -37,9 +58,11 @@ const pending = new Map();
  * Compute and store the load's road route when it is missing, stale or only an estimate.
  * Never replaces a current road route with an estimate (router down or busy), and writes only if the pickup and
  * delivery did not change while the route was being computed. Loads with a stop known only by its state are skipped.
+ * The LoadRoute row and the Load's route fields are written in one transaction.
  */
-export async function ensureLoadRoute(load, { force = false } = {}) {
-  if (!load) return null;
+export async function ensureLoadRoute(input, { force = false } = {}) {
+  if (!input) return null;
+  const [load] = await withRouteGeometry([input]);
   const current = routeIsCurrent(load);
   if (!force && current && load.routeSource === 'osrm') return null;
   const { from, to } = loadEnds(load);
@@ -48,13 +71,18 @@ export async function ensureLoadRoute(load, { force = false } = {}) {
   if (from.precision === 'state' || to.precision === 'state') return null;
   if (pending.has(load.id)) return pending.get(load.id);
   const p = (async () => {
-    const data = await computeRouteFields(from, to);
-    if (data.routeSource === 'estimate' && current) return null;
-    const { count } = await prisma.load.updateMany({
-      where: { id: load.id, originLat: load.originLat ?? null, originLng: load.originLng ?? null, destLat: load.destLat ?? null, destLng: load.destLng ?? null },
-      data,
+    const { geometry, ...fields } = await computeRouteFields(from, to);
+    if (fields.routeSource === 'estimate' && current) return null;
+    const stored = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.load.updateMany({
+        where: { id: load.id, originLat: load.originLat ?? null, originLng: load.originLng ?? null, destLat: load.destLat ?? null, destLng: load.destLng ?? null },
+        data: fields,
+      });
+      if (!count) return false;
+      await tx.loadRoute.upsert({ where: { loadId: load.id }, create: { loadId: load.id, geometry }, update: { geometry } });
+      return true;
     });
-    return count ? data : null;
+    return stored ? { geometry, ...fields } : null;
   })().finally(() => pending.delete(load.id));
   pending.set(load.id, p);
   return p;

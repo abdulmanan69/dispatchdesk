@@ -240,8 +240,8 @@ export async function storageAccount(user) {
   return { scope: 'user', userIds: [user.id], limitBytes: Math.round((paid ? STORAGE_MB.paid : STORAGE_MB.free) * MB), planName: plan?.name || 'Free' };
 }
 
-// Sizes of files that have no size column (knowledge files, listing images, avatars) are read from disk a few at a time
-// (the libuv pool is shared with DNS, compression and crypto) and cached per account for a minute in each process.
+// Avatars have no size column: their sizes are read from disk a few at a time (the libuv pool is shared with DNS,
+// compression and crypto) and cached per account for a minute in each process (at most one file per user).
 const STAT_CONCURRENCY = 8;
 const FILES_TTL_MS = 60_000;
 const FILES_CACHE_MAX = 1000;
@@ -260,16 +260,8 @@ async function diskFileBytes(ids) {
   const key = [...ids].sort().join(',');
   const hit = filesCache.get(key);
   if (hit && Date.now() - hit.at < FILES_TTL_MS) return hit.bytes;
-  const [knowledge, listings, avatars] = await Promise.all([
-    prisma.aIKnowledgeDocument.findMany({ where: { ownerId: { in: ids } }, select: { storedName: true }, take: 5000 }),
-    prisma.marketplaceListing.findMany({ where: { sellerId: { in: ids }, imagePath: { not: null } }, select: { imagePath: true }, take: 5000 }),
-    prisma.user.findMany({ where: { id: { in: ids }, avatarPath: { not: null } }, select: { avatarPath: true } }),
-  ]);
-  const bytes = await statAll([
-    ...knowledge.map((k) => ['knowledge', k.storedName]),
-    ...listings.map((l) => ['marketplace', l.imagePath]),
-    ...avatars.map((a) => ['avatars', a.avatarPath]),
-  ]);
+  const avatars = await prisma.user.findMany({ where: { id: { in: ids }, avatarPath: { not: null } }, select: { avatarPath: true } });
+  const bytes = await statAll(avatars.map((a) => ['avatars', a.avatarPath]));
   filesCache.delete(key);
   if (filesCache.size >= FILES_CACHE_MAX) filesCache.delete(filesCache.keys().next().value);
   filesCache.set(key, { at: Date.now(), bytes });
@@ -277,18 +269,21 @@ async function diskFileBytes(ids) {
 }
 
 /**
- * Bytes stored by these accounts: documents they own (sizes are on the rows, always current: every document upload
- * checks against them), plus AI knowledge files, marketplace listing images and avatars (sizes read from disk, at most
- * a minute old).
+ * Bytes stored by these accounts: documents, AI knowledge files and marketplace listing images they own (sizes are
+ * on the rows, set at upload: one SUM each, always current), plus avatars (sizes read from disk, at most a minute
+ * old). Knowledge files and listing images stored before their size column existed count once the size-backfill
+ * job (jobs/extra/size-backfill.js) has recorded them.
  */
 export async function storageUsedBytes(userIds) {
   const ids = [...new Set(userIds)].filter(Boolean);
   if (!ids.length) return 0;
-  const [docs, files] = await Promise.all([
+  const [docs, knowledge, listings, avatars] = await Promise.all([
     prisma.document.aggregate({ where: { ownerId: { in: ids } }, _sum: { sizeBytes: true } }),
+    prisma.aIKnowledgeDocument.aggregate({ where: { ownerId: { in: ids } }, _sum: { sizeBytes: true } }),
+    prisma.marketplaceListing.aggregate({ where: { sellerId: { in: ids }, imagePath: { not: null } }, _sum: { sizeBytes: true } }),
     diskFileBytes(ids),
   ]);
-  return (docs._sum.sizeBytes || 0) + files;
+  return (docs._sum.sizeBytes || 0) + (knowledge._sum.sizeBytes || 0) + (listings._sum.sizeBytes || 0) + avatars;
 }
 
 /** { scope, limitBytes, usedBytes, remainingBytes, planName } for the Billing page and upload checks. */

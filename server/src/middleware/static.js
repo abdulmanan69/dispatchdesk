@@ -106,9 +106,10 @@ function scanSync(dir) {
 /**
  * Middleware for a directory of immutable, content-hashed files (mount it at the matching URL prefix, e.g. '/assets').
  * Serves `<file>.br` or `<file>.gz` when the browser accepts it, otherwise calls next(). `refresh()` rescans the
- * directory (after precompression finished in this or another process).
+ * directory (after precompression finished in this or another process). `cacheControl` defaults to a one-year
+ * immutable cache, which is only right for content-hashed names; pass a shorter value for fixed names (e.g. /ocr/).
  */
-export function precompressedAssets(dir) {
+export function precompressedAssets(dir, { cacheControl = 'public, max-age=31536000, immutable' } = {}) {
   let known = scanSync(dir);
   const mw = (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -122,7 +123,7 @@ export function precompressedAssets(dir) {
     if (!enc) return next();
     res.set('Content-Type', entry.type);
     res.set('Content-Encoding', enc);
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('Cache-Control', cacheControl);
     const file = path.join(dir, `${rel.slice(1)}${enc === 'br' ? '.br' : '.gz'}`);
     res.sendFile(file, { dotfiles: 'deny' }, (err) => {
       if (!err) return;

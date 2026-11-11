@@ -1,0 +1,18 @@
+/* Truck parking popup on the fleet map: the app surface instead of MapLibre's white box, in both themes. */
+.parking-popup .maplibregl-popup-content {
+  background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 28px 10px 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14), 0 1px 2px rgba(0, 0, 0, .08);
+  font: 400 13px/1.4 "IBM Plex Sans", system-ui, sans-serif;
+}
+.parking-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.parking-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.parking-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: var(--surface); }
+.parking-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.parking-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.parking-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--surface); }
+.parking-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--surface); }
+.parking-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--surface); }
+.parking-popup .maplibregl-popup-close-button {
+  top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 6px; color: var(--muted); font-size: 18px; line-height: 1;
+}
+.parking-popup .maplibregl-popup-close-button:hover { background: var(--surface-2); color: var(--fg); }

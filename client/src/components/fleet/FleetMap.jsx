@@ -124,7 +124,7 @@ function paintPin(el, t, selected) {
  */
 export default function FleetMap({
   trucks = [], openLoads = [], alerts = [], layers, selectedId, onSelect, onOpenLoad, pickMode, onPick, editPoint, onEditMove,
-  plannedRoute, focus, fitKey, dark, trail, className, routes, deadheads,
+  plannedRoute, focus, fitKey, dark, trail, className, routes, deadheads, onMap,
 }) {
   const box = useRef(null);
   const mapRef = useRef(null);
@@ -293,7 +293,10 @@ export default function FleetMap({
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(box.current);
     const pinMap = pins.current;
+    // Optional overlays (the truck parking layer) get the map instance and add their own sources and layers.
+    onMap?.(map);
     return () => {
+      onMap?.(null);
       ro.disconnect();
       for (const m of pinMap.values()) m.remove();
       pinMap.clear();

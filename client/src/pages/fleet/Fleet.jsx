@@ -14,6 +14,8 @@ import TripTimeline from '../../components/fleet/TripTimeline.jsx';
 import NearbyTrucks from '../../components/fleet/NearbyTrucks.jsx';
 import { STATUS, STATUS_KEYS, TRIP_STATUS, RISK, placeLabel, weather, liveTag, isStale, fetchRoutes, fetchDeadheads, timeIn } from '../../components/fleet/fleetApi.js';
 import { decodePolyline, boundsOf } from '../../components/fleet/polyline.js';
+import ParkingLayer, { ParkingLegend, ParkingNote } from '../../components/fleet/ParkingLayer.jsx';
+import { routeAhead } from '../../components/fleet/parkingCorridor.js';
 
 function useDarkMode() {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
@@ -107,7 +109,8 @@ export default function Fleet() {
   const [equipment, setEquipment] = useState('');
   const [stateF, setStateF] = useState('');
   const [when, setWhen] = useState('any');
-  const [layers, setLayers] = useState({ trucks: true, trips: true, origins: true, weather: false });
+  const [layers, setLayers] = useState({ trucks: true, trips: true, origins: true, weather: false, parking: false });
+  const [mapObj, setMapObj] = useState(null); // MapLibre map, for the truck parking layer
   const [selectedId, setSelectedId] = useState(null);
   const [panel, setPanel] = useState(null); // { kind: 'edit'|'plan'|'near', ...}
   const [pickMode, setPickMode] = useState(false);
@@ -173,6 +176,8 @@ export default function Fleet() {
   }, [trucks, search, statuses, equipment, stateF, when]);
   const selected = trucks.find((t) => t.id === selectedId) || null;
   const unplaced = visible.filter((t) => t.location?.lat == null).length;
+  // Truck parking along the road ahead of the truck whose panel is open.
+  const parkingRoute = useMemo(() => (layers.parking && selected && !panel ? routeAhead(selected, routes, deadheads) : null), [layers.parking, selected, panel, routes, deadheads]);
 
   // Weather alerts for trucks (only when the layer is on; capped to keep the weather service polite).
   const located = useMemo(() => visible.filter((t) => t.location?.lat != null).slice(0, 20), [visible]);
@@ -271,7 +276,7 @@ export default function Fleet() {
             routes={routes} deadheads={deadheads}
             selectedId={selectedId} onSelect={(id) => { setSelectedId(id); }} pickMode={pickMode}
             onPick={(p) => { setMapPoint(p); setPickMode(false); }} editPoint={editPoint} onEditMove={setMapPoint}
-            plannedRoute={plannedRoute} focus={focus} fitKey={fitKey} trail={trail}
+            plannedRoute={plannedRoute} focus={focus} fitKey={fitKey} trail={trail} onMap={setMapObj}
             onOpenLoad={(id) => { const l = q.data?.openLoads.find((x) => x.id === id); if (l) { closePanel(); setPanel({ kind: 'near-load', load: l }); } }} />
 
           <div className="absolute left-3 top-3 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-1.5">
@@ -281,14 +286,18 @@ export default function Fleet() {
             {liveCount > 0 && <span className="flex h-8 items-center gap-1.5 rounded-lg border border-c-green/30 bg-c-green-soft px-2.5 text-xs font-medium text-c-green shadow-sm"><span className="size-2 rounded-full bg-c-green" />{liveCount} live</span>}
             <span className="flex h-8 items-center gap-1 overflow-x-auto rounded-lg border border-line bg-surface/95 px-1.5 shadow-sm backdrop-blur">
               <Layers className="mx-1 size-3.5 shrink-0 text-muted" aria-hidden />
-              {[['trucks', 'Trucks'], ['trips', 'Routes'], ['origins', 'Open loads'], ['weather', 'Weather']].map(([k, l]) => (
+              {[['trucks', 'Trucks'], ['trips', 'Routes'], ['origins', 'Open loads'], ['weather', 'Weather'], ['parking', 'Parking']].map(([k, l]) => (
                 <button key={k} type="button" aria-pressed={layers[k]} onClick={() => toggle(k)}
                   className={cx('shrink-0 rounded-md px-2 py-1 text-xs transition-ui', layers[k] ? 'bg-brand-600 text-white' : 'text-fg-2 hover:bg-surface-2')}>{l}</button>
               ))}
             </span>
             {pickMode && <span className="rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm">Click the map to place the truck</span>}
             {weatherDown && <span className="rounded-lg border border-line bg-surface/95 px-2.5 py-1.5 text-xs text-muted shadow-sm">Weather service not connected</span>}
+            {layers.parking && <ParkingNote />}
           </div>
+
+          {/* Truck stops, rest areas and truck parking (static OpenStreetMap file), with the stops along the open truck's route. */}
+          <ParkingLayer map={mapObj} on={layers.parking} route={parkingRoute} />
 
           {/* Selected truck: actions hub */}
           {selected && !panel && (
@@ -356,6 +365,7 @@ export default function Fleet() {
             <span className="flex items-center gap-1.5"><span className="h-1 w-3 rounded bg-zinc-400" />Driven</span>
             <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dashed border-zinc-500" />Empty miles</span>
             <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dotted border-blue-600" />Estimate</span>
+            {layers.parking && <ParkingLegend />}
           </div>
         </div>
       </div>
@@ -365,7 +375,7 @@ export default function Fleet() {
         {showBoard ? <TripTimeline onSelectCarrier={(id) => { const t = trucks.find((x) => x.id === id); if (t) focusTruck(t); }} /> : <p className="text-sm text-muted">Hidden</p>}
       </Card>
 
-      <p className="flex items-start gap-1.5 text-xs text-muted"><Truck className="mt-0.5 size-3.5 shrink-0" aria-hidden /><span>Map tiles by OpenFreeMap with OpenStreetMap data. Road routes © OpenStreetMap contributors, OSRM. When the routing service has no answer, a dashed straight line marked Estimate is drawn instead. ETAs are planning estimates. <Link to="/app/loads" className="text-brand-700 hover:underline dark:text-brand-300">All loads</Link></span></p>
+      <p className="flex items-start gap-1.5 text-xs text-muted"><Truck className="mt-0.5 size-3.5 shrink-0" aria-hidden /><span>Map tiles by OpenFreeMap with OpenStreetMap data. Road routes © OpenStreetMap contributors, OSRM. Truck stops, rest areas and truck parking © OpenStreetMap contributors (ODbL); space availability is not shown. When the routing service has no answer, a dashed straight line marked Estimate is drawn instead. ETAs are planning estimates. <Link to="/app/loads" className="text-brand-700 hover:underline dark:text-brand-300">All loads</Link></span></p>
     </div>
   );
 }

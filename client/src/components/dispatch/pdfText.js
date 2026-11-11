@@ -55,17 +55,20 @@ async function pdfjs() {
   return loader;
 }
 
-/** { text, pages, truncated } from a PDF File/Blob. Throws a readable Error when the file cannot be read. */
-export async function pdfToText(file) {
+async function openPdf(file, options = {}) {
   if (file.size > MAX_BYTES) throw new Error('This PDF is larger than 15 MB. Paste the text instead.');
   const lib = await pdfjs();
   const data = new Uint8Array(await file.arrayBuffer());
-  let doc;
   try {
-    doc = await lib.getDocument({ data, isEvalSupported: false, disableFontFace: true, useSystemFonts: false }).promise;
+    return await lib.getDocument({ data, isEvalSupported: false, disableFontFace: true, useSystemFonts: false, ...options }).promise;
   } catch (err) {
     throw new Error(err?.name === 'PasswordException' ? 'This PDF is password protected. Open it and paste the text instead.' : 'This file could not be read as a PDF.');
   }
+}
+
+/** { text, pages, truncated } from a PDF File/Blob. Throws a readable Error when the file cannot be read. */
+export async function pdfToText(file) {
+  const doc = await openPdf(file);
   const lines = [];
   const total = doc.numPages;
   const pages = Math.min(total, MAX_PAGES);
@@ -81,4 +84,43 @@ export async function pdfToText(file) {
   }
   const full = lines.join('\n').trim();
   return { text: full.slice(0, MAX_TEXT), pages: total, truncated: full.length > MAX_TEXT || total > MAX_PAGES };
+}
+
+/** Scale for rendering a page of `width` x `height` (PDF points): `scale`, reduced so neither side exceeds maxSide px. */
+export function renderScale(width, height, scale, maxSide) {
+  const longest = Math.max(width, height, 1);
+  return Math.min(scale, maxSide / longest);
+}
+
+/**
+ * Pages of a PDF drawn as images, for text recognition when the PDF has no text layer (a scan or a phone photo).
+ * Returns { total, count, render(n), close() }: render(n) draws page n (1-based) on a new canvas at `scale` (at most
+ * `maxSide` px on the longer side) on a white background; close() frees the document.
+ * Scanned pages are often JBIG2, CCITT fax or JPEG 2000 images, which pdf.js decodes with WebAssembly modules served
+ * from our own /ocr/pdfjs/ (copied there by tools/ocr/vendor.mjs).
+ */
+export async function pdfPageImages(file, { maxPages = 6, scale = 2, maxSide = 4000, wasmUrl = '/ocr/pdfjs/' } = {}) {
+  const doc = await openPdf(file, { wasmUrl: new URL(wasmUrl, globalThis.location?.href).href });
+  return {
+    total: doc.numPages,
+    count: Math.min(doc.numPages, maxPages),
+    async render(n) {
+      const page = await doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: renderScale(base.width, base.height, scale, maxSide) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const canvasContext = canvas.getContext('2d', { alpha: false });
+      try {
+        await page.render({ canvasContext, canvas, viewport, background: '#ffffff' }).promise;
+      } finally {
+        page.cleanup?.();
+      }
+      return canvas;
+    },
+    close() {
+      doc.destroy?.();
+    },
+  };
 }

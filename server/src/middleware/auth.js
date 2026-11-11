@@ -207,6 +207,7 @@ export function publicUser(user, permissions) {
     name: user.name,
     phone: user.phone,
     bio: user.bio,
+    companyName: user.companyName ?? null,
     avatarUrl: avatarUrl(user),
     role: user.role?.key,
     roleName: user.role?.name,

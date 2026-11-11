@@ -26,6 +26,14 @@ describe('merge helpers', () => {
     expect(mergeText('This is {{sender_name}}', scriptValues({ user: { name: 'Dana Ruiz' } }))).toBe('This is Dana Ruiz');
   });
 
+  it('fills {{my_company}} from the team, else the company name, else leaves the token', () => {
+    const line = 'Calling from {{my_company}}';
+    expect(mergeText(line, scriptValues({ user: { team: { name: 'Lee Dispatch' }, companyName: 'Solo Co' } }))).toBe('Calling from Lee Dispatch');
+    expect(mergeText(line, scriptValues({ user: { team: null, companyName: '  Solo Co ' } }))).toBe('Calling from Solo Co');
+    expect(mergeText(line, scriptValues({ user: { team: null, companyName: null } }))).toBe(line);
+    expect(mergeText(line, scriptValues({ user: { companyName: '' } }), { missing: 'bracket' })).toBe('Calling from [my company]');
+  });
+
   it('counts SMS segments for plain and Unicode text', () => {
     expect(smsInfo('')).toMatchObject({ chars: 0, segments: 0 });
     expect(smsInfo('a'.repeat(160))).toMatchObject({ segments: 1, unicode: false });

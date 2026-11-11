@@ -23,6 +23,8 @@ r.patch('/', requireAuth, ah(async (req, res) => {
     timezone: z.string().refine(validTz, 'Unknown time zone').optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
     emailSignature: optStr(2000),
+    // Fills {{my_company}} for users without a team. Trimmed; blank clears it.
+    companyName: z.preprocess((v) => (typeof v === 'string' ? v.trim() || null : v), z.string().max(120, 'Company name: at most 120 characters').nullable().optional()),
     notifyEmail: z.boolean().optional(),
     notifyInApp: z.boolean().optional(),
     notifyFollowUps: z.boolean().optional(),

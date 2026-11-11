@@ -160,7 +160,7 @@ export default function DocumentsPanel({ carrierId, loadId, types, missing, carr
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
                     <Badge color="brand">{typeLabel(d.type)}</Badge>
                     {expiryBadge(d.expiresAt)}
-                    {d.source && d.source !== 'upload' && <Badge color="gray">{d.source === 'driver_link' ? 'From driver' : label(d.source)}</Badge>}
+                    {d.source && d.source !== 'upload' && <Badge color="gray">{d.source === 'driver_link' ? 'From driver' : d.source === 'onboarding' ? 'From carrier' : label(d.source)}</Badge>}
                     <span>{bytes(d.sizeBytes)} · {date(d.createdAt)}{d.uploadedBy ? ` · ${d.uploadedBy.name}` : ''}</span>
                   </div>
                 </div>

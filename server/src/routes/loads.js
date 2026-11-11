@@ -96,7 +96,8 @@ const include = {
   carrier: { select: { id: true, companyName: true, mcNumber: true, phone: true, doNotCall: true, state: true, timezone: true } },
 };
 
-// The stored road polyline is not read for API views (it sits in overflow pages and the client never uses it here).
+// Road polylines live in LoadRoute and are never read here. Load.routeGeometry is deprecated (always null); omitting it
+// keeps load rows in API views the same shape as before.
 const NO_GEOMETRY = { routeGeometry: true };
 
 const DOC_BADGES = ['rate_confirmation', 'bol', 'pod'];

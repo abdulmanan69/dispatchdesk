@@ -8,6 +8,7 @@ import { Button, Field, Input, Select, cx } from '../ui.jsx';
 import { BrokerSelect } from '../dispatch/Pickers.jsx';
 import PlaceSearch from './PlaceSearch.jsx';
 import FitCard from '../dispatch/FitCard.jsx';
+import LegalEtaCard from '../dispatch/LegalEtaCard.jsx';
 import { route, weather, diesel, placeLabel } from './fleetApi.js';
 
 const tomorrow8 = () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); return toLocalInput(d); };
@@ -49,6 +50,8 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
   const [dest, setDest] = useState(null);
   const [pickup, setPickup] = useState(tomorrow8());
   const [delivery, setDelivery] = useState('');
+  // The delivery time starts as the drive-time estimate; it is an appointment only once the user sets it.
+  const [deliveryTouched, setDeliveryTouched] = useState(false);
   const [rate, setRate] = useState('');
   const [equipment, setEquipment] = useState((truck?.equipment || '').split(',')[0] || '');
   const [brokerId, setBrokerId] = useState(null);
@@ -99,6 +102,13 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
     success: 'Trip planned', invalidate: [['fleet'], ['loads'], ['today']], onSuccess: (d) => { onSaved?.(d.trip); onClose(); },
   });
   const ready = carrierId && origin?.state && dest?.state && num(rate) != null;
+  // Legal ETA (hours of service) for this plan: deadhead from the truck, the pickup time and the delivery appointment.
+  const etaInput = useMemo(() => ({
+    carrierId: carrierId || null, origin, dest,
+    pickupWindowStart: pickup ? new Date(pickup).toISOString() : null,
+    deliveryWindowStart: deliveryTouched && delivery ? new Date(delivery).toISOString() : null,
+    deadhead: truckPt && !sameSpot ? { from: { lat: truckPt.lat, lng: truckPt.lng } } : null,
+  }), [carrierId, origin, dest, pickup, delivery, deliveryTouched, truckPt, sameSpot]);
   // The carrier's rules and negotiation numbers for this plan (same check as the load form; never blocks saving).
   const fitLoad = useMemo(() => ({
     rateCents: calc.rateCents, loadedMiles: calc.lm ? Math.round(calc.lm) : null, deadheadMiles: calc.dh != null ? Math.round(calc.dh) : null,
@@ -140,7 +150,7 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Pickup time"><Input type="datetime-local" value={pickup} onChange={(e) => setPickup(e.target.value)} /></Field>
-        <Field label="Delivery time" hint={calc.eta ? `Drive time about ${f1(calc.hours, 1)} h` : undefined}><Input type="datetime-local" value={delivery} onChange={(e) => setDelivery(e.target.value)} /></Field>
+        <Field label="Delivery time" hint={calc.eta ? `Drive time about ${f1(calc.hours, 1)} h` : undefined}><Input type="datetime-local" value={delivery} onChange={(e) => { setDelivery(e.target.value); setDeliveryTouched(!!e.target.value); }} /></Field>
         <Field label="Rate ($)" required><Input type="number" min="0" step="1" inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="2500" /></Field>
         <Field label="Equipment"><Select value={equipment} onChange={(e) => setEquipment(e.target.value)}><option value="">Any</option>{EQUIPMENT.map((q) => <option key={q} value={q}>{label(q)}</option>)}</Select></Field>
         <Field label="MPG"><Input type="number" min="1" max="30" step="0.1" value={mpg} onChange={(e) => setMpg(e.target.value)} /></Field>
@@ -177,6 +187,8 @@ export default function TripPlanner({ trucks, initialCarrierId, initialOrigin, o
         </div>
       )}
       {calc.eta && delivery && new Date(delivery) < calc.eta && <p className="text-xs text-amber-700 dark:text-amber-300">Delivery is earlier than the estimated arrival ({dateTime(calc.eta)}).</p>}
+
+      {origin?.state && dest?.state && <LegalEtaCard className="rounded-xl border border-line p-3" input={etaInput} />}
 
       {carrierId && origin?.state && dest?.state && (
         <FitCard className="rounded-xl border border-line p-3" carrierId={carrierId} load={fitLoad} />

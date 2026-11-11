@@ -1,10 +1,10 @@
-import { decodePolyline, segmentMiles } from './polyline.js';
+import { decodePolyline, segmentMiles, routeGeometryOf } from './polyline.js';
 import { simulate, clocksAt, freshClocks, normalizeClocks } from './hos.js';
 import { locate } from '../market/geo.js';
 import { DEFAULT_TZ, timezoneForState, startOfUserDay, endOfUserDay } from '../../lib/timezones.js';
 
 /**
- * Trip progress, ETAs and on-time risk from data the app already has: the stored road route (Load.routeGeometry),
+ * Trip progress, ETAs and on-time risk from data the app already has: the stored road route (LoadRoute.geometry),
  * the truck's last position, recent GPS pings and the hours-of-service clocks the dispatcher or driver entered.
  * Everything here is plain in-process math: no routing call is made per ping or per page view.
  * All results are planning estimates and are labelled as such in the UI.
@@ -79,13 +79,17 @@ export function measureRoute(encoded) {
   return { pts, n, cum, total: n ? cum[n - 1] : 0, bytes: pts.byteLength + cum.byteLength + 64 };
 }
 
-/** measureRoute with a per-process cache keyed by load id and route version (byte-bounded LRU, 30 min expiry). */
+/**
+ * measureRoute with a per-process cache keyed by load id and route version (byte-bounded LRU, 30 min expiry).
+ * The shape must be attached as load.route (see routeGeometryOf in ./polyline.js); null without it.
+ */
 export function measuredRoute(load) {
-  if (!load?.routeGeometry) return null;
-  const key = `${load.id}:${load.routeComputedAt ? new Date(load.routeComputedAt).getTime() : 0}:${load.routeGeometry.length}`;
+  const geometry = routeGeometryOf(load);
+  if (!geometry) return null;
+  const key = `${load.id}:${load.routeComputedAt ? new Date(load.routeComputedAt).getTime() : 0}:${geometry.length}`;
   const hit = routeCache.get(key);
   if (hit) return hit;
-  const value = measureRoute(load.routeGeometry);
+  const value = measureRoute(geometry);
   routeCache.set(key, value, value.bytes);
   return value;
 }

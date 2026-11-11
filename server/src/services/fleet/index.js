@@ -1,6 +1,6 @@
 import { haversineMiles, ROAD_FACTOR, locate, STATES, CITIES } from '../market/geo.js';
 import { trustFor } from './track.js';
-import { decodePolyline } from './polyline.js';
+import { decodePolyline, routeGeometryOf } from './polyline.js';
 
 /**
  * Fleet helpers: truck positions, distance estimates and simple place lookup.
@@ -134,29 +134,33 @@ export function routable(load) {
 // First and last point of stored routes, memoized per load and route version (decoding a long route on every poll adds up).
 const endsMemo = new Map();
 const ENDS_MEMO_MAX = 4000;
-function storedRouteEnds(load) {
-  const key = `${load.id}:${new Date(load.routeComputedAt).getTime()}:${load.routeGeometry.length}`;
+function storedRouteEnds(load, geometry) {
+  const key = `${load.id}:${new Date(load.routeComputedAt).getTime()}:${geometry.length}`;
   if (endsMemo.has(key)) return endsMemo.get(key);
-  const pts = decodePolyline(load.routeGeometry);
+  const pts = decodePolyline(geometry);
   const v = pts.length >= 2 ? { first: pts[0], last: pts[pts.length - 1] } : null;
   if (endsMemo.size >= ENDS_MEMO_MAX) endsMemo.delete(endsMemo.keys().next().value);
   endsMemo.set(key, v);
   return v;
 }
 
-/** True when the stored road route still starts at the pickup and ends at the delivery. */
+/**
+ * True when the stored road route still starts at the pickup and ends at the delivery. The shape (LoadRoute) must be
+ * attached to the row as load.route (ROUTE_INCLUDE or withRouteGeometry() in ./route.js); without it this is false.
+ */
 export function routeIsCurrent(load) {
-  if (!load?.routeGeometry || !load.routeComputedAt) return false;
+  const geometry = routeGeometryOf(load);
+  if (!geometry || !load.routeComputedAt) return false;
   const { from, to } = loadEnds(load);
-  const ends = storedRouteEnds(load);
+  const ends = storedRouteEnds(load, geometry);
   if (!ends || !from || !to) return false;
   const near = (p, q) => Math.abs(p[0] - q.lng) < 2e-5 && Math.abs(p[1] - q.lat) < 2e-5;
   return near(ends.first, from) && near(ends.last, to);
 }
 
-/** Route summary for API views (the geometry itself is served by /api/fleet/routes). */
+/** Route summary for API views (the geometry itself is served by /api/fleet/routes). null when the row has no route fields. */
 export function routeMeta(load) {
-  if (!load || load.routeGeometry === undefined) return null;
+  if (!load || load.routeComputedAt === undefined) return null;
   const current = routeIsCurrent(load);
   return {
     miles: current && load.routeMiles != null ? Math.round(load.routeMiles) : null,

@@ -68,9 +68,9 @@ export async function afterStatusChange(user, before, after, { source = 'dispatc
     }
   }
   if (!ACTIVE.includes(after.status)) {
-    // A finished or canceled trip no longer needs its road polyline (10+ KB in the Load row); miles and minutes stay.
+    // A finished or canceled trip no longer needs its road polyline (10+ KB LoadRoute row); miles and minutes stay on the Load.
     // A delivered load without a delivery date gets today, so date-bounded views (Today board, statements) see it.
-    await prisma.load.updateMany({ where: { id: after.id, routeGeometry: { not: null } }, data: { routeGeometry: null } });
+    await prisma.loadRoute.deleteMany({ where: { loadId: after.id } });
     if (after.status === 'delivered' && !after.deliveryDate) {
       await prisma.load.updateMany({ where: { id: after.id, deliveryDate: null }, data: { deliveryDate: new Date() } });
     }

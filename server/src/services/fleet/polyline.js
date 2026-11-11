@@ -2,9 +2,17 @@
  * Road-route geometry helpers shared by the fleet map, the driver link and the broker tracking page.
  * Points are [lng, lat] (GeoJSON order) everywhere in this module.
  *
- * Load.routeGeometry stores an encoded polyline (Google's polyline algorithm, precision 5, about 1 m), simplified
- * so a long-haul route stays a few thousand points (10-20 KB) and decodes in well under a millisecond.
+ * A load's road route is stored in LoadRoute.geometry (one row per load; Load.routeGeometry is deprecated and always
+ * null) as an encoded polyline (Google's polyline algorithm, precision 5, about 1 m), simplified so a long-haul route
+ * stays a few thousand points (10-20 KB) and decodes in well under a millisecond.
  */
+
+/**
+ * The stored road route of a load row: load.route.geometry, attached by the Prisma include ROUTE_INCLUDE
+ * ({ route: { select: { geometry: true } } }, see ./route.js) or by withRouteGeometry() there. null when the load has
+ * no stored route or it was not looked up.
+ */
+export const routeGeometryOf = (load) => load?.route?.geometry || null;
 
 const R_MI = 3958.8;
 const toRad = (d) => (d * Math.PI) / 180;

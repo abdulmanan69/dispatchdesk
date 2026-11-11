@@ -2,9 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import request from 'supertest';
 import { app, registerUser, prisma } from './helpers.js';
 import { clearLiveCache } from '../src/services/market/live.js';
-import { clearDeadheadCache, ensureLoadRoute, routeQueueIdle } from '../src/services/fleet/route.js';
+import { clearDeadheadCache, ensureLoadRoute, routeQueueIdle, withRouteGeometry, ROUTE_INCLUDE } from '../src/services/fleet/route.js';
+import { routeIsCurrent, routeMeta } from '../src/services/fleet/index.js';
+import { measuredRoute } from '../src/services/fleet/progress.js';
 import { encodePolyline, decodePolyline, segmentMiles } from '../src/services/fleet/polyline.js';
-import { clearPaceCache } from '../src/services/fleet/insights.js';
+import { clearPaceCache, plansFor } from '../src/services/fleet/insights.js';
 import { clearTodayCache } from '../src/services/fleet/today.js';
 import { runCheckCalls } from '../src/jobs/extra/checkcalls.js';
 import { backfillFleetFlags, refreshRoutes } from '../src/jobs/extra/fleet-backfill.js';
@@ -68,8 +70,11 @@ describe('road routes on trips', () => {
     expect(String(f.mock.calls[0][0])).toContain('overview=full');
     expect(trip.route).toMatchObject({ source: 'osrm', estimate: false, current: true, miles: 452, minutes: 410 });
     expect(trip.loadedMiles).toBe(452);
-    const row = await prisma.load.findUnique({ where: { id: trip.id } });
-    const pts = decodePolyline(row.routeGeometry);
+    const row = await prisma.load.findUnique({ where: { id: trip.id }, include: { route: true } });
+    // The shape lives in LoadRoute; the deprecated column on Load stays empty.
+    expect(row.routeGeometry).toBeNull();
+    expect(row).toMatchObject({ routeSource: 'osrm', routeMiles: 452, routeMinutes: 410 });
+    const pts = decodePolyline(row.route.geometry);
     expect(pts[0][1]).toBeCloseTo(row.originLat, 5);
     expect(pts.at(-1)[0]).toBeCloseTo(row.destLng, 5);
     expect(pts.length).toBeGreaterThan(2);
@@ -100,11 +105,14 @@ describe('road routes on trips', () => {
     stubOsrm(() => { throw new TypeError('fetch failed'); });
     const res = await A.agent.post('/api/fleet/trips').send({ carrierId: truck.id, origin: { city: 'Dallas', state: 'TX' }, dest: { city: 'Atlanta', state: 'GA' }, rateCents: 300000 });
     expect(res.body.trip.route).toMatchObject({ source: 'estimate', estimate: true, current: true });
-    expect(decodePolyline((await prisma.load.findUnique({ where: { id: res.body.trip.id } })).routeGeometry)).toHaveLength(2);
+    expect(decodePolyline((await prisma.loadRoute.findUnique({ where: { loadId: res.body.trip.id } })).geometry)).toHaveLength(2);
     clearLiveCache();
+    // A row read without its shape: ensureLoadRoute looks the stored route up itself before deciding.
     const row = await prisma.load.findUnique({ where: { id: trip.id } });
+    const before = (await prisma.loadRoute.findUnique({ where: { loadId: trip.id } })).geometry;
     expect(await ensureLoadRoute(row, { force: true })).toBeNull();
     expect((await prisma.load.findUnique({ where: { id: trip.id } })).routeSource).toBe('osrm');
+    expect((await prisma.loadRoute.findUnique({ where: { loadId: trip.id } })).geometry).toBe(before);
     await A.agent.delete(`/api/fleet/trips/${res.body.trip.id}`).expect(200);
   });
 
@@ -350,12 +358,15 @@ describe('Today board and check-call reminders', () => {
     expect(made.id).toBeTruthy();
     expect(await routeQueueIdle()).toBe(true);
     expect((await prisma.load.findUnique({ where: { id: made.id } })).routeSource).toBe('osrm');
+    expect(await prisma.loadRoute.count({ where: { loadId: made.id } })).toBe(1);
     // One the queue missed (full, or the process restarted before it ran): the backfill job computes it.
-    await prisma.load.update({ where: { id: made.id }, data: { routeGeometry: null, routeMiles: null, routeMinutes: null, routeSource: null, routeComputedAt: null } });
+    await prisma.loadRoute.deleteMany({ where: { loadId: made.id } });
+    await prisma.load.update({ where: { id: made.id }, data: { routeMiles: null, routeMinutes: null, routeSource: null, routeComputedAt: null } });
     clearLiveCache();
     const r2 = await refreshRoutes(new Date(), { maxLoads: 20 });
     expect(r2.computed).toBeGreaterThanOrEqual(1);
     expect((await routesUntil(made.id, (r) => r.routeSource === 'osrm')).routeSource).toBe('osrm');
+    expect(decodePolyline((await prisma.loadRoute.findUnique({ where: { loadId: made.id } })).geometry).length).toBeGreaterThan(2);
   });
 
   it('loads known only by their state get no road route; stale estimates are retried, recent ones wait', async () => {
@@ -377,6 +388,7 @@ describe('Today board and check-call reminders', () => {
     clearLiveCache();
     const f = stubOsrm(byDest);
     expect(await routesUntil(vague.id, (r) => r.routeSource === 'none')).toMatchObject({ routeSource: 'none', routeGeometry: null });
+    expect(await prisma.loadRoute.count({ where: { loadId: vague.id } })).toBe(0);
     expect(f.mock.calls.some(([u]) => String(u).includes('-119.47,37.18'))).toBe(false);
     const waiting = await prisma.load.findUnique({ where: { id: typed.id } });
     expect(waiting.routeSource).toBe('estimate');
@@ -388,5 +400,80 @@ describe('Today board and check-call reminders', () => {
     const listed = (await A.agent.get('/api/fleet')).body.trucks.find((t) => t.id === truck.id).trips.find((t) => t.id === vague.id);
     expect(listed.route).toMatchObject({ current: false, stateOnly: true });
     vi.unstubAllGlobals();
+  });
+});
+
+describe('stored road routes live in LoadRoute', () => {
+  let A; let B; let truck;
+  beforeAll(async () => {
+    A = await registerUser();
+    B = await registerUser();
+    truck = (await A.agent.post('/api/carriers').send({ companyName: 'Shape Freight', state: 'TX', phone: '2145550188' })).body.carrier;
+    await A.agent.patch(`/api/fleet/carriers/${truck.id}`).send({ truckStatus: 'available', location: { city: 'Dallas', state: 'TX' } });
+  });
+  beforeEach(() => { clearLiveCache(); clearDeadheadCache(); clearPaceCache(); clearTodayCache(); });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('withRouteGeometry attaches shapes in one query and leaves the rows it was given alone', async () => {
+    stubOsrm(byDest);
+    const t1 = (await A.agent.post('/api/fleet/trips').send({ carrierId: truck.id, origin: { city: 'Dallas', state: 'TX' }, dest: { city: 'Memphis', state: 'TN' }, rateCents: 150000 })).body.trip;
+    const t2 = (await A.agent.post('/api/fleet/trips').send({ carrierId: truck.id, origin: { city: 'Dallas', state: 'TX' }, dest: { city: 'Nashville', state: 'TN' }, rateCents: 180000 })).body.trip;
+    const never = await prisma.load.create({ data: { ownerId: A.user.id, carrierId: truck.id, originCity: 'Dallas', originState: 'TX', destCity: 'Memphis', destState: 'TN', rateCents: 1, loadedMiles: 1, status: 'planned' } });
+    const rows = await prisma.load.findMany({ where: { id: { in: [t1.id, t2.id, never.id] } } });
+    const attached = await withRouteGeometry(rows);
+    for (const r of rows) expect(r.route).toBeUndefined();
+    const byId = Object.fromEntries(attached.map((l) => [l.id, l]));
+    expect(decodePolyline(byId[t1.id].route.geometry).at(-1)[0]).toBeCloseTo(-90.049, 3);
+    expect(decodePolyline(byId[t2.id].route.geometry).at(-1)[0]).toBeCloseTo(-86.781, 3);
+    expect(byId[never.id].route).toBeNull();
+    // Rows that already carry their shape are passed through untouched.
+    const again = await withRouteGeometry(attached);
+    expect(again[0]).toBe(attached[0]);
+    await prisma.load.delete({ where: { id: never.id } });
+    await A.agent.post(`/api/fleet/trips/${t2.id}/status`).send({ status: 'canceled' });
+  });
+
+  it('route checks read the attached LoadRoute shape, never the deprecated column', async () => {
+    const trip = await prisma.load.findFirst({ where: { carrierId: truck.id, status: 'planned' }, orderBy: { createdAt: 'asc' }, include: ROUTE_INCLUDE });
+    expect(routeIsCurrent(trip)).toBe(true);
+    expect(measuredRoute(trip).n).toBeGreaterThan(2);
+    const { route, ...bare } = trip;
+    expect(route.geometry.length).toBeGreaterThan(10);
+    expect(routeIsCurrent(bare)).toBe(false);
+    expect(measuredRoute(bare)).toBeNull();
+    expect(routeIsCurrent({ ...bare, routeGeometry: route.geometry })).toBe(false);
+    expect(routeMeta(trip)).toMatchObject({ current: true, miles: 452 });
+  });
+
+  it('plans read without shapes (Today board, tracking page) still use the road route', async () => {
+    const trip = (await prisma.load.findFirst({ where: { carrierId: truck.id, status: 'planned' }, orderBy: { createdAt: 'asc' } }));
+    // A row read without its LoadRoute, as services/fleet/today.js and loadShare.js read them.
+    const carrier = await prisma.carrier.findUnique({ where: { id: truck.id }, include: { loads: { where: { status: { in: ['planned', 'booked', 'in_transit'] } } }, locationShares: true } });
+    expect(carrier.loads.find((l) => l.id === trip.id).route).toBeUndefined();
+    const plan = (await plansFor([carrier], { withEvents: false }))[truck.id];
+    expect(plan.trips.find((t) => t.id === trip.id).estimate).toBe(false);
+  });
+
+  it('a finished trip drops its LoadRoute row, keeps its road miles and reads as not current', async () => {
+    const trip = await prisma.load.findFirst({ where: { carrierId: truck.id, status: 'planned' }, orderBy: { createdAt: 'asc' } });
+    expect(await prisma.loadRoute.count({ where: { loadId: trip.id } })).toBe(1);
+    for (const status of ['booked', 'in_transit', 'delivered']) {
+      expect((await A.agent.post(`/api/fleet/trips/${trip.id}/status`).send({ status })).status).toBe(200);
+    }
+    expect(await prisma.loadRoute.count({ where: { loadId: trip.id } })).toBe(0);
+    expect(await prisma.load.findUnique({ where: { id: trip.id } })).toMatchObject({ routeMiles: 452, routeSource: 'osrm' });
+    const item = (await A.agent.get(`/api/fleet/routes?ids=${trip.id}`)).body.items[0];
+    expect(item).toMatchObject({ estimate: true, pending: false, miles: 452 });
+    expect(decodePolyline(item.geometry)).toHaveLength(2);
+    // Another user never sees it.
+    expect((await B.agent.get(`/api/fleet/routes?ids=${trip.id}`)).body.items).toHaveLength(0);
+  });
+
+  it('deleting a load deletes its LoadRoute row', async () => {
+    stubOsrm(byDest);
+    const t = (await A.agent.post('/api/fleet/trips').send({ carrierId: truck.id, origin: { city: 'Dallas', state: 'TX' }, dest: { city: 'Memphis', state: 'TN' }, rateCents: 99000 })).body.trip;
+    expect(await prisma.loadRoute.count({ where: { loadId: t.id } })).toBe(1);
+    await A.agent.delete(`/api/fleet/trips/${t.id}`).expect(200);
+    expect(await prisma.loadRoute.count({ where: { loadId: t.id } })).toBe(0);
   });
 });

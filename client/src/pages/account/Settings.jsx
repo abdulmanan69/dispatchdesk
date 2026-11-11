@@ -53,7 +53,7 @@ function Profile() {
   const { user, setUser } = useAuth();
   const toast = useToast();
   const fileRef = useRef(null);
-  const [form, setForm] = useState({ name: user.name, phone: user.phone || '', bio: user.bio || '', timezone: user.timezone });
+  const [form, setForm] = useState({ name: user.name, phone: user.phone || '', bio: user.bio || '', timezone: user.timezone, companyName: user.companyName || '' });
   const save = useSaveProfile('Profile saved');
   const zones = useMemo(() => {
     try { return Intl.supportedValuesOf('timeZone'); } catch { return ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC']; }
@@ -87,6 +87,10 @@ function Profile() {
           <Field label="Full name" required><Input value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
           <Field label="Email" hint={user.emailVerified ? 'Verified' : 'Not verified yet'}><Input value={user.email} disabled /></Field>
           <Field label="Phone"><Input type="tel" value={form.phone} maxLength={40} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+          <Field label="Company name"
+            hint={user.team?.name ? `Templates use your team name (${user.team.name}) for {{my_company}} while you are on a team` : 'Fills {{my_company}} in your email and text templates'}>
+            <Input value={form.companyName} maxLength={120} autoComplete="organization" placeholder="Your dispatch company" onChange={(e) => setForm({ ...form, companyName: e.target.value })} />
+          </Field>
           <Field label="Time zone" hint="Used for dashboards, reminders and scheduling">
             <Select value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })}>
               {zones.map((z) => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
@@ -177,6 +181,7 @@ function PushSettings() {
     onSuccess: (d) => {
       if (d?.user) setUser(d.user);
       qc.setQueryData(['push', 'devices'], (old) => (old ? { ...old, notifyPush: !!d?.user?.notifyPush } : old));
+      qc.setQueryData(['push', 'preferences'], (old) => (old ? { ...old, enabled: !!d?.user?.notifyPush } : old));
     },
   });
   const test = useApiMutation((id) => api.post('/api/push/test', id ? { id } : {}), {
@@ -228,6 +233,8 @@ function PushSettings() {
               <div><p className="text-sm font-medium">Send push notifications</p><p className="text-xs text-muted">Applies to every device below</p></div>
               <Switch checked={!!d.notifyPush} disabled={pref.isPending} onChange={(v) => pref.mutate(v)} label={<span className="sr-only">Send push notifications</span>} />
             </div>
+
+            <PushCategories enabled={!!d.notifyPush} />
 
             <div>
               <h3 className="text-[13px] font-medium">This device</h3>
@@ -284,6 +291,34 @@ function PushSettings() {
         )}
       </QueryState>
     </Card>
+  );
+}
+
+/**
+ * One switch per push category (driver issues, email replies, follow-ups...). Turning one off stops only the push:
+ * the alert still appears in the bell menu. Disabled while push is off for the account.
+ */
+function PushCategories({ enabled }) {
+  const qc = useQueryClient();
+  const prefs = useQuery({ queryKey: ['push', 'preferences'], queryFn: ({ signal }) => api.get('/api/push/preferences', undefined, { signal }) });
+  const save = useApiMutation((categories) => api.put('/api/push/preferences', { categories }), {
+    onSuccess: (d) => qc.setQueryData(['push', 'preferences'], d),
+  });
+  const list = prefs.data?.categories || [];
+  if (!list.length) return null;
+  return (
+    <div>
+      <h3 className="text-[13px] font-medium">What to send</h3>
+      <p className="mt-0.5 text-xs text-muted">{enabled ? 'Alerts you turn off here still appear in the bell menu.' : 'Turn on push notifications above to choose what is sent.'}</p>
+      <ul className="mt-2 divide-y divide-line rounded-lg border border-line">
+        {list.map((c) => (
+          <li key={c.key} className="flex items-center justify-between gap-4 px-4 py-2.5">
+            <p className={cx('min-w-0 text-sm', !enabled && 'text-muted')}>{c.label}</p>
+            <Switch checked={!!c.on} disabled={!enabled || save.isPending} onChange={(v) => save.mutate({ [c.key]: v })} label={<span className="sr-only">{c.label}</span>} />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
