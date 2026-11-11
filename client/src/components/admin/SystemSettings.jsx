@@ -11,7 +11,7 @@ import OAuthSetupGuide from './OAuthSetupGuide.jsx';
 const GROUPS = [
   { key: 'app', title: 'Application', test: null },
   { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
-  { key: 'email', title: 'Platform email (SMTP)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Hostinger: smtp.hostinger.com, port 465, secure on.' },
+  { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
   { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
   { key: 'billing', title: 'Billing (Stripe)', test: ['stripe'] },
 ];
@@ -21,7 +21,7 @@ const LABELS = {
   'ai.baseUrl': 'API base URL (OpenAI-compatible)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional)',
   'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
   'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
-  'smtp.dailyLimit': 'Platform emails per day',
+  'smtp.dailyLimit': 'Platform emails per day', 'brevo.apiKey': 'Brevo API key (optional, replaces SMTP)',
   'google.clientId': 'Google OAuth client ID', 'google.clientSecret': 'Google OAuth client secret',
   'microsoft.clientId': 'Microsoft OAuth client ID', 'microsoft.clientSecret': 'Microsoft OAuth client secret', 'microsoft.tenant': 'Microsoft tenant',
   'fmcsa.webKey': 'FMCSA QCMobile webKey', 'fmcsa.socrataAppToken': 'data.transportation.gov app token', 'eia.apiKey': 'EIA API key (diesel and gasoline prices, free at eia.gov/opendata)', 'fred.apiKey': 'FRED API key (truck tonnage index, free at fred.stlouisfed.org)', 'usda.marsApiKey': 'USDA My Market News API key (produce truck rates, free at mymarketnews.ams.usda.gov)',

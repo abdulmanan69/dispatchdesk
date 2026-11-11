@@ -379,7 +379,13 @@ const TESTS = {
   google: () => checkOAuthClient('gmail'),
   microsoft: () => checkOAuthClient('outlook'),
   async smtp() {
-    const s = await getSettings(['smtp.host', 'smtp.port', 'smtp.secure', 'smtp.user', 'smtp.pass', 'smtp.from']);
+    const s = await getSettings(['smtp.host', 'smtp.port', 'smtp.secure', 'smtp.user', 'smtp.pass', 'smtp.from', 'brevo.apiKey']);
+    if (s['brevo.apiKey']) {
+      const res = await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': s['brevo.apiKey'], accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, message: `Brevo refused the API key: ${body.message || res.status}` };
+      return { ok: true, message: `Brevo API key works${body.companyName ? ` (${body.companyName})` : ''}${s['smtp.from'] ? '' : ' — note: "From" address is not set'}` };
+    }
     if (!s['smtp.host']) return { ok: false, message: 'SMTP host is not set' };
     const t = nodemailer.createTransport({ host: s['smtp.host'], port: Number(s['smtp.port'] || 587), secure: s['smtp.secure'] === 'true', auth: s['smtp.user'] ? { user: s['smtp.user'], pass: s['smtp.pass'] } : undefined, connectionTimeout: 10000 });
     await t.verify();

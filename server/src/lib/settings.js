@@ -23,6 +23,8 @@ export const SETTING_DEFS = {
   'smtp.user': { group: 'email', default: () => config.smtp.user || '' },
   'smtp.pass': { group: 'email', secret: true, default: () => config.smtp.pass || '' },
   'smtp.from': { group: 'email', default: () => config.smtp.from || '' },
+  // Brevo transactional API key (xkeysib-...). When set, platform mail goes through Brevo's HTTPS API instead of SMTP.
+  'brevo.apiKey': { group: 'email', secret: true, default: () => process.env.BREVO_API_KEY || '' },
   // Platform mail budget per UTC day (verification, password reset, digests). services/email/system.js keeps a share
   // of it for verification and reset mail.
   'smtp.dailyLimit': { group: 'email', default: () => process.env.PLATFORM_MAIL_DAILY_LIMIT || '300' },

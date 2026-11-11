@@ -5,7 +5,8 @@ import { onBroadcast } from '../../lib/broadcast.js';
 
 /**
  * Transactional mail (verification, password reset, invitations, notifications)
- * using the platform SMTP account configured by an admin or via SMTP_* env vars.
+ * using the platform SMTP account configured by an admin or via SMTP_* env vars, or Brevo's HTTPS API when a Brevo
+ * API key is set (setting `brevo.apiKey` / env BREVO_API_KEY; then only the From address is needed).
  * Returns { sent: true, messageId } only when the SMTP server accepted the message.
  *
  * Daily budget: free SMTP plans cap the platform at a few hundred messages a day (Brevo free: 300), shared by every
@@ -20,8 +21,41 @@ const BUDGET_KEY = 'mail.platformBudget';
 export const SYSTEM_MAIL_CATEGORIES = ['auth', 'notice', 'digest'];
 
 export async function systemMailConfigured() {
-  const s = await getSettings(['smtp.host', 'smtp.from']);
-  return !!(s['smtp.host'] && s['smtp.from']);
+  const s = await getSettings(['smtp.host', 'smtp.from', 'brevo.apiKey']);
+  return !!((s['smtp.host'] || s['brevo.apiKey']) && s['smtp.from']);
+}
+
+/** "Name <email>" or "email" -> { name?, email }. */
+export function parseFrom(from) {
+  const m = /^\s*(?:"?([^"<]*?)"?\s*)?<\s*([^<>\s]+@[^<>\s]+)\s*>\s*$/.exec(String(from || ''));
+  if (m) return { ...(m[1]?.trim() ? { name: m[1].trim() } : {}), email: m[2] };
+  return { email: String(from || '').trim() };
+}
+
+const BREVO_URL = 'https://api.brevo.com/v3/smtp/email';
+
+/** Send one message through Brevo's transactional API (HTTPS, no SMTP key needed). Throws with Brevo's message on failure. */
+export async function sendViaBrevo(apiKey, { from, to, subject, text, html }) {
+  const res = await fetch(BREVO_URL, {
+    method: 'POST',
+    headers: { 'api-key': apiKey, 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({
+      sender: parseFrom(from),
+      to: [{ email: String(to) }],
+      subject,
+      ...(text ? { textContent: text } : {}),
+      ...(html ? { htmlContent: html } : {}),
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  let body = null;
+  try { body = await res.json(); } catch { body = null; }
+  if (!res.ok) {
+    const err = new Error(`Brevo ${res.status}: ${body?.message || res.statusText || 'request failed'}`);
+    err.code = body?.code || `HTTP_${res.status}`;
+    throw err;
+  }
+  return { messageId: body?.messageId || null };
 }
 
 // One pooled transport per process, rebuilt when SMTP settings change (settings broadcast) or differ.
@@ -96,10 +130,11 @@ export async function platformMailStatus() {
  * category: 'auth' (verification, reset, invitations; reserved capacity), 'notice' or 'digest' (budgeted).
  */
 export async function sendSystemMail({ to, subject, text, html, category = 'auth' }) {
-  const s = await getSettings(['smtp.host', 'smtp.port', 'smtp.secure', 'smtp.user', 'smtp.pass', 'smtp.from', 'app.name']);
-  if (!s['smtp.host'] || !s['smtp.from']) {
-    console.warn(`[mail] Platform SMTP not configured — not sending "${subject}" to ${to}`);
-    return { sent: false, reason: 'Platform email (SMTP) is not configured' };
+  const s = await getSettings(['smtp.host', 'smtp.port', 'smtp.secure', 'smtp.user', 'smtp.pass', 'smtp.from', 'app.name', 'brevo.apiKey']);
+  const useBrevo = !!s['brevo.apiKey'];
+  if ((!s['smtp.host'] && !useBrevo) || !s['smtp.from']) {
+    console.warn(`[mail] Platform email not configured — not sending "${subject}" to ${to}`);
+    return { sent: false, reason: 'Platform email (SMTP or Brevo) is not configured' };
   }
   const auth = category === 'auth';
   if (!auth) {
@@ -110,7 +145,9 @@ export async function sendSystemMail({ to, subject, text, html, category = 'auth
     }
   }
   try {
-    const info = await transportFor(s).sendMail({ from: s['smtp.from'], to, subject, text, html: html || undefined });
+    const info = useBrevo
+      ? await sendViaBrevo(s['brevo.apiKey'], { from: s['smtp.from'], to, subject, text, html })
+      : await transportFor(s).sendMail({ from: s['smtp.from'], to, subject, text, html: html || undefined });
     await updateBudget((b) => ({ ...b, sent: (b.sent || 0) + 1, other: (b.other || 0) + (auth ? 0 : 1) })).catch(() => {});
     return { sent: true, messageId: info.messageId };
   } catch (err) {
