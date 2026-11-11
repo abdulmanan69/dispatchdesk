@@ -70,7 +70,8 @@ const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^
   /^\/api\/fleet\/(trips\/[^/]+\/tracking-links|carriers\/[^/]+\/share)(\/|$)/,
   /^\/api\/invoices\/(export\.csv|[^/]+\/send)(\/|$)/,
   /^\/api\/carriers\/export\.csv(\/|$)/,
-  /^\/api\/reports\/profit\.csv(\/|$)/];
+  /^\/api\/reports\/profit\.csv(\/|$)/,
+  /^\/api\/ai-settings/];
 
 /** Throw 403 when the request uses a personal API token (for routes that mint public links or export in bulk). */
 export function refuseApiToken(req, what = 'this') {

@@ -67,6 +67,11 @@ model User {
   agreementTemplate String? // last dispatch agreement text used for onboarding links
   googleSub         String?   @unique // Google account id ("sub") linked for Continue with Google
   invoiceLogo       String? // stored file name of the logo printed on invoices and statements
+  aiProvider        String? // BYOK: openai (OpenAI-compatible) | anthropic; null = use the platform AI
+  aiBaseUrl         String? // BYOK: base URL for OpenAI-compatible providers
+  aiModel           String? // BYOK: model id
+  aiKeyEnc          String? // BYOK: encrypted API key
+  aiKeyHint         String? // BYOK: last 4 characters, for display
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -110,6 +115,9 @@ model User {
   onboardingLinks    OnboardingLink[]
   loadTemplates      LoadTemplate[]
   consolidations     Consolidation[]
+  aiUsage            AiUsageEvent[]
+  contactConsents    ContactConsent[]
+  negotiations       Negotiation[]
   uploadedDocuments  Document[]            @relation("DocumentUploader")
   trainingCourses    TrainingCourse[]
   trainingProgress   TrainingProgress[]
@@ -383,6 +391,8 @@ model Carrier {
   loads           Load[]
   documents       Document[]
   onboardingLinks OnboardingLink[]
+  contactConsents ContactConsent[]
+  negotiations    Negotiation[]
   listItems       ProspectListItem[]
   locationShares  LocationShare[]
   invoices        Invoice[]
@@ -770,6 +780,7 @@ model Email {
   sentAt            DateTime?
   messageId         String? // Message-ID header we generated (reply threading)
   repliedAt         DateTime?
+  negotiationId     String?
   bouncedAt         DateTime?
   bounceReason      String?
   attachments       String? // JSON [{documentId, name, size}] sent with this email
@@ -793,6 +804,8 @@ model Email {
   @@index([userId, updatedAt])
   @@index([messageId])
   @@index([userId, repliedAt])
+  @@index([negotiationId])
+  @@index([userId, aiGenerated, status])
 }
 
 model EmailSuppression {
@@ -836,6 +849,8 @@ model SequenceStep {
   subject      String?
   body         String?
   instructions String?
+  aiMode       String? // email steps: null/off = template | auto = AI writes and sends | review = AI writes, user approves
+  aiBrief      String? // what the AI email should say (goal, offer, tone)
   sequence     EmailSequence  @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
   template     EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
@@ -871,6 +886,7 @@ model SequenceEnrollment {
 model Broker {
   id               String    @id @default(cuid())
   ownerId          String
+  negotiations     Negotiation[]
   companyName      String
   contactName      String?
   email            String?
@@ -1088,6 +1104,85 @@ model Consolidation {
 
   @@index([ownerId, status])
   @@index([carrierId, status])
+}
+
+/// One AI call charged to a user (platform key) or made with the user's own key (BYOK), for quotas and cost reports.
+model AiUsageEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  purpose      String // chat | draft_email | call_script | objection | analyze_load | sequence_email | negotiation | other
+  byok         Boolean  @default(false)
+  provider     String? // openai | anthropic
+  model        String?
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  ok           Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, byok, createdAt])
+  @@index([createdAt])
+}
+
+/// Consent to automated calls / texts (TCPA). Proof is kept: exact text shown, its hash, when, how, IP and device.
+model ContactConsent {
+  id               String    @id @default(cuid())
+  ownerId          String
+  carrierId        String
+  phone            String // E.164-ish digits the consent covers
+  channels         String // comma list: sms,voice
+  consentText      String // exact wording the person agreed to
+  consentHash      String // sha256 of consentText
+  source           String // onboarding | manual | form
+  onboardingLinkId String?
+  grantedAt        DateTime  @default(now())
+  grantedByName    String?
+  ip               String?
+  userAgent        String?
+  proofDocumentId  String? // optional uploaded proof for manual consents
+  note             String?
+  revokedAt        DateTime?
+  revokeReason     String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  owner            User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  carrier          Carrier   @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, carrierId])
+  @@index([carrierId, revokedAt])
+  @@index([phone])
+}
+
+/// AI-assisted rate negotiation with a broker by email. The dispatcher always approves the final agreement.
+model Negotiation {
+  id              String    @id @default(cuid())
+  ownerId         String
+  brokerId        String
+  carrierId       String?
+  loadId          String?
+  emailAccountId  String?
+  toEmail         String
+  status          String    @default("active") // draft | active | needs_review | agreed | walked_away | canceled
+  mode            String    @default("approve") // approve = every email waits for the dispatcher | auto = counters inside the limits go out automatically
+  lane            String // JSON { originCity, originState, destCity, destState, pickupDate, equipment, weightLbs, miles, reference }
+  offerCents      Int? // broker's latest offer
+  targetCents     Int // what the dispatcher wants
+  floorCents      Int // walk-away: never counter or accept below this
+  lastCounterCents Int?
+  agreedCents     Int?
+  rounds          Int       @default(0)
+  maxRounds       Int       @default(3)
+  history         String    @default("[]") // JSON [{ at, from: 'broker'|'ai'|'dispatcher', kind, cents, text, emailId }]
+  nextAction      String? // JSON proposal waiting for approval { kind: 'counter'|'accept'|'walk_away'|'ask', cents, subject, body }
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  owner           User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  broker          Broker    @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+  carrier         Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, status])
+  @@index([brokerId])
+  @@index([loadId])
 }
 
 // ---------------------------------------------------------------------------

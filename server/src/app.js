@@ -69,6 +69,9 @@ import onboardingLinkRoutes from './routes/onboardingLinks.js';
 import loadTemplateRoutes from './routes/loadTemplates.js';
 import consolidationRoutes from './routes/consolidations.js';
 import reportRoutes from './routes/reports.js';
+import aiSettingsRoutes from './routes/aiSettings.js';
+import contactConsentRoutes from './routes/contactConsents.js';
+import negotiationRoutes from './routes/negotiations.js';
 import publicOnboardingRoutes from './routes/publicOnboarding.js';
 import planEtaRoutes from './routes/planEta.js';
 import onboardingRoutes from './routes/onboarding.js';
@@ -268,6 +271,9 @@ export function createApp() {
   app.use('/api/load-templates', requireAuth, loadTemplateRoutes);
   app.use('/api/consolidations', requireAuth, consolidationRoutes);
   app.use('/api/reports', requireAuth, reportRoutes);
+  app.use('/api/ai-settings', requireAuth, aiSettingsRoutes);
+  app.use('/api/contact-consents', requireAuth, contactConsentRoutes);
+  app.use('/api/negotiations', requireAuth, negotiationRoutes);
   app.use('/api/plan-eta', requireAuth, planEtaRoutes);
 
   app.use('/api', notFoundApi);
