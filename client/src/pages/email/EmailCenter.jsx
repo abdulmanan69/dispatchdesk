@@ -10,13 +10,15 @@ import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { ComposeForm } from '../../components/email/ComposeModal.jsx';
 import { ConnectMailboxModal, ReconnectSmtpModal, ProviderMark, startOAuth, useConnectOptions } from '../../components/email/ConnectMailbox.jsx';
 import { ImapSettingsModal, imapSummary } from '../../components/email/ImapSettings.jsx';
+import ReviewQueue, { AiBadge, useReviewCount } from '../../components/email/ReviewQueue.jsx';
 import { TEMPLATE_CATEGORIES, categoryMeta, usesLabel } from '../../components/templates/templateApi.js';
 import {
   Badge, Button, Card, DataTable, EmptyState, Field, Input, PageHeader, Pagination, QueryState, Select, StatCard, Switch, Tabs, Textarea,
 } from '../../components/ui.jsx';
 import { dateTime, label, relative } from '../../lib/format.js';
 
-const STATUS_COLOR = { sent: 'green', scheduled: 'blue', draft: 'gray', failed: 'red', canceled: 'gray', sending: 'amber' };
+const STATUS_COLOR = { sent: 'green', scheduled: 'blue', draft: 'gray', failed: 'red', canceled: 'gray', sending: 'amber', review: 'amber' };
+const statusLabel = (s) => (s === 'review' ? 'Needs approval' : label(s));
 const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((n || 0) / 1024))} KB`);
 
 function MessageView({ email, onClose }) {
@@ -36,7 +38,8 @@ function MessageView({ email, onClose }) {
           <dl className="grid grid-cols-[90px_1fr] gap-x-3 gap-y-1 text-[13px]">
             <dt className="text-muted">Status</dt>
             <dd className="flex flex-wrap gap-1.5">
-              <Badge color={STATUS_COLOR[email.status]}>{label(email.status)}</Badge>
+              <Badge color={STATUS_COLOR[email.status]}>{statusLabel(email.status)}</Badge>
+              {email.aiGenerated && <AiBadge />}
               {email.repliedAt && <Badge color="violet">Replied</Badge>}
               {email.bouncedAt && <Badge color="red">Bounced</Badge>}
             </dd>
@@ -128,7 +131,8 @@ function MessageList({ status, filter }) {
     {
       key: 'status', header: 'Status', render: (m) => (
         <span className="flex flex-wrap gap-1">
-          <Badge color={STATUS_COLOR[m.status]}>{label(m.status)}{m.aiGenerated ? ' · AI' : ''}</Badge>
+          <Badge color={STATUS_COLOR[m.status]}>{statusLabel(m.status)}</Badge>
+          {m.aiGenerated && <AiBadge />}
           {m.repliedAt && <Badge color="violet">Replied</Badge>}
           {m.bouncedAt && <Badge color="red">Bounced</Badge>}
           {m.attachments?.length > 0 && <Badge><Paperclip className="mr-0.5 inline size-3" aria-hidden />{m.attachments.length}<span className="sr-only"> attachments</span></Badge>}
@@ -436,13 +440,14 @@ function Signature() {
   );
 }
 
-const TABS = ['compose', 'sent', 'replies', 'scheduled', 'drafts', 'failed', 'templates', 'mailboxes', 'suppression', 'signature'];
+const TABS = ['compose', 'review', 'sent', 'replies', 'scheduled', 'drafts', 'failed', 'templates', 'mailboxes', 'suppression', 'signature'];
 
 export default function EmailCenter() {
   const [params, setParams] = useSearchParams();
   const toast = useToast();
   const tab = TABS.includes(params.get('tab')) ? params.get('tab') : 'compose';
   const status = useQuery({ queryKey: ['email', 'status'], queryFn: () => api.get('/api/email/status') });
+  const reviewCount = useReviewCount().data || 0;
 
   useEffect(() => {
     const connected = params.get('connected');
@@ -464,8 +469,14 @@ export default function EmailCenter() {
         <StatCard label="Scheduled" value={s?.scheduled ?? '—'} icon={Mail} />
         <StatCard label="Daily limit" value={s ? (s.limit < 0 ? 'Unlimited' : s.limit) : '—'} tone="signal" />
       </div>
-      <Tabs className="mb-4" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ value: t, label: label(t) }))} />
+      <Tabs className="mb-4" value={tab} onChange={setTab} tabs={TABS.map((t) => ({
+        value: t,
+        label: t === 'review'
+          ? <span className="inline-flex items-center gap-1.5">Needs approval{reviewCount > 0 && <Badge color="amber">{reviewCount}</Badge>}</span>
+          : label(t),
+      }))} />
       {tab === 'compose' && <Card title="New email"><ComposeForm /></Card>}
+      {tab === 'review' && <ReviewQueue />}
       {tab === 'sent' && <MessageList status="sent" />}
       {tab === 'replies' && <MessageList status="sent" filter="replied" />}
       {tab === 'scheduled' && <MessageList status="scheduled" />}

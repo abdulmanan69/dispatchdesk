@@ -14,6 +14,19 @@ import { broadcast } from '../lib/broadcast.js';
 
 export const carrierTz = (carrier) => carrier?.timezone || timezoneForState(carrier?.state) || null;
 
+/**
+ * Email steps written by AI (SequenceStep.aiMode): 'auto' = AI writes and sends, 'review' = AI writes, the user
+ * approves. They are written by jobs/extra/ai-sequence-email.js (AI calls take seconds), never by the scheduler's
+ * fast loop. null/'off' = the step's template, as before.
+ */
+export const AI_STEP_MODES = ['auto', 'review'];
+export const isAiEmailStep = (step) => step?.type === 'email' && AI_STEP_MODES.includes(step?.aiMode);
+/**
+ * Start of Email.error on a 'review' email whose body is still the step's brief (the AI could not write it): it must
+ * be rewritten before it can be approved (routes/email.js).
+ */
+export const AI_NOTE_PREFIX = 'AI could not write this email';
+
 export function stepDueAt(sequence, step, startedAt, carrier, notBefore = new Date()) {
   let due = new Date(new Date(startedAt).getTime() + step.dayOffset * 86400000);
   if (due < notBefore) due = new Date(notBefore);

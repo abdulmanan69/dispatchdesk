@@ -160,7 +160,8 @@ describe('AI dispatcher', () => {
       const conv = (await a.post('/api/ai/conversations').send({})).body.conversation;
       await a.post(`/api/ai/conversations/${conv.id}/messages`).send({ content: 'one' }).expect(201);
       const second = await a.post(`/api/ai/conversations/${conv.id}/messages`).send({ content: 'two' });
-      expect(second.status).toBe(402);
+      expect(second.status).toBe(429);
+      expect(second.body.code).toBe('AI_QUOTA');
     } finally {
       await prisma.plan.update({ where: { key: 'free' }, data: { monthlyAiMessages: free.monthlyAiMessages } });
     }

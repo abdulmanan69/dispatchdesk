@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { prisma } from '../db.js';
 import { config } from '../config.js';
-import { ah, badRequest, notFound, unavailable } from '../lib/errors.js';
+import { ah, badRequest, conflict, notFound, unavailable } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, reqEmail, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { encrypt, signPayload, verifyPayload, randomToken } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
-import { assertLimit, effectivePlan } from '../lib/plans.js';
+import { assertLimit, effectivePlan, remaining } from '../lib/plans.js';
 import { loadCarrier, loadOwned, readableOwnerIds } from '../lib/access.js';
 import { accessChecker, chunks } from '../services/carriers/query.js';
 import { startOfUserDay } from '../lib/timezones.js';
@@ -18,6 +18,8 @@ import { OAUTH_PROVIDERS, buildAuthUrl, exchangeCode, oauthAvailability } from '
 import { resolveAttachments, parseAttachments, MAX_ATTACHMENTS } from '../services/email/attachments.js';
 import { imapSupport, imapSettings, testImap, assertPublicHost } from '../services/email/imap.js';
 import { recordReply } from '../services/email/replies.js';
+import { logActivity } from '../lib/activity.js';
+import { invalidateQueueCount, AI_NOTE_PREFIX } from '../services/sequenceEngine.js';
 
 const r = Router();
 
@@ -586,6 +588,187 @@ r.post('/messages/:id/replied', ah(async (req, res) => {
   if (m.repliedAt) return res.json({ email: shapeMessage(m), stopped: 0, already: true });
   const out = await recordReply({ user: req.user, email: m, fromEmail: m.toEmail, subject: `Re: ${m.subject}`, source: 'manual' });
   res.json({ email: shapeMessage(await prisma.email.findUnique({ where: { id: m.id }, include: messageInclude })), stopped: out.stopped });
+}));
+
+// ---------------------------------------------------------------------------
+// Approval queue ("Needs approval"): emails in status 'review', written by AI for sequence steps set to "AI writes,
+// I approve" (or held because the AI could not write them or mentioned a figure the inputs do not contain), and
+// rate-negotiation emails set to approval. Nothing in it is sent until approved. Owner-scoped like every message route.
+// Rejecting stops the carrier's run of that sequence (the safer choice: later steps would follow up on an email that
+// was never sent), and the run's other waiting emails are canceled with it.
+// ---------------------------------------------------------------------------
+const reviewInclude = {
+  ...messageInclude,
+  enrollment: { select: { id: true, status: true, stopReason: true, startedAt: true, currentStep: true, sequence: { select: { id: true, name: true } } } },
+};
+
+/** Still holds the step's brief (the AI could not write it): it has to be written before it can be approved. */
+const needsWriting = (m) => !m.aiGenerated && String(m.error || '').startsWith(AI_NOTE_PREFIX);
+
+/** Latest reply per carrier (Email.repliedAt, index userId+repliedAt) for the sequence emails in `rows`. */
+async function latestReplies(userId, rows) {
+  const ids = [...new Set(rows.filter((m) => m.enrollmentId && m.carrierId).map((m) => m.carrierId))];
+  if (!ids.length) return new Map();
+  const g = await prisma.email.groupBy({ by: ['carrierId'], where: { userId, carrierId: { in: ids }, repliedAt: { not: null } }, _max: { repliedAt: true } });
+  return new Map(g.map((x) => [x.carrierId, x._max.repliedAt]));
+}
+
+/**
+ * Why a waiting sequence email must not go out any more (null = it may): the carrier replied during this run of the
+ * sequence (also when its last step already completed the run), or the run was stopped (opt-out, user, bounce...).
+ */
+function endedReason(m, replies) {
+  const enr = m.enrollment;
+  if (!enr) return null;
+  const last = m.carrierId ? replies.get(m.carrierId) : null;
+  if (last && last >= (enr.startedAt || m.createdAt)) return 'replied';
+  return ['stopped', 'completed'].includes(enr.status) && enr.stopReason ? enr.stopReason : null;
+}
+const endedMessage = (reason) => `This carrier's sequence ended (${String(reason).replace(/_/g, ' ')}), so this email was not sent. Reject it, or write a new email from the composer.`;
+
+function shapeReview(m, replies) {
+  const { enrollment, ...rest } = m;
+  const ended = endedReason(m, replies);
+  return {
+    ...shapeMessage(rest),
+    note: m.error || null,
+    needsWriting: needsWriting(m),
+    sequence: enrollment ? {
+      id: enrollment.sequence?.id ?? null, name: enrollment.sequence?.name ?? null, enrollmentId: enrollment.id,
+      status: enrollment.status, stopReason: enrollment.stopReason, ended: !!ended, endedReason: ended,
+    } : null,
+  };
+}
+
+async function ownReview(req) {
+  const m = await prisma.email.findFirst({ where: { id: String(req.params.id), userId: req.user.id }, include: reviewInclude });
+  if (!m) throw notFound('Email not found');
+  if (m.status !== 'review') throw conflict(`This email is ${m.status === 'canceled' ? 'already rejected' : 'already approved'}. Refresh the list.`);
+  return m;
+}
+
+/** Connected mailbox for an approved email: its own when still connected, else the default one. Memoized per request. */
+function mailboxPicker(userId) {
+  const memo = new Map();
+  return async (accountId) => {
+    const key = accountId || '';
+    if (!memo.has(key)) memo.set(key, (accountId && await pickAccount(userId, accountId)) || await pickAccount(userId));
+    return memo.get(key);
+  };
+}
+
+r.get('/review', ah(async (req, res) => {
+  const q = parse(z.object({ ...pageQuery }), req.query);
+  const where = { userId: req.user.id, status: 'review' };
+  const [items, total] = await Promise.all([
+    prisma.email.findMany({ where, include: reviewInclude, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], ...paginate(q) }),
+    prisma.email.count({ where }),
+  ]);
+  const replies = await latestReplies(req.user.id, items);
+  res.json(pageResult(items.map((m) => shapeReview(m, replies)), total, q));
+}));
+
+/** Approve & send: optional edited { subject, body }; moves the email to 'scheduled' now (the scheduler sends it). */
+r.post('/messages/:id/approve', ah(async (req, res) => {
+  const b = parse(z.object({
+    subject: z.string().trim().max(300).optional(),
+    body: z.string().max(50000).optional(),
+  }), req.body || {});
+  const m = await ownReview(req);
+  let subject = b.subject ?? m.subject;
+  let body = b.body ?? m.body;
+  if (!String(subject).trim()) throw badRequest('Subject is required');
+  if (!String(body).trim()) throw badRequest('Body is required');
+  if (needsWriting(m) && body.trim() === String(m.body).trim()) throw badRequest('Write the email first: the text is still your brief for the AI.');
+  const ended = endedReason(m, await latestReplies(req.user.id, [m]));
+  if (ended) throw conflict(endedMessage(ended));
+  const blocked = await blockedReason(req.user.id, m.toEmail, m.carrierId);
+  if (blocked) throw badRequest(blocked);
+  const account = await mailboxPicker(req.user.id)(m.emailAccountId);
+  if (!account) throw badRequest('Connect a mailbox first (Email → Mailboxes)', { code: 'no_mailbox' });
+  await assertLimit(req.user, 'emailsToday');
+  // Merge fields typed while editing are filled like everywhere else.
+  if (/\{\{/.test(`${subject}${body}`)) {
+    const carrier = m.carrierId ? await prisma.carrier.findUnique({ where: { id: m.carrierId }, include: { contacts: true } }) : null;
+    ({ subject, body } = renderContent({ subject, body, carrier, user: req.user }));
+  }
+  const moved = await prisma.email.updateMany({
+    where: { id: m.id, userId: req.user.id, status: 'review' },
+    data: { status: 'scheduled', scheduledAt: new Date(), nextAttemptAt: null, subject, body, emailAccountId: account.id, error: null },
+  });
+  if (!moved.count) throw conflict('This email was already approved or rejected. Refresh the list.');
+  if (m.carrierId) {
+    await logActivity(req.user, { type: 'email', carrierId: m.carrierId, summary: `Approved ${m.aiGenerated ? 'AI-written ' : ''}email "${subject}"${m.enrollment?.sequence ? ` (sequence "${m.enrollment.sequence.name}")` : ''}` }).catch(() => {});
+  }
+  const email = await prisma.email.findUnique({ where: { id: m.id }, include: messageInclude });
+  res.json({ email: shapeMessage(email), message: 'Approved. It goes out within a minute, within your mailbox limits.' });
+}));
+
+r.post('/messages/:id/reject', ah(async (req, res) => {
+  const m = await ownReview(req);
+  const done = await prisma.email.updateMany({ where: { id: m.id, userId: req.user.id, status: 'review' }, data: { status: 'canceled', nextAttemptAt: null, error: 'Rejected before sending' } });
+  if (!done.count) throw conflict('This email was already approved or rejected. Refresh the list.');
+  let stopped = 0;
+  let canceled = 0;
+  // Only the run this email belongs to (a carrier enrolled again later is a new run and keeps going).
+  if (m.enrollment && m.enrollment.startedAt <= m.createdAt) {
+    stopped = (await prisma.sequenceEnrollment.updateMany({
+      where: { id: m.enrollment.id, userId: req.user.id, status: { in: ['active', 'paused'] }, startedAt: m.enrollment.startedAt },
+      data: { status: 'stopped', stopReason: 'email_rejected', nextStepAt: null },
+    })).count;
+    // The run's other emails waiting for approval go with it (they follow up on an email that was never sent).
+    canceled = (await prisma.email.updateMany({
+      where: { enrollmentId: m.enrollment.id, userId: req.user.id, status: 'review', createdAt: { gte: m.enrollment.startedAt } },
+      data: { status: 'canceled', nextAttemptAt: null, error: 'Canceled: an email of this sequence was rejected, so the carrier left it' },
+    })).count;
+    if (stopped) invalidateQueueCount(req.user.id);
+  }
+  if (m.carrierId) {
+    await logActivity(req.user, { type: 'email', carrierId: m.carrierId, summary: `Rejected ${m.aiGenerated ? 'AI-written ' : ''}email "${m.subject}"${stopped ? `; stopped sequence "${m.enrollment?.sequence?.name}"` : ''}` }).catch(() => {});
+  }
+  const email = await prisma.email.findUnique({ where: { id: m.id }, include: messageInclude });
+  res.json({ email: shapeMessage(email), stopped, canceled });
+}));
+
+/** Approve up to 100 waiting emails as they are. Ones that cannot go out are listed in `skipped` with the reason. */
+r.post('/review/approve-bulk', ah(async (req, res) => {
+  const { ids } = parse(z.object({
+    ids: z.array(z.string().trim().min(1).max(40)).min(1, 'Select at least one email').max(100, 'Approve at most 100 emails at a time'),
+  }), req.body);
+  const unique = [...new Set(ids)];
+  const rows = await prisma.email.findMany({
+    where: { id: { in: unique }, userId: req.user.id, status: 'review' }, include: reviewInclude, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  const found = new Set(rows.map((m) => m.id));
+  const skipped = unique.filter((id) => !found.has(id)).map((id) => ({ id, reason: 'Not waiting for approval' }));
+  if (rows.length) {
+    let left = await remaining(req.user, 'emailsToday');
+    if (left <= 0) await assertLimit(req.user, 'emailsToday'); // throws the plan-limit error (402)
+    const mailbox = mailboxPicker(req.user.id);
+    if (!(await mailbox(null))) throw badRequest('Connect a mailbox first (Email → Mailboxes)', { code: 'no_mailbox' });
+    const replies = await latestReplies(req.user.id, rows);
+    const approve = [];
+    for (const m of rows) {
+      const skip = (reason) => skipped.push({ id: m.id, subject: m.subject, reason });
+      if (left <= 0) { skip('Daily plan email limit reached'); continue; }
+      const ended = endedReason(m, replies);
+      if (ended) { skip(`Sequence ended (${ended.replace(/_/g, ' ')})`); continue; }
+      if (needsWriting(m)) { skip('Needs writing first: the AI could not write it'); continue; }
+      if (!m.subject.trim() || !m.body.trim()) { skip('Subject and body are required'); continue; }
+      const blocked = await blockedReason(req.user.id, m.toEmail, m.carrierId);
+      if (blocked) { skip(blocked); continue; }
+      approve.push({ id: m.id, accountId: (await mailbox(m.emailAccountId)).id });
+      left -= 1;
+    }
+    const now = new Date();
+    const results = approve.length ? await prisma.$transaction(approve.map((a) => prisma.email.updateMany({
+      where: { id: a.id, userId: req.user.id, status: 'review' },
+      data: { status: 'scheduled', scheduledAt: now, nextAttemptAt: null, emailAccountId: a.accountId, error: null },
+    }))) : [];
+    const approved = results.reduce((n, x) => n + x.count, 0);
+    return res.json({ approved, skipped, message: `${approved} email(s) approved. They go out in the background, within your mailbox limits.` });
+  }
+  res.json({ approved: 0, skipped, message: 'Nothing to approve' });
 }));
 
 r.delete('/messages/:id', ah(async (req, res) => {

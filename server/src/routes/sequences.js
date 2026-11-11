@@ -10,8 +10,9 @@ import { renderContent } from '../services/email/render.js';
 import { blockedReason, deliverEmail, pickAccount } from '../services/email/index.js';
 import { logActivity } from '../lib/activity.js';
 import { audit } from '../lib/audit.js';
-import { enrollCarriers, advanceFrom, stepDueAt, invalidateQueueCount } from '../services/sequenceEngine.js';
+import { enrollCarriers, advanceFrom, stepDueAt, invalidateQueueCount, AI_STEP_MODES } from '../services/sequenceEngine.js';
 import { writableCarriers } from '../services/carriers/query.js';
+import { writeSequenceEmail, BRIEF_MAX } from '../services/ai/sequenceEmail.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -24,6 +25,10 @@ const stepSchema = z.object({
   subject: optStr(300),
   body: optStr(20000),
   instructions: optStr(2000),
+  // Email steps: who writes the email. null/'off' = the template below; 'auto' = AI writes and sends; 'review' = AI
+  // writes, the user approves (Email -> Needs approval). The template/subject/body stay as the fallback.
+  aiMode: z.preprocess((v) => (v === '' ? null : v), z.enum(['off', ...AI_STEP_MODES]).nullable().optional()),
+  aiBrief: z.preprocess((v) => (v === '' ? null : v), z.string().trim().max(BRIEF_MAX, `Keep the AI brief to ${BRIEF_MAX} characters or fewer`).nullable().optional()),
 });
 
 const sequenceSchema = z.object({
@@ -42,10 +47,12 @@ async function validateSteps(user, steps) {
   const sorted = [...steps].sort((a, b) => a.dayOffset - b.dayOffset);
   for (const [i, s] of sorted.entries()) {
     if (s.type === 'email') {
+      const ai = AI_STEP_MODES.includes(s.aiMode);
+      if (ai && !s.aiBrief) throw badRequest(`Step ${i + 1}: describe what the AI email should say (goal, offer, tone)`);
       if (s.templateId) {
         const t = await prisma.emailTemplate.findFirst({ where: { id: s.templateId, ownerId: user.id } });
         if (!t) throw badRequest(`Step ${i + 1}: template not found`);
-      } else if (!s.subject || !s.body) throw badRequest(`Step ${i + 1}: email steps need a template or a subject and body`);
+      } else if (!ai && (!s.subject || !s.body)) throw badRequest(`Step ${i + 1}: email steps need a template or a subject and body`);
     }
     if (s.type === 'text' && !s.body) throw badRequest(`Step ${i + 1}: text steps need a message`);
   }
@@ -55,6 +62,8 @@ async function validateSteps(user, steps) {
 const stepData = (s, order) => ({
   order, dayOffset: s.dayOffset, type: s.type, templateId: s.type === 'email' ? s.templateId ?? null : null,
   subject: s.subject ?? null, body: s.body ?? null, instructions: s.instructions ?? null,
+  aiMode: s.type === 'email' && AI_STEP_MODES.includes(s.aiMode) ? s.aiMode : null,
+  aiBrief: s.type === 'email' ? s.aiBrief ?? null : null, // kept when switched back to the template, for next time
 });
 
 const stepInclude = { steps: { orderBy: { order: 'asc' }, include: { template: { select: { id: true, name: true } } } } };
@@ -136,7 +145,7 @@ function sessionItem(e, user, now = new Date(), cw = callWindowMemo(now)) {
   const out = { ...base, step: { index: e.currentStep, number: e.currentStep + 1, type: step.type, day: step.dayOffset + 1, instructions: step.instructions } };
   if (step.type === 'email') {
     const r0 = renderContent({ subject: step.subject ?? step.template?.subject ?? '', body: step.body ?? step.template?.body ?? '', carrier: e.carrier, user });
-    out.email = { to: carrier.email, subject: r0.subject, body: r0.body, blocked: carrier.doNotEmail ? 'Carrier is marked do-not-email' : null };
+    out.email = { to: carrier.email, subject: r0.subject, body: r0.body, blocked: carrier.doNotEmail ? 'Carrier is marked do-not-email' : null, aiMode: step.aiMode || null };
   } else if (step.type === 'text') {
     out.text = { to: carrier.phone, body: renderContent({ subject: '', body: step.body || '', carrier: e.carrier, user: { ...user, emailSignature: null } }).body };
   }
@@ -285,8 +294,8 @@ export function matchSteps(oldSteps, newSteps) {
   });
   const same = (a, b, keys) => keys.every((k) => (a[k] ?? null) === (b[k] ?? null));
   const passes = [
-    ['type', 'dayOffset', 'templateId', 'subject', 'body', 'instructions'],
-    ['type', 'templateId', 'subject', 'body', 'instructions'],
+    ['type', 'dayOffset', 'templateId', 'subject', 'body', 'instructions', 'aiMode', 'aiBrief'],
+    ['type', 'templateId', 'subject', 'body', 'instructions', 'aiMode', 'aiBrief'],
     ['type', 'dayOffset'],
   ];
   for (const keys of passes) {
@@ -399,6 +408,31 @@ r.post('/:id/enroll', ah(async (req, res) => {
   const carriers = await writableCarriers(req.user, carrierIds);
   const out = await enrollCarriers(req.user, seq.id, carriers);
   res.json({ ...out, inaccessible: carrierIds.length - carriers.length });
+}));
+
+/**
+ * Preview an AI email step for one carrier: { carrierId, aiBrief? } -> { subject, body, flagged }. Uses the user's AI
+ * (counts as an AI call, purpose sequence_email). `aiBrief` previews an edited brief before it is saved.
+ */
+r.post('/:id/steps/:stepId/ai-preview', requirePermission('ai.use'), ah(async (req, res) => {
+  const seq = await loadOwned('emailSequence', req.user, req.params.id, { include: { steps: { orderBy: { order: 'asc' } } } });
+  const step = seq.steps.find((s) => s.id === String(req.params.stepId));
+  if (!step) throw notFound('Step not found. Save the sequence first.');
+  if (step.type !== 'email') throw badRequest('Only email steps can be written by AI');
+  const b = parse(z.object({
+    carrierId: reqStr(60),
+    aiBrief: z.preprocess((v) => (v === '' ? null : v), z.string().trim().max(BRIEF_MAX, `Keep the AI brief to ${BRIEF_MAX} characters or fewer`).nullable().optional()),
+  }), req.body);
+  const brief = b.aiBrief || step.aiBrief;
+  if (!brief) throw badRequest('Describe what the AI email should say first');
+  const carrier = await loadCarrier(req.user, b.carrierId, { include: { contacts: true } });
+  const enr = await prisma.sequenceEnrollment.findUnique({ where: { sequenceId_carrierId: { sequenceId: seq.id, carrierId: carrier.id } }, select: { id: true, startedAt: true } });
+  const previous = enr ? (await prisma.email.findMany({
+    where: { enrollmentId: enr.id, status: { in: ['sent', 'sending', 'scheduled'] }, createdAt: { gte: enr.startedAt } },
+    orderBy: { createdAt: 'desc' }, take: 3, select: { subject: true, body: true, sentAt: true },
+  })).reverse() : [];
+  const out = await writeSequenceEmail({ user: req.user, carrier, brief, previous, stepNumber: step.order + 1, stepCount: seq.steps.length });
+  res.json({ subject: out.subject, body: out.body, flagged: out.flagged });
 }));
 
 r.get('/:id/enrollments', ah(async (req, res) => {

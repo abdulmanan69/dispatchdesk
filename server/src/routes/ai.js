@@ -1,16 +1,15 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import { prisma } from '../db.js';
-import { ah, badRequest, notFound, forbidden, unavailable } from '../lib/errors.js';
+import { ah, badRequest, notFound, forbidden } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, optNum } from '../lib/validate.js';
-import { assertLimit } from '../lib/plans.js';
 import { loadCarrier, loadOwned } from '../lib/access.js';
 import { logActivity } from '../lib/activity.js';
 import { audit } from '../lib/audit.js';
 import { requirePermission, hasPermission } from '../middleware/auth.js';
 import { aiLimiter } from '../middleware/security.js';
 import { uploader, verifyFileSignature, removeFile } from '../middleware/upload.js';
-import { aiConfig, chat, parseJsonReply, NOT_CONFIGURED } from '../services/ai/llm.js';
+import { aiConfig, aiStatus, assertAiReady, chat, parseJsonReply } from '../services/ai/llm.js';
 import { retrieve, ingestDocument } from '../services/ai/rag.js';
 import { webSearch, searchConfig } from '../services/ai/search.js';
 import { SYSTEM_PROMPT, SUGGESTED_QUESTIONS, EMAIL_PURPOSES } from '../services/ai/prompts.js';
@@ -23,11 +22,10 @@ r.post('*', aiLimiter);
 const knowledgeUpload = uploader('knowledge', 'knowledge', 20);
 const dateStr = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
 
-async function requireConfigured() {
-  const cfg = await aiConfig();
-  if (!cfg.configured) throw unavailable(NOT_CONFIGURED);
-  return cfg;
-}
+// AI errors carry a code (services/ai/providers/common.js): 503 AI_NOT_CONFIGURED, 429 AI_QUOTA (plan limit, platform
+// calls only), 429 AI_PROVIDER_RATE_LIMIT, 400 AI_KEY_REJECTED, 502 AI_REFUSED / AI_TRUNCATED / AI_PROVIDER_ERROR.
+// assertAiReady() checks the provider and the plan quota before context and web research are gathered; chat() checks
+// again, records the usage event and counts the call.
 
 /** The requesting user's own pipeline summary — counts only, never other users' data. */
 async function pipelineContext(user) {
@@ -100,15 +98,17 @@ const publicSources = (sources) => sources.map(({ kind, title, url, date, docume
 // ---------------------------------------------------------------------------
 r.get('/status', async (req, res, next) => {
   try {
-    const [cfg, sc, own, global] = await Promise.all([
-      aiConfig(), searchConfig(),
+    const [st, cfg, sc, own, global] = await Promise.all([
+      aiStatus(req.user), aiConfig(), searchConfig(),
       prisma.aIKnowledgeDocument.count({ where: { ownerId: req.user.id, scope: 'private' } }),
       prisma.aIKnowledgeDocument.count({ where: { scope: 'global', approved: true } }),
     ]);
     res.json({
-      configured: cfg.configured, model: cfg.configured ? cfg.model : null, embeddings: !!(cfg.configured && cfg.embeddingModel),
+      // source: 'byok' (the user's own key, no plan quota) | 'platform' (usage: { used, limit }, -1 = unlimited) | null
+      configured: st.available, model: st.model, provider: st.provider, source: st.source, usage: st.usage,
+      embeddings: !!(cfg.configured && cfg.embeddingModel),
       webSearch: sc.configured, searchProvider: sc.configured ? sc.provider : null,
-      knowledge: { own, global }, suggestions: SUGGESTED_QUESTIONS, message: cfg.configured ? null : NOT_CONFIGURED,
+      knowledge: { own, global }, suggestions: SUGGESTED_QUESTIONS, message: st.available ? null : st.message,
     });
   } catch (err) { next(err); }
 });
@@ -161,8 +161,7 @@ r.post('/conversations/:id/messages', ah(async (req, res) => {
     useKnowledge: z.boolean().default(true),
     carrierId: optStr(60),
   }), req.body);
-  await requireConfigured();
-  await assertLimit(req.user, 'aiMonth');
+  await assertAiReady(req.user);
 
   const context = [await pipelineContext(req.user)];
   if (b.carrierId) context.push((await carrierContext(req.user, b.carrierId)).text);
@@ -177,7 +176,7 @@ r.post('/conversations/:id/messages', ah(async (req, res) => {
     ...history.reverse().map((m) => ({ role: m.role, content: m.content })),
     { role: 'user', content: b.content },
   ];
-  const answer = await chat(messages, { temperature: 0.3, maxTokens: 1400 });
+  const answer = await chat(messages, { user: req.user, purpose: 'chat', temperature: 0.3, maxTokens: 1400 });
 
   const userMsg = await prisma.aIMessage.create({ data: { conversationId: c.id, role: 'user', content: b.content } });
   const assistant = await prisma.aIMessage.create({
@@ -193,14 +192,12 @@ r.post('/conversations/:id/messages', ah(async (req, res) => {
 // ---------------------------------------------------------------------------
 // One-shot tools (stored in a per-tool conversation so they appear in history and count toward usage)
 // ---------------------------------------------------------------------------
-async function runTool(req, toolTitle, prompt, { json = false, temperature = 0.4, maxTokens = 1200, extraSystem = [] } = {}) {
-  await requireConfigured();
-  await assertLimit(req.user, 'aiMonth');
+async function runTool(req, toolTitle, prompt, { purpose = 'other', json = false, temperature = 0.4, maxTokens = 1200, extraSystem = [] } = {}) {
   const answer = await chat([
     { role: 'system', content: SYSTEM_PROMPT },
     ...extraSystem.map((content) => ({ role: 'system', content })),
     { role: 'user', content: prompt },
-  ], { json, temperature, maxTokens });
+  ], { user: req.user, purpose, json, temperature, maxTokens });
   let conv = await prisma.aIConversation.findFirst({ where: { userId: req.user.id, title: toolTitle } });
   if (!conv) conv = await prisma.aIConversation.create({ data: { userId: req.user.id, title: toolTitle } });
   await prisma.aIMessage.createMany({
@@ -228,7 +225,7 @@ Sender: ${req.user.name}${req.user.phone ? `, phone ${req.user.phone}` : ''}. Do
 ${ctx.length ? `Context:\n${ctx.join('\n')}` : ''}
 ${b.notes ? `Dispatcher notes: ${b.notes}` : ''}
 Return JSON: {"subject": "...", "body": "..."}`;
-  const answer = await runTool(req, 'Tool: Email drafts', prompt, { json: true, temperature: 0.5 });
+  const answer = await runTool(req, 'Tool: Email drafts', prompt, { purpose: 'draft_email', json: true, temperature: 0.5 });
   const parsed = parseJsonReply(answer);
   if (!parsed?.subject || !parsed?.body) throw badRequest('The AI response could not be parsed into an email. Try again.');
   if (carrier) await logActivity(req.user, { type: 'ai', carrierId: carrier.id, summary: `AI drafted an email for ${carrier.companyName}` });
@@ -246,14 +243,14 @@ r.post('/call-script', ah(async (req, res) => {
 Structure: opener (first 15 seconds), qualifying questions (equipment, lanes, current load sources, MC age), value pitch, 3 likely objections with responses, close with a concrete next step. Use markdown headings and bullets.
 ${ctx}
 ${b.notes ? `Dispatcher notes: ${b.notes}` : ''}`;
-  res.json({ script: await runTool(req, 'Tool: Call scripts', prompt, { temperature: 0.5, maxTokens: 1400 }) });
+  res.json({ script: await runTool(req, 'Tool: Call scripts', prompt, { purpose: 'call_script', temperature: 0.5, maxTokens: 1400 }) });
 }));
 
 r.post('/objection', ah(async (req, res) => {
   const b = parse(z.object({ objection: reqStr(1000), carrierId: optStr(60) }), req.body);
   const ctx = b.carrierId ? (await carrierContext(req.user, b.carrierId)).text : '';
   const prompt = `A carrier said: "${b.objection}". Give 3 short, honest responses a dispatcher can say on the phone (no pressure tactics, no false promises about rates), plus one question to keep the conversation going. ${ctx}`;
-  res.json({ answer: await runTool(req, 'Tool: Objection handling', prompt, { temperature: 0.5 }) });
+  res.json({ answer: await runTool(req, 'Tool: Objection handling', prompt, { purpose: 'objection', temperature: 0.5 }) });
 }));
 
 r.post('/analyze-load', ah(async (req, res) => {
@@ -282,7 +279,7 @@ Load: ${input.origin || '?'} to ${input.destination || '?'}, ${input.equipment |
 Computed values (authoritative, do not recompute):
 ${JSON.stringify(numbers, null, 2)}
 ${input.notes ? `Notes: ${input.notes}` : ''}`;
-  const commentary = await runTool(req, 'Tool: Load analysis', prompt, { temperature: 0.3 });
+  const commentary = await runTool(req, 'Tool: Load analysis', prompt, { purpose: 'analyze_load', temperature: 0.3 });
   res.json({ numbers, commentary });
 }));
 

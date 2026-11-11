@@ -131,7 +131,8 @@ export async function effectivePlan(user) {
 const COUNTERS = {
   carriers: (u) => prisma.carrier.count({ where: { ownerId: u.id } }),
   emailsToday: async (u, t) => prisma.email.count({ where: { userId: u.id, status: { in: ['sent', 'sending'] }, sentAt: { gte: await t.day() } } }),
-  aiMonth: async (u, t) => prisma.aIMessage.count({ where: { role: 'user', conversation: { userId: u.id }, createdAt: { gte: await t.month() } } }),
+  // Successful AI calls on the platform provider (services/ai/llm.js); calls made with the user's own key are free.
+  aiMonth: async (u, t) => prisma.aiUsageEvent.count({ where: { userId: u.id, byok: false, ok: true, createdAt: { gte: await t.month() } } }),
   sequences: (u) => prisma.emailSequence.count({ where: { ownerId: u.id } }),
   automations: (u) => prisma.automation.count({ where: { ownerId: u.id } }),
   discoveryToday: async (u, t) => prisma.carrier.count({ where: { ownerId: u.id, source: { in: ['fmcsa_census', 'fmcsa_qc'] }, createdAt: { gte: await t.day() } } }),

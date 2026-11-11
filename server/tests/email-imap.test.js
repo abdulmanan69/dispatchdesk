@@ -81,6 +81,16 @@ describe('parsing helpers', () => {
     expect(parseBounce({ text: 'Final-Recipient: rfc822; a@x.test\nAction: delayed\nStatus: 4.4.1' })).toBeNull();
   });
 
+  it('keeps only the new part of a reply', () => {
+    const { replyText } = imapLib;
+    expect(replyText('We can do $2,300 all in.\r\n\r\nOn Tue, Nov 11, 2026 at 9:02 AM Dispatch <me@x.test> wrote:\r\n> Could you do $2,600?\r\n')).toBe('We can do $2,300 all in.');
+    expect(replyText('2400 works\n-----Original Message-----\nFrom: me')).toBe('2400 works');
+    expect(replyText('Best I have is 2150\n\nFrom: Dispatch <me@x.test>\nSent: Tuesday')).toBe('Best I have is 2150');
+    expect(replyText('> only quoted\n> lines')).toBeNull();
+    expect(replyText(null)).toBeNull();
+    expect(replyText('x'.repeat(5000))).toHaveLength(4000);
+  });
+
   it('reads Google Voice notices and nothing else', () => {
     expect(parseGoogleVoice({ from: 'voice-noreply@google.com', subject: 'New voicemail from (555) 123-4567 at 3:15 PM', text: 'Hi, call me back about the load\nPlay message' }))
       .toMatchObject({ kind: 'voicemail', phone: '5551234567', text: 'Hi, call me back about the load' });

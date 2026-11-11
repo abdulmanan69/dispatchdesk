@@ -11,6 +11,7 @@ import BrokerFormModal from '../../components/dispatch/BrokerForm.jsx';
 import BrokerVettingCard, { LevelBadge } from '../../components/dispatch/BrokerVetting.jsx';
 import LoadFormModal from '../../components/dispatch/LoadForm.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
+import { BrokerNegotiations } from '../../components/negotiation/NegotiationList.jsx';
 import { loadColumns, loadMobileRow } from './Loads.jsx';
 import { PaysInBadge } from '../reports/PaysIn.jsx';
 
@@ -143,6 +144,7 @@ export default function BrokerDetail() {
             </div>
             <div className="min-w-0 space-y-4">
               <PaymentHistoryCard p={payments} />
+              <BrokerNegotiations broker={b} />
               <Card title="Load history" bodyClass="p-0" actions={<>
                 <Button size="sm" variant="secondary" icon={Receipt} to={`/app/invoices?brokerId=${b.id}`}>Invoices</Button>
                 <Button size="sm" icon={Plus} onClick={() => setLoadModal({ initial: { brokerId: b.id } })}>Add load</Button>

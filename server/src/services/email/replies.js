@@ -3,6 +3,7 @@ import { logActivity, notify } from '../../lib/activity.js';
 import { normPhone } from '../carriers/normalize.js';
 import { stopEnrollments, invalidateQueueCount } from '../sequenceEngine.js';
 import { syncNextFollowUp } from '../../routes/followups.js';
+import { onNegotiationReply } from '../negotiation/index.js';
 
 /**
  * What happens when mail comes back to a user's mailbox (IMAP poller, services/email/imap.js) or when the user marks
@@ -61,7 +62,7 @@ export async function contactsForAddresses(user, addresses) {
  * logs the activity, creates one "Reply from X" follow-up (already notified, so no second reminder) and notifies.
  * Auto-replies (out of office) are only logged: they do not stop anything.
  */
-export async function recordReply({ user, email = null, carrierId = null, brokerId = null, fromEmail = null, subject = null, at = new Date(), auto = false, source = 'imap', carrier: checked = null }) {
+export async function recordReply({ user, email = null, carrierId = null, brokerId = null, fromEmail = null, subject = null, at = new Date(), auto = false, source = 'imap', carrier: checked = null, text = null }) {
   const cid = carrierId || email?.carrierId || null;
   const bid = brokerId || email?.brokerId || null;
   // `carrier` may be passed by a caller that already checked write access (a team lead marking a member's carrier).
@@ -97,6 +98,8 @@ export async function recordReply({ user, email = null, carrierId = null, broker
     link: carrier ? `/app/carriers/${carrier.id}` : '/app/email?tab=replies',
   });
   invalidateQueueCount(user.id);
+  // A reply to a rate negotiation email goes to the negotiation (read by the AI when `text` is given; never throws).
+  if (email?.negotiationId) await onNegotiationReply({ user, email, fromEmail, subject, text, at });
   return { stopped, auto: false };
 }
 

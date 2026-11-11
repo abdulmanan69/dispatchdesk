@@ -7,6 +7,7 @@ import { useToast } from '../Toast.jsx';
 import { dateTime } from '../../lib/format.js';
 import { Card, QueryState, Badge, Button, Field, Input, Select, Switch, cx } from '../ui.jsx';
 import OAuthSetupGuide from './OAuthSetupGuide.jsx';
+import AiUsage from './AiUsage.jsx';
 
 const GROUPS = [
   { key: 'app', title: 'Application', test: null },
@@ -18,7 +19,7 @@ const GROUPS = [
 
 const LABELS = {
   'app.name': 'Application name', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
-  'ai.baseUrl': 'API base URL (OpenAI-compatible)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional)',
+  'ai.provider': 'AI provider', 'ai.baseUrl': 'API base URL (OpenAI-compatible only)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional, OpenAI-compatible only)',
   'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
   'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
   'smtp.dailyLimit': 'Platform emails per day', 'brevo.apiKey': 'Brevo API key (optional, replaces SMTP)',
@@ -32,6 +33,8 @@ const HINTS = {
   'app.requireEmailVerification': 'Applies once platform email (SMTP) works. Unverified accounts can sign in and look around, but cannot save changes until they open the verification link. Admins are never blocked.',
   'app.registrationOpen': 'When off, nobody can create a new account. Existing users can still sign in.',
   'smtp.dailyLimit': 'Most messages platform email sends per day (UTC), counted across all servers. Part of it is kept for verification and password reset mail. Match it to the daily quota of your SMTP provider.',
+  'ai.provider': "Users without their own key use this provider, within their plan's monthly AI limit. Users can add their own key in Settings → AI.",
+  'ai.model': 'For Claude, leave it empty or enter a claude- model; anything else uses claude-opus-5-5.',
 };
 const TEST_LABEL = { smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
 const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
@@ -41,6 +44,9 @@ const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min:
 // `id` comes from the surrounding Field, so its label names the control.
 function SettingInput({ s, value, onChange, id }) {
   if (s.type === 'bool') return <Switch checked={value === 'true'} onChange={(v) => onChange(String(v))} label={LABELS[s.key] || s.key} />;
+  if (s.key === 'ai.provider') {
+    return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
+  }
   if (s.key === 'search.provider') {
     return <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Disabled</option><option value="tavily">Tavily</option><option value="brave">Brave Search</option></Select>;
   }
@@ -117,6 +123,7 @@ export default function SystemSettings() {
                     <Button type="submit" loading={save.isPending}>Save {g.title.split(' ')[0].toLowerCase()} settings</Button>
                   </div>
                 </form>
+                {g.key === 'ai' && <AiUsage />}
               </Card>
             );
           })}

@@ -6,6 +6,7 @@ import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { date, dateTime, label, relative, money, PRESETS } from '../../lib/format.js';
 import { Badge, Button, Card, ComboInput, EmptyState, ErrorState, Field, IconButton, Input, Loading, Pagination, RefreshError, Select, Switch, Tabs, Textarea, Checkbox, LocalClock, cx } from '../../components/ui.jsx';
+import { AiBadge } from '../../components/email/ReviewQueue.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import CarrierForm from '../../components/carriers/CarrierForm.jsx';
 import LogCallModal from '../../components/carriers/LogCallModal.jsx';
@@ -21,6 +22,7 @@ import CallButton from '../../components/calling/CallButton.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
+import ContactConsentCard, { ConsentBadge } from '../../components/consent/ContactConsentCard.jsx';
 
 const CARRIER_TABS = ['overview', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
 
@@ -144,6 +146,7 @@ export default function CarrierDetail() {
                 <p className="text-xs text-muted">Last contact {c.lastContactedAt ? relative(c.lastContactedAt) : 'never'} · next follow-up {c.nextFollowUpAt ? dateTime(c.nextFollowUpAt) : 'none'}</p>
               </div>
             </Card>
+            <ContactConsentCard carrier={c} canWrite={canWrite} />
             {c.lists.length > 0 && <Card title="Prospect lists"><ul className="space-y-1 text-sm">{c.lists.map((l) => <li key={l.id}>{l.name}</li>)}</ul></Card>}
           </div>
         </div>
@@ -243,6 +246,7 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
             {c.priority > 0 && <Badge color="amber">{c.priority === 2 ? 'Hot' : 'High priority'}</Badge>}
             {c.doNotCall && <Badge color="red">Do not call</Badge>}
             {c.doNotEmail && <Badge color="red">Do not email</Badge>}
+            <ConsentBadge carrierId={c.id} />
           </div>
         </div>
         {canWrite && (
@@ -462,7 +466,7 @@ function NotesTab({ carrier, canWrite, total }) {
 
 function EmailsTab({ carrier, onCompose, canWrite }) {
   const q = useQuery({ queryKey: ['emails', 'carrier', carrier.id], queryFn: () => api.get('/api/email/messages', { carrierId: carrier.id, pageSize: 50 }) });
-  const color = { sent: 'green', failed: 'red', scheduled: 'blue', draft: 'gray', sending: 'amber', canceled: 'gray' };
+  const color = { sent: 'green', failed: 'red', scheduled: 'blue', draft: 'gray', sending: 'amber', canceled: 'gray', review: 'amber' };
   return (
     <Card title="Emails" bodyClass="p-0" actions={canWrite && <div className="flex flex-wrap gap-2"><MarkRepliedButton carrier={carrier} /><Button size="sm" icon={Mail} disabled={!carrier.email || carrier.doNotEmail} onClick={onCompose}>Compose</Button></div>}>
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : !q.data.items?.length ? <EmptyState title="No emails with this carrier yet" /> : (
@@ -470,7 +474,8 @@ function EmailsTab({ carrier, onCompose, canWrite }) {
           {q.data.items.map((m) => (
             <li key={m.id} className="px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge color={color[m.status] || 'gray'}>{label(m.status)}</Badge>
+                <Badge color={color[m.status] || 'gray'}>{m.status === 'review' ? 'Needs approval' : label(m.status)}</Badge>
+                {m.aiGenerated && <AiBadge />}
                 {m.repliedAt && <Badge color="teal">Replied</Badge>}
                 {m.bouncedAt && <Badge color="red">Bounced</Badge>}
                 <span className="font-medium">{m.subject}</span>

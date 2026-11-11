@@ -17,6 +17,15 @@ const ACCEPT = 'application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png';
 const when = (d) => (d ? new Date(d).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 const day = (d) => (d ? new Date(d).toLocaleDateString([], { month: 'long', day: 'numeric' }) : '');
 
+/** 10 digits for a valid US number ("+1 (214) 555-0188" works), else null. Same rule as the server. */
+function usPhone(input) {
+  let d = String(input ?? '').replace(/\D/g, '');
+  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+  return /^[2-9]\d{2}[2-9]\d{6}$/.test(d) ? d : null;
+}
+/** "(214) 555-0188": the server formats the number in the consent text exactly this way. */
+const phoneText = (digits) => `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+
 class LinkError extends Error {
   constructor(status, message, code) {
     super(message);
@@ -163,6 +172,12 @@ function SignStep({ token, data, onSigned, onReload }) {
   const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Optional consent to automated calls and texts (only when the dispatcher asked for it). Never required to sign.
+  const cc = data.contactConsent?.asked && typeof data.contactConsent.before === 'string' ? data.contactConsent : null;
+  const [callOk, setCallOk] = useState(false);
+  const [callPhone, setCallPhone] = useState(() => (usPhone(cc?.phone) ? phoneText(usPhone(cc.phone)) : ''));
+  const callDigits = usPhone(callPhone);
+  const callText = cc ? `${cc.before}${callDigits ? phoneText(callDigits) : '[your phone number]'}${cc.after}` : '';
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   const typedValue = typedTouched ? typed : f.name;
 
@@ -184,7 +199,8 @@ function SignStep({ token, data, onSigned, onReload }) {
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim());
   const sigOk = mode === 'typed' ? typedValue.trim().length >= 2 : drawn.ink && !!drawn.path;
-  const ready = consent && !consentBusy && agree && f.name.trim().length >= 2 && f.title.trim() && emailOk && sigOk;
+  const callReady = !cc || !callOk || !!callDigits;
+  const ready = consent && !consentBusy && agree && f.name.trim().length >= 2 && f.title.trim() && emailOk && sigOk && callReady;
 
   const sign = async (e) => {
     e.preventDefault();
@@ -196,11 +212,12 @@ function SignStep({ token, data, onSigned, onReload }) {
         signerName: f.name.trim(), signerTitle: f.title.trim(), signerEmail: f.email.trim(),
         signatureType: mode, signatureData: mode === 'typed' ? typedValue.trim() : drawn.path,
         agreementHash: data.agreement.hash, agree: true,
+        ...(cc && callOk && callDigits ? { contactConsent: { agree: true, phone: callDigits, text: callText } } : {}),
       });
       onSigned(d);
     } catch (e2) {
       if (e2.code === 'ALREADY_SIGNED' || e2.status === 410) { onReload(); return; }
-      if (e2.code === 'AGREEMENT_CHANGED') onReload();
+      if (e2.code === 'AGREEMENT_CHANGED' || e2.code === 'CONSENT_TEXT_CHANGED') onReload();
       setErr(e2.message);
     } finally {
       setBusy(false);
@@ -265,6 +282,23 @@ function SignStep({ token, data, onSigned, onReload }) {
         <Checkbox checked={agree} onChange={(e) => setAgree(e.target.checked)}
           label={<span className="text-[14px]">I have read the agreement above and I agree to its terms for {data.carrier.companyName}.</span>} />
       </fieldset>
+
+      {cc && (
+        <fieldset disabled={!consent} className={cx('space-y-3 rounded-2xl border border-line bg-surface p-4 transition-opacity', !consent && 'opacity-60')}>
+          <legend className="sr-only">Calls and texts, optional</legend>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium">Calls and texts</h2>
+            <Badge color="gray">Optional</Badge>
+          </div>
+          <p className="text-[13px] text-fg-2">You can sign the agreement without this. Leave the box unticked if you do not want automated calls and texts.</p>
+          <Field label="Phone number for calls and texts" error={callOk && !callDigits ? 'Enter a 10-digit US phone number, or untick the box' : null}>
+            <Input type="tel" inputMode="tel" autoComplete="tel-national" value={callPhone} onChange={(e) => setCallPhone(e.target.value)} maxLength={20}
+              placeholder="(555) 555-0123" className="h-11 text-base" />
+          </Field>
+          <Checkbox checked={callOk} onChange={(e) => setCallOk(e.target.checked)} className="items-start! [&>input]:mt-1"
+            label={<span className="text-[14px] leading-relaxed">{callText}</span>} />
+        </fieldset>
+      )}
 
       {err && <p role="alert" className="flex items-start gap-2 rounded-lg bg-c-red-soft px-3 py-2 text-sm text-c-red"><AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />{err}</p>}
       <Button type="submit" size="lg" className="w-full" icon={PenLine} loading={busy} disabled={!ready}>Sign agreement</Button>
@@ -454,6 +488,11 @@ function DoneStep({ data, onUpload }) {
         <p className="mt-2 text-fg-2">
           {data.signerName ? `Signed by ${data.signerName}` : 'Signed'}{data.signedAt ? ` on ${when(data.signedAt)}` : ''}. {data.dispatcher.name} has been notified.
         </p>
+        {data.contactConsent?.given && !data.contactConsent.given.revoked && (
+          <p className="mt-2 text-sm text-fg-2">
+            You agreed that {data.dispatcher.company || data.dispatcher.name} may call and text you at {data.contactConsent.given.phone}. To opt out at any time, reply STOP to a text or tell {data.dispatcher.company || data.dispatcher.name}.
+          </p>
+        )}
         {missing.length > 0 && (
           <p className="mt-2 text-sm text-fg-2">Still needed: {missing.map((d) => d.label).join(', ')}.{canUpload ? ` You can upload them here until ${day(data.uploads.closesAt)}.` : ''}</p>
         )}

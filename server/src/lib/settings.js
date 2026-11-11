@@ -13,6 +13,8 @@ export const SETTING_DEFS = {
   // Public contact address printed on the privacy policy and terms of service.
   'app.supportEmail': { group: 'app', default: () => process.env.SUPPORT_EMAIL || '' },
   'app.requireEmailVerification': { group: 'app', type: 'bool', default: () => 'false' },
+  // Platform AI provider: openai (any OpenAI-compatible API at ai.baseUrl) | anthropic (Claude, official SDK).
+  'ai.provider': { group: 'ai', default: () => (process.env.AI_PROVIDER === 'anthropic' ? 'anthropic' : 'openai') },
   'ai.baseUrl': { group: 'ai', default: () => config.ai.baseUrl },
   'ai.apiKey': { group: 'ai', secret: true, default: () => config.ai.apiKey },
   'ai.model': { group: 'ai', default: () => config.ai.model },

@@ -14,6 +14,7 @@ import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/emai
 import { getStripe } from '../services/stripe.js';
 import { assertAccountDeletable, deleteAccount } from './settings.js';
 import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
+import { testPlatformAi } from '../services/ai/llm.js';
 import { config } from '../config.js';
 
 const r = Router();
@@ -358,6 +359,7 @@ r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
     if (key === 'smtp.dailyLimit' && value && !/^[1-9]\d{0,6}$/.test(value)) throw badRequest('Platform emails per day must be a whole number of at least 1');
     if ((key === 'ai.baseUrl') && value && !/^https?:\/\//.test(value)) throw badRequest('AI base URL must start with http(s)://');
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
+    if (key === 'ai.provider' && !['', 'openai', 'anthropic'].includes(value)) throw badRequest('AI provider must be openai or anthropic');
     if (key === 'app.supportEmail' && value && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(value)) throw badRequest('Support email must be a valid email address');
     writes.push([key, value]);
   }
@@ -392,16 +394,8 @@ const TESTS = {
     await t.verify();
     return { ok: true, message: `Connected and authenticated to ${s['smtp.host']}${s['smtp.from'] ? '' : ' — note: "From" address is not set'}` };
   },
-  async ai() {
-    const s = await getSettings(['ai.baseUrl', 'ai.apiKey', 'ai.model']);
-    if (!s['ai.apiKey']) return { ok: false, message: 'AI API key is not set' };
-    const res = await fetch(`${s['ai.baseUrl'].replace(/\/$/, '')}/models`, { headers: { Authorization: `Bearer ${s['ai.apiKey']}` }, signal: timeout() });
-    if (!res.ok) return { ok: false, message: `Provider responded ${res.status} ${res.statusText}` };
-    const data = await res.json().catch(() => ({}));
-    const ids = (data.data || []).map((m) => m.id);
-    const hasModel = !ids.length || ids.includes(s['ai.model']);
-    return { ok: true, message: `Authenticated. ${ids.length} models available${hasModel ? '' : ` — configured model "${s['ai.model']}" was not in the list`}.` };
-  },
+  // One tiny real call through the platform provider (OpenAI-compatible or Claude), as users' calls would make.
+  ai: () => testPlatformAi(),
   async stripe() {
     const stripe = await getStripe();
     if (!stripe) return { ok: false, message: 'Stripe secret key is not set' };

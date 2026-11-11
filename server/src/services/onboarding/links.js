@@ -37,6 +37,15 @@ const DAY = 86_400_000;
 export const parseDocs = (s) => String(s || '').split(',').map((x) => x.trim()).filter((x) => DOC_KINDS.includes(x));
 
 /**
+ * "Ask for permission to call and text" is stored as one more token in the requestedDocs comma list (no schema
+ * change): parseDocs ignores it, so it never counts as a document.
+ */
+export const CONTACT_CONSENT_FLAG = 'contact_consent';
+export const asksContactConsent = (link) => String(link?.requestedDocs || '').split(',').map((x) => x.trim()).includes(CONTACT_CONSENT_FLAG);
+/** The requestedDocs column value for a new link. */
+export const encodeRequested = (docs, askContactConsent) => [...docs, ...(askContactConsent ? [CONTACT_CONSENT_FLAG] : [])].join(',') || null;
+
+/**
  * Uploaded files are tied to their link through the stored file name: "onb-<linkId>-<kind>-<random>.<ext>".
  * (Document has no link column; the prefix keeps per-link status and the per-link cap exact.)
  */
@@ -67,7 +76,7 @@ export const uploadsCloseAt = (link) => (link.signedAt
 export function linkListView(link, docs = [], now = new Date()) {
   return {
     id: link.id, carrierId: link.carrierId, status: linkStatus(link, now), agreementTitle: link.agreementTitle,
-    feePercent: link.feePercent, requestedDocs: parseDocs(link.requestedDocs),
+    feePercent: link.feePercent, requestedDocs: parseDocs(link.requestedDocs), askContactConsent: asksContactConsent(link),
     viewedAt: link.viewedAt, consentAt: link.consentAt, signedAt: link.signedAt, signerName: link.signerName,
     expiresAt: link.expiresAt, revokedAt: link.revokedAt, createdAt: link.createdAt,
     createdBy: link.owner ? { id: link.owner.id, name: link.owner.name } : undefined,

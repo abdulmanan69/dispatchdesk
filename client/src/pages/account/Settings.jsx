@@ -22,6 +22,7 @@ const TABS = [
   { value: 'calendar', label: 'Calendar' },
   { value: 'calling', label: 'Calling' },
   { value: 'integrations', label: 'Email & integrations' },
+  { value: 'ai', label: 'AI' },
   { value: 'data', label: 'Data & account' },
 ];
 
@@ -39,6 +40,7 @@ export default function Settings() {
       {tab === 'calendar' && <CalendarFeed />}
       {tab === 'calling' && <CallingSettings />}
       {tab === 'integrations' && <Integrations />}
+      {tab === 'ai' && <AiKeySettings />}
       {tab === 'data' && <DataAccount />}
     </div>
   );
@@ -534,6 +536,115 @@ function Integrations() {
         <p className="mt-2 text-xs text-muted">Platform-wide API keys (AI, Stripe, FMCSA, OAuth) are managed by administrators and never shown in the browser.</p>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI: bring your own key (/api/ai-settings)
+// ---------------------------------------------------------------------------
+
+// Presets fill the base URL and a model for OpenAI-compatible providers; Claude uses the Anthropic SDK (no base URL).
+const AI_PRESETS = [
+  { value: 'anthropic', label: 'Claude by Anthropic', provider: 'anthropic', baseUrl: '', model: '', modelHint: 'claude-opus-5-5 (default)', keyHint: 'Create a key at console.anthropic.com' },
+  { value: 'openai', label: 'OpenAI', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', keyHint: 'Create a key at platform.openai.com' },
+  { value: 'gemini', label: 'Google Gemini', provider: 'openai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', keyHint: 'Create a key in Google AI Studio' },
+  { value: 'groq', label: 'Groq', provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', keyHint: 'Create a key at console.groq.com' },
+  { value: 'openrouter', label: 'OpenRouter', provider: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: '', modelHint: 'for example openai/gpt-4o-mini', keyHint: 'Create a key at openrouter.ai' },
+  { value: 'other', label: 'Other OpenAI-compatible', provider: 'openai', baseUrl: '', model: '', modelHint: 'the model name your provider uses', keyHint: '' },
+];
+const presetOf = (v) => AI_PRESETS.find((p) => p.value === v) || AI_PRESETS[0];
+const trimSlash = (u) => String(u || '').replace(/\/+$/, '');
+
+function presetForSaved(mine) {
+  if (!mine?.provider) return 'anthropic';
+  if (mine.provider === 'anthropic') return 'anthropic';
+  return AI_PRESETS.find((p) => p.provider === 'openai' && p.baseUrl && trimSlash(p.baseUrl) === trimSlash(mine.baseUrl))?.value || 'other';
+}
+
+function AiKeySettings() {
+  const confirm = useConfirm();
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['ai-settings'], queryFn: ({ signal }) => api.get('/api/ai-settings', undefined, { signal }) });
+  const [form, setForm] = useState(null);
+  const [result, setResult] = useState(null);
+  useEffect(() => {
+    if (!q.data) return;
+    const m = q.data.mine;
+    const preset = presetForSaved(m);
+    setForm({ preset, baseUrl: m.provider === 'openai' ? m.baseUrl || '' : presetOf(preset).baseUrl, model: m.provider ? m.model || '' : presetOf(preset).model, apiKey: '' });
+  }, [q.data]);
+
+  const refresh = (d) => { qc.setQueryData(['ai-settings'], d); qc.invalidateQueries({ queryKey: ['ai', 'status'] }); setResult(null); };
+  const save = useApiMutation((body) => api.put('/api/ai-settings', body), { success: 'AI key saved', onSuccess: refresh });
+  const remove = useApiMutation(() => api.del('/api/ai-settings'), { success: 'Your key was removed', onSuccess: refresh });
+  const test = useApiMutation((body) => api.post('/api/ai-settings/test', body, { timeoutMs: 120_000 }), { onSuccess: (r) => setResult(r) });
+
+  const preset = form ? presetOf(form.preset) : AI_PRESETS[0];
+  const body = () => ({
+    provider: preset.provider,
+    baseUrl: preset.provider === 'openai' ? form.baseUrl.trim() : null,
+    model: form.model.trim() || null,
+    apiKey: form.apiKey.trim() || null,
+  });
+  const pick = (value) => { const p = presetOf(value); setForm({ ...form, preset: value, baseUrl: p.baseUrl, model: p.model }); setResult(null); };
+
+  return (
+    <QueryState query={q}>
+      {(d) => form && (
+        <Card title={<div className="flex items-center gap-2"><Bot className="size-4 text-c-blue" aria-hidden /><h2 className="text-sm font-medium">AI</h2></div>}
+          actions={d.mine.active ? <Badge color="blue">Using your own key</Badge> : d.platform.available ? <Badge color="green">Using DispatchDesk AI</Badge> : <Badge color="gray">AI is off</Badge>}>
+          <p className="text-sm text-muted">
+            Use your own AI provider key for the AI dispatcher and AI emails. With your own key, AI calls are billed by your provider and don't count against your plan.
+          </p>
+          <p className="mt-2 text-xs text-muted">
+            {d.usage.limit < 0
+              ? `DispatchDesk AI this month: ${d.usage.thisMonth} calls (no limit on your plan).`
+              : `DispatchDesk AI this month: ${d.usage.thisMonth} of ${d.usage.limit} calls on your plan.`}
+            {' '}Your own key this month: {d.usage.byokThisMonth} calls.
+            {!d.platform.available && !d.mine.active && ' The platform AI is not set up, so AI stays off until you add a key or an admin sets it up.'}
+          </p>
+          <form className="mt-4 grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); save.mutate(body()); }}>
+            <Field label="Provider">
+              <Select value={form.preset} onChange={(e) => pick(e.target.value)}>
+                <option value="anthropic">Claude by Anthropic</option>
+                <optgroup label="OpenAI-compatible">
+                  {AI_PRESETS.filter((p) => p.provider === 'openai').map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                </optgroup>
+              </Select>
+            </Field>
+            <Field label="Model" hint={preset.provider === 'anthropic' ? 'Leave empty for claude-opus-5-5' : preset.value === 'openai' ? 'Leave empty for gpt-4o-mini' : 'Required for this provider'}>
+              <Input value={form.model} maxLength={120} autoComplete="off" spellCheck={false} placeholder={preset.modelHint || preset.model}
+                onChange={(e) => setForm({ ...form, model: e.target.value })} />
+            </Field>
+            {preset.provider === 'openai' && (
+              <Field label="Base URL" className="sm:col-span-2" hint="The provider's OpenAI-compatible API address. Must start with https://">
+                <Input type="url" value={form.baseUrl} maxLength={300} autoComplete="off" spellCheck={false} placeholder="https://"
+                  onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} />
+              </Field>
+            )}
+            <Field label="API key" className="sm:col-span-2"
+              hint={d.mine.keyHint ? `Saved ending in ${d.mine.keyHint}. Leave empty to keep it; enter it again if you change the provider or base URL.` : preset.keyHint || 'Paste the key from your provider.'}>
+              <Input type="password" value={form.apiKey} maxLength={500} autoComplete="new-password" spellCheck={false}
+                placeholder={d.mine.keyHint ? `Saved ending in ${d.mine.keyHint}` : 'Paste your API key'}
+                onChange={(e) => setForm({ ...form, apiKey: e.target.value })} />
+            </Field>
+            {result && (
+              <p role="status" className={cx('text-sm sm:col-span-2', result.ok ? 'text-c-green' : 'text-c-red')}>{result.message}</p>
+            )}
+            <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+              <Button type="submit" loading={save.isPending}>Save</Button>
+              <Button type="button" variant="secondary" loading={test.isPending} disabled={!form.apiKey.trim() && !d.mine.active}
+                onClick={() => { setResult(null); test.mutate(body()); }}>Test</Button>
+              {d.mine.active && (
+                <Button type="button" variant="ghost" icon={Trash2} className="sm:ml-auto" loading={remove.isPending}
+                  onClick={async () => { if (await confirm({ title: 'Remove your AI key?', message: 'AI goes back to DispatchDesk AI and your plan limit.', confirmLabel: 'Remove', danger: true })) remove.mutate(); }}>Remove</Button>
+              )}
+            </div>
+          </form>
+          <p className="mt-3 text-xs text-muted">Your key is encrypted on our servers and never shown again. Test makes one tiny request to your provider.</p>
+        </Card>
+      )}
+    </QueryState>
   );
 }
 

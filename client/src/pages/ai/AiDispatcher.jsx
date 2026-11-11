@@ -1,13 +1,40 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, Plus, Trash2, Send, Globe, BookOpen, MessageSquare, PenLine, Phone, ShieldQuestion, Calculator, Copy, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Bot, Plus, Trash2, Send, Globe, BookOpen, MessageSquare, PenLine, Phone, ShieldQuestion, Calculator, Copy, ExternalLink, AlertTriangle, KeyRound } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../../components/Toast.jsx';
 import { useConfirm } from '../../components/Modal.jsx';
 import { Badge, Button, Card, EmptyState, Field, Input, Loading, Markdown, PageHeader, Select, Switch, Tabs, Textarea, cx } from '../../components/ui.jsx';
 import { dollars, relative, label as labelOf, EQUIPMENT } from '../../lib/format.js';
+import { describeAiError, aiSourceLabel, AI_OFF, AI_SETTINGS } from './aiErrors.js';
+
+/** useApiMutation for AI calls: errors get the AI wording and a link, and the usage counter refreshes. */
+function useAiMutation(fn) {
+  const toast = useToast();
+  return useApiMutation(fn, {
+    invalidate: [['ai', 'status']],
+    onError: (err) => {
+      const { message, links } = describeAiError(err);
+      toast.error(message, links[0] ? { action: { label: links[0].label, href: links[0].to } } : undefined);
+    },
+  });
+}
+
+function AiErrorNote({ error }) {
+  const { message, links } = describeAiError(error);
+  return (
+    <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+      {message}
+      {links.length > 0 && (
+        <span className="mt-1 flex flex-wrap gap-3">
+          {links.map((l) => <Link key={l.to} to={l.to} className="font-medium underline">{l.label}</Link>)}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function SourceChips({ sources }) {
   if (!sources?.length) return null;
@@ -66,6 +93,7 @@ function Chat({ status }) {
   const [useKnowledge, setUseKnowledge] = useState(true);
   const [pending, setPending] = useState(null);
   const [notes, setNotes] = useState([]);
+  const [failure, setFailure] = useState(null);
   const endRef = useRef(null);
 
   const convs = useQuery({ queryKey: ['ai', 'conversations'], queryFn: ({ signal }) => api.get('/api/ai/conversations', undefined, { signal }) });
@@ -90,8 +118,9 @@ function Chat({ status }) {
       setNotes(r.notes || []);
       await qc.invalidateQueries({ queryKey: ['ai', 'conversation', r.id] });
       qc.invalidateQueries({ queryKey: ['ai', 'conversations'] });
+      qc.invalidateQueries({ queryKey: ['ai', 'status'] });
     },
-    onError: (err) => { setPending(null); setText((t) => t || pendingRef.current || ''); setNotes([err.message]); },
+    onError: (err) => { setPending(null); setText((t) => t || pendingRef.current || ''); setFailure(err); },
   });
   const pendingRef = useRef('');
 
@@ -102,6 +131,7 @@ function Chat({ status }) {
     setPending(c);
     setText('');
     setNotes([]);
+    setFailure(null);
     send.mutate(c);
   };
 
@@ -110,12 +140,12 @@ function Chat({ status }) {
 
   return (
     <div className="grid min-h-[70vh] gap-4 lg:grid-cols-[260px_1fr]">
-      <Card bodyClass="p-2" className="lg:max-h-[78vh] lg:overflow-y-auto" title="Conversations" actions={<Button size="sm" variant="ghost" icon={Plus} onClick={() => { setActiveId(null); setNotes([]); }}>New</Button>}>
+      <Card bodyClass="p-2" className="lg:max-h-[78vh] lg:overflow-y-auto" title="Conversations" actions={<Button size="sm" variant="ghost" icon={Plus} onClick={() => { setActiveId(null); setNotes([]); setFailure(null); }}>New</Button>}>
         {convs.isLoading ? <Loading /> : !convs.data?.items?.length ? <p className="px-2 py-6 text-center text-xs text-muted">No conversations yet.</p> : (
           <ul className="space-y-0.5">
             {convs.data.items.map((c) => (
               <li key={c.id} className={cx('group flex items-center rounded-md', c.id === activeId ? 'bg-brand-600/10 dark:bg-brand-400/10' : 'hover:bg-surface-2')}>
-                <button type="button" onClick={() => { setActiveId(c.id); setNotes([]); }} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                <button type="button" onClick={() => { setActiveId(c.id); setNotes([]); setFailure(null); }} className="min-w-0 flex-1 px-2.5 py-2 text-left">
                   <p className="truncate text-[13px] font-medium">{c.title}</p>
                   <p className="text-[11px] text-muted">{relative(c.updatedAt)} · {c._count?.messages ?? 0} msgs</p>
                 </button>
@@ -150,6 +180,7 @@ function Chat({ status }) {
             </>
           )}
           {notes.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{notes.join(' ')}</div>}
+          {failure && <AiErrorNote error={failure} />}
           <div ref={endRef} />
         </div>
         <form className="border-t border-line p-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
@@ -174,7 +205,7 @@ function ToolResult({ children }) {
 function EmailTool() {
   const toast = useToast();
   const [f, setF] = useState({ purpose: 'carrier_intro', tone: 'professional', notes: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/draft-email', v, AI_TIMEOUT));
+  const m = useAiMutation((v) => api.post('/api/ai/draft-email', v, AI_TIMEOUT));
   return (
     <div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -211,7 +242,7 @@ function EmailTool() {
 
 function ScriptTool() {
   const [f, setF] = useState({ scenario: 'cold_call', notes: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/call-script', v, AI_TIMEOUT));
+  const m = useAiMutation((v) => api.post('/api/ai/call-script', v, AI_TIMEOUT));
   return (
     <div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -231,7 +262,7 @@ function ScriptTool() {
 
 function ObjectionTool() {
   const [objection, setObjection] = useState('');
-  const m = useApiMutation((v) => api.post('/api/ai/objection', v, AI_TIMEOUT));
+  const m = useAiMutation((v) => api.post('/api/ai/objection', v, AI_TIMEOUT));
   const examples = ['I already have a dispatcher.', 'Your percentage is too high.', 'I only use load boards myself.', 'Call me next month.'];
   return (
     <div>
@@ -247,7 +278,7 @@ function ObjectionTool() {
 
 function LoadTool() {
   const [f, setF] = useState({ origin: '', destination: '', equipment: '', rate: '', loadedMiles: '', deadheadMiles: '', mpg: '6.5', fuelPricePerGallon: '', dispatchFeePercent: '', detentionHours: '', detentionRate: '' });
-  const m = useApiMutation((v) => api.post('/api/ai/analyze-load', v, AI_TIMEOUT));
+  const m = useAiMutation((v) => api.post('/api/ai/analyze-load', v, AI_TIMEOUT));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const n = m.data?.numbers;
   return (
@@ -291,17 +322,18 @@ export default function AiDispatcher() {
   const [tab, setTab] = useState('chat');
   const status = useQuery({ queryKey: ['ai', 'status'], queryFn: ({ signal }) => api.get('/api/ai/status', undefined, { signal }) });
   const s = status.data;
+  const source = aiSourceLabel(s);
   return (
     <div>
       <PageHeader title="AI dispatcher" subtitle="Dispatch-trained assistant with your knowledge base and optional web research."
         actions={<>
-          {s?.configured && <Badge color="green">Model: {s.model}</Badge>}
+          {source && <Badge color={s.source === 'byok' ? 'blue' : 'green'} title={s.model ? `Model ${s.model}` : undefined}>{source}</Badge>}
           <Button variant="secondary" icon={BookOpen} to="/app/ai/knowledge">Knowledge base ({(s?.knowledge?.own ?? 0) + (s?.knowledge?.global ?? 0)})</Button>
         </>} />
       {status.isLoading ? <Loading /> : !s?.configured ? (
         <Card>
-          <EmptyState icon={AlertTriangle} title="AI is not configured">
-            {s?.message || 'An admin must set the AI provider in Admin → Settings.'} The assistant never returns canned answers, so it stays off until a provider is connected.
+          <EmptyState icon={AlertTriangle} title="AI is off" action={<Button icon={KeyRound} to={AI_SETTINGS}>Add your own key</Button>}>
+            {AI_OFF} The assistant never returns canned answers, so it stays off until a provider is connected.
             <span className="mt-2 block">Meanwhile you can still <Link to="/app/ai/knowledge" className="font-medium text-brand-700 underline dark:text-brand-300">upload knowledge documents</Link>.</span>
           </EmptyState>
         </Card>

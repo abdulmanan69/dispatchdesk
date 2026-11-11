@@ -224,6 +224,21 @@ async function readBody(client, uid) {
   return simpleParser(msg.source, { skipHtmlToText: false, skipTextToHtml: true, skipImageLinks: true });
 }
 
+/**
+ * The new part of a plain-text reply: drops quoted lines ("> …") and everything from the quote header ("On … wrote:",
+ * "-----Original Message-----", an Outlook "From: name <address>" block) down. Null when nothing is left.
+ */
+export function replyText(text, max = 4000) {
+  const out = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^\s*>/.test(line)) continue;
+    if (/^\s*(On\s.{0,300}\swrote:\s*$|-{2,}\s*Original Message\s*-{2,}|From:\s.*(@|\[mailto))/i.test(line)) break;
+    out.push(line);
+  }
+  const s = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return s ? s.slice(0, max) : null;
+}
+
 /** Message-IDs a message answers (In-Reply-To, then References). */
 function refsOf(msg, headers = parseHeaders(msg.headers)) {
   return [...messageIds(headers['in-reply-to'] || msg.envelope?.inReplyTo), ...messageIds(headers.references)];
@@ -309,7 +324,10 @@ async function handleMessage({ client, account, user, msg, stats, senders, threa
     }
   }
   const auto = isAutoReply(headers, subject);
-  await recordReply({ user, email, carrierId: carrier?.id || email?.carrierId || null, brokerId: broker?.id || email?.brokerId || null, fromEmail: from, subject, at, auto });
+  // A broker's answer in a rate negotiation: read the body (only the new part) so the negotiation can read their number.
+  let text = null;
+  if (email?.negotiationId && !auto) text = replyText((await readBody(client, msg.uid).catch(() => null))?.text);
+  await recordReply({ user, email, carrierId: carrier?.id || email?.carrierId || null, brokerId: broker?.id || email?.brokerId || null, fromEmail: from, subject, at, auto, text });
   stats[auto ? 'autoReplies' : 'replies']++;
   return auto ? 'auto_reply' : 'reply';
 }

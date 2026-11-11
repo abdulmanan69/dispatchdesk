@@ -15,9 +15,10 @@ import {
 } from '../services/onboarding/agreement.js';
 import {
   DOC_KINDS, DOC_KIND_LABEL, DOC_KIND_PHRASE, LINK_DEFAULT_DAYS, LINK_MAX_DAYS, MAX_PENDING_PER_CARRIER,
-  linkDocuments, linkListView, linkDetailView, storedPrefix,
+  linkDocuments, linkListView, linkDetailView, storedPrefix, encodeRequested,
 } from '../services/onboarding/links.js';
 import { recordHtml } from '../services/onboarding/record.js';
+import { linkContactConsent } from '../services/onboarding/contactConsent.js';
 
 /**
  * Dispatcher side of carrier onboarding links: create (agreement + requested documents), list, view with audit trail,
@@ -63,6 +64,9 @@ const createSchema = z.object({
   agreementBody: z.string().max(MAX_TEMPLATE_CHARS, `The agreement can be at most ${MAX_TEMPLATE_CHARS.toLocaleString('en-US')} characters`).optional().nullable(),
   feePercent: optNum(0, 100),
   requestedDocs: z.array(z.enum(DOC_KINDS)).max(DOC_KINDS.length).default([]),
+  // Optional consent to automated calls and texts on the signing page. The dispatcher's form sends true by default;
+  // omitted (older clients) means not asked.
+  askContactConsent: z.boolean().default(false),
   days: z.coerce.number().int().min(1).max(LINK_MAX_DAYS).default(LINK_DEFAULT_DAYS),
   sendEmail: z.boolean().default(false),
   toEmail: optEmail,
@@ -102,7 +106,7 @@ r.post('/', ah(async (req, res) => {
     data: {
       ownerId: req.user.id, carrierId: carrier.id, tokenHash: sha256(token), status: 'pending',
       agreementTitle, agreementBody, agreementHash: agreementHash(agreementBody), feePercent,
-      requestedDocs: requestedDocs.length ? requestedDocs.join(',') : null,
+      requestedDocs: encodeRequested(requestedDocs, body.askContactConsent),
       expiresAt: new Date(now.getTime() + body.days * DAY),
     },
     include: { owner: ownerSelect },
@@ -192,8 +196,8 @@ r.post('/:id/revoke', ah(async (req, res) => {
 /** Printable record of the agreement and its signature (open in a new tab and print or save as PDF). */
 r.get('/:id/record', ah(async (req, res) => {
   const { link, carrier } = await loadLink(req.user, req.params.id);
-  const documents = await linkDocuments(link);
-  const html = recordHtml({ link, carrier, documents, tz: req.user.timezone || 'UTC' });
+  const [documents, contactConsent] = await Promise.all([linkDocuments(link), linkContactConsent(link)]);
+  const html = recordHtml({ link, carrier, documents, contactConsent, tz: req.user.timezone || 'UTC' });
   const slug = carrier.companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'carrier';
   res.set({
     'Content-Type': 'text/html; charset=utf-8',

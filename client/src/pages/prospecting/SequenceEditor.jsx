@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Trash2, ArrowUp, ArrowDown, Phone, Mail, ClipboardCheck, Save, MessageSquare, Play, UserPlus, X } from 'lucide-react';
+import { Plus, Trash2, ArrowUp, ArrowDown, Phone, Mail, ClipboardCheck, Save, MessageSquare, Play, UserPlus, X, Sparkles } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { dateTime, label } from '../../lib/format.js';
@@ -22,9 +22,19 @@ const ICON = { call: Phone, email: Mail, text: MessageSquare, task: ClipboardChe
 // Settings that re-time the upcoming steps of carriers already in the sequence (PUT /api/sequences/:id).
 const TIMING = ['respectBusinessHours', 'windowStartHour', 'windowEndHour', 'skipWeekends'];
 
+// Who writes an email step (SequenceStep.aiMode). The template, subject and body stay as the fallback for AI steps.
+const WRITTEN_BY = [
+  { value: 'off', label: 'Template' },
+  { value: 'auto', label: 'AI writes and sends' },
+  { value: 'review', label: 'AI writes, I approve' },
+];
+const BRIEF_MAX = 1000;
+const isAi = (s) => s.type === 'email' && (s.aiMode === 'auto' || s.aiMode === 'review');
+
 /** Step fields as the editor holds them; `id` is kept so carriers mid-sequence stay on the same step after an edit. */
-const editable = ({ id, dayOffset, type, templateId, subject, body, instructions }) => ({
+const editable = ({ id, dayOffset, type, templateId, subject, body, instructions, aiMode, aiBrief }) => ({
   ...(id ? { id } : {}), dayOffset: Number(dayOffset), type, templateId: templateId || '', subject: subject || '', body: body || '', instructions: instructions || '',
+  aiMode: aiMode === 'auto' || aiMode === 'review' ? aiMode : 'off', aiBrief: aiBrief || '',
 });
 
 /** "Sequence saved" plus what happened to carriers already in it (PUT returns remapped { moved, completed, retimed }). */
@@ -80,11 +90,14 @@ export default function SequenceEditor() {
     const days = steps.map((s) => s.dayOffset).sort((a, b) => a - b);
     return { ...f, steps: steps.map((s, k) => ({ ...s, dayOffset: days[k] })) };
   });
-  const addStep = () => setForm((f) => ({ ...f, steps: [...f.steps, { dayOffset: (f.steps.at(-1)?.dayOffset ?? -1) + 1, type: 'call', instructions: '', subject: '', body: '', templateId: '' }] }));
+  const addStep = () => setForm((f) => ({ ...f, steps: [...f.steps, { dayOffset: (f.steps.at(-1)?.dayOffset ?? -1) + 1, type: 'call', instructions: '', subject: '', body: '', templateId: '', aiMode: 'off', aiBrief: '' }] }));
 
   const submit = async (e) => {
     e.preventDefault();
-    const steps = form.steps.map((s) => ({ ...s, dayOffset: Number(s.dayOffset), templateId: s.type === 'email' ? s.templateId || null : null }));
+    const steps = form.steps.map((s) => ({
+      ...s, dayOffset: Number(s.dayOffset), templateId: s.type === 'email' ? s.templateId || null : null,
+      aiMode: s.type === 'email' ? s.aiMode || 'off' : 'off', aiBrief: s.type === 'email' ? s.aiBrief || '' : '',
+    }));
     // Carriers already in the sequence keep their place; say so before changing the steps or send hours under them.
     const mid = isNew ? 0 : q.data?.midSequence || 0;
     const stepsChanged = !isNew && JSON.stringify(form.steps.map(editable)) !== JSON.stringify(q.data.sequence.steps.map(editable));
@@ -161,18 +174,8 @@ export default function SequenceEditor() {
                         </div>
                       </div>
                       {s.type === 'email' ? (
-                        <div className="space-y-2">
-                          <Field label="Template" hint={templates.isError ? 'Templates unavailable — write the email below.' : 'Choose a saved template, or write the email below.'}>
-                            <Select value={s.templateId} onChange={(e) => setStep(i, { templateId: e.target.value })}>
-                              <option value="">Write custom email</option>
-                              {tmplItems.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                            </Select>
-                          </Field>
-                          {!s.templateId && <>
-                            <Field label="Subject"><Input value={s.subject} onChange={(e) => setStep(i, { subject: e.target.value })} /></Field>
-                            <Field label="Body" hint="Merge fields such as {{company}} and {{first_name}} are filled when the email is sent."><Textarea rows={5} value={s.body} onChange={(e) => setStep(i, { body: e.target.value })} /></Field>
-                          </>}
-                        </div>
+                        <EmailStepFields step={s} onChange={(patch) => setStep(i, patch)} templates={tmplItems} templatesError={templates.isError}
+                          sequenceId={isNew ? null : id} />
                       ) : s.type === 'text' ? (
                         <Field label="Text message" hint="You send it yourself from Google Voice or your phone. {{first_name}}, {{company}} and {{sender_name}} are filled in.">
                           <Textarea rows={3} value={s.body} maxLength={1000} onChange={(e) => setStep(i, { body: e.target.value })} />
@@ -185,7 +188,7 @@ export default function SequenceEditor() {
                 );
               })}
             </ol>
-            <p className="mt-3 text-xs text-muted">Call, text and task steps appear in Prospecting and the power dialer on their day. Calls and texts are always started by you. Email steps send only when a mailbox is connected, the carrier has an email, and isn't marked do-not-email or unsubscribed.</p>
+            <p className="mt-3 text-xs text-muted">Call, text and task steps appear in Prospecting and the power dialer on their day. Calls and texts are always started by you. Email steps send only when a mailbox is connected, the carrier has an email, and isn't marked do-not-email or unsubscribed.{form.steps.some(isAi) ? ' AI-written steps use your AI allowance. When AI is unavailable the fallback template is sent, or the email waits for you in Email, Needs approval.' : ''}</p>
           </Card>
           {canEdit && <div className="flex justify-end"><Button type="submit" icon={Save} loading={save.isPending}>{isNew ? 'Create sequence' : 'Save changes'}</Button></div>}
         </form>
@@ -204,7 +207,7 @@ function Enrollments({ id, stats }) {
   const color = { active: 'green', paused: 'amber', completed: 'brand', stopped: 'gray' };
   return (
     <Card bodyClass="p-0" title={<div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-      {Object.keys(stats.emails).length > 0 && <span>Emails: {Object.entries(stats.emails).map(([k, v]) => `${v} ${k}`).join(' · ')}</span>}
+      {Object.keys(stats.emails).length > 0 && <span>Emails: {Object.entries(stats.emails).map(([k, v]) => `${v} ${k === 'review' ? 'waiting for approval' : k}`).join(' · ')}</span>}
     </div>} actions={<div className="flex flex-wrap items-center gap-2">
       {stats.sequence?.active && <Button size="sm" variant="secondary" icon={UserPlus} onClick={() => setEnrolling(true)}>Enroll carriers</Button>}
       <Select aria-label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-36">
@@ -231,6 +234,78 @@ function Enrollments({ id, stats }) {
       {q.data && <div className="px-3"><Pagination page={q.data.page} pages={q.data.pages} total={q.data.total} onPage={setPage} /></div>}
       <EnrollCarriersModal open={enrolling} sequenceId={id} onClose={() => setEnrolling(false)} />
     </Card>
+  );
+}
+
+/** An email step: who writes it (template or AI), the AI brief and preview, and the template (the fallback for AI steps). */
+function EmailStepFields({ step: s, onChange, templates, templatesError, sequenceId }) {
+  const [previewing, setPreviewing] = useState(false);
+  const ai = isAi(s);
+  const savedStep = !!(sequenceId && s.id);
+  return (
+    <div className="space-y-2">
+      <Field label="Written by" hint={ai ? 'The AI writes each email from your brief and the carrier record: company, contact, MC/DOT, location, equipment and fleet size. It never makes up rates, loads or numbers.' : undefined}>
+        <Select value={s.aiMode || 'off'} onChange={(e) => onChange({ aiMode: e.target.value })} className="sm:w-64">
+          {WRITTEN_BY.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </Select>
+      </Field>
+      {ai && (
+        <div className="space-y-2 rounded-md border border-line bg-surface-2/50 p-3">
+          <Field label="What should this email say" required hint={`Goal, offer and tone. ${(s.aiBrief || '').length.toLocaleString('en-US')} / ${BRIEF_MAX.toLocaleString('en-US')}`}>
+            <Textarea rows={3} maxLength={BRIEF_MAX} value={s.aiBrief || ''} onChange={(e) => onChange({ aiBrief: e.target.value })}
+              placeholder="Introduce my dispatch service for small dry van fleets: I find loads, negotiate with brokers and handle paperwork. Friendly and short, ask for a 10 minute call." />
+          </Field>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="secondary" icon={Sparkles} disabled={!savedStep || !(s.aiBrief || '').trim()} onClick={() => setPreviewing(true)}>Preview for a carrier</Button>
+            <span className="text-xs text-muted">
+              {!savedStep ? 'Save the sequence to preview this step.' : s.aiMode === 'review' ? 'Each email waits in Email, Needs approval, until you approve it.' : 'Each email is sent once written, within the send window and your mailbox limits.'}
+            </span>
+          </div>
+        </div>
+      )}
+      <Field label={ai ? 'Fallback template' : 'Template'} hint={templatesError ? 'Templates unavailable — write the email below.' : ai ? 'Sent instead when AI is unavailable. Optional: without one, the email waits for your approval with your brief.' : 'Choose a saved template, or write the email below.'}>
+        <Select value={s.templateId} onChange={(e) => onChange({ templateId: e.target.value })}>
+          <option value="">{ai ? 'No template (write one below, or leave empty)' : 'Write custom email'}</option>
+          {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </Select>
+      </Field>
+      {!s.templateId && <>
+        <Field label={ai ? 'Fallback subject' : 'Subject'}><Input value={s.subject} onChange={(e) => onChange({ subject: e.target.value })} /></Field>
+        <Field label={ai ? 'Fallback body' : 'Body'} hint="Merge fields such as {{company}} and {{first_name}} are filled when the email is sent."><Textarea rows={ai ? 3 : 5} value={s.body} onChange={(e) => onChange({ body: e.target.value })} /></Field>
+      </>}
+      {previewing && <AiPreviewModal sequenceId={sequenceId} step={s} onClose={() => setPreviewing(false)} />}
+    </div>
+  );
+}
+
+/** Write the step for one carrier without sending anything (one AI request). */
+function AiPreviewModal({ sequenceId, step, onClose }) {
+  const [carrier, setCarrier] = useState(null);
+  const preview = useApiMutation((c) => api.post(`/api/sequences/${sequenceId}/steps/${step.id}/ai-preview`, { carrierId: c.id, aiBrief: step.aiBrief }));
+  const out = preview.data;
+  return (
+    <Modal open onClose={onClose} title="Preview AI email" size="lg"
+      footer={<>
+        <Button variant="secondary" onClick={onClose}>Close</Button>
+        <Button icon={Sparkles} disabled={!carrier} loading={preview.isPending} onClick={() => preview.mutate(carrier)}>{out ? 'Write again' : 'Write preview'}</Button>
+      </>}>
+      <div className="space-y-3">
+        <Field label="Carrier" hint="Nothing is sent. Each preview counts as one AI request.">
+          {(fid) => <CarrierPicker id={fid} value={carrier} onChange={(c) => { setCarrier(c); preview.reset(); }} autoFocus />}
+        </Field>
+        {out && (
+          <div className="space-y-2">
+            {out.flagged?.length > 0 && (
+              <p className="rounded-md border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-[13px] text-c-amber">
+                The AI wrote {out.flagged.join(', ')}, which is not in your brief or the carrier record. A real email like this waits for your approval.
+              </p>
+            )}
+            <p className="text-sm"><span className="text-muted">Subject: </span><span className="font-medium">{out.subject}</span></p>
+            <pre className="max-h-[45vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface-2/50 p-3 font-sans text-sm">{out.body}</pre>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

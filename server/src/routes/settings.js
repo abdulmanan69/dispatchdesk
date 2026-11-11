@@ -179,6 +179,9 @@ function exportSections(id) {
     ['communityComments', 'communityComment', { where: { authorId: id } }],
     ['payments', 'payment', { where: { userId: id } }],
     ['mailboxes', 'emailAccount', { where: { userId: id }, select: { id: true, provider: true, label: true, fromEmail: true, fromName: true, status: true, createdAt: true } }],
+    ['contactConsents', 'contactConsent', { where: { ownerId: id } }],
+    ['negotiations', 'negotiation', { where: { ownerId: id } }, 100],
+    ['aiUsage', 'aiUsageEvent', { where: { userId: id } }, 1000],
   ];
 }
 
@@ -219,7 +222,7 @@ r.get('/export', ah(async (req, res) => {
       res.set('Content-Disposition', `attachment; filename="${name}"`);
       res.set('Cache-Control', 'private, no-store');
       const out = writer(req, res);
-      const head = { exportedAt: new Date().toISOString(), format: 'dispatchdesk-export/1', profile: omit(user, ['passwordHash', 'roleId', 'calendarTokenHash']) };
+      const head = { exportedAt: new Date().toISOString(), format: 'dispatchdesk-export/1', profile: omit(user, ['passwordHash', 'roleId', 'calendarTokenHash', 'aiKeyEnc']) };
       if (!(await out.write(JSON.stringify(head).slice(0, -1)))) return;
       for (const [key, model, args, size] of exportSections(id)) {
         if (!(await out.write(`,${JSON.stringify(key)}:[`))) return;

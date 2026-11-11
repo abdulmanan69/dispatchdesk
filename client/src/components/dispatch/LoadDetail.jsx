@@ -14,6 +14,7 @@ import { LOAD_DOC_TYPES } from '../documents/docTypes.js';
 import TextLogModal from '../carriers/TextLogModal.jsx';
 import ConsolidateModal from '../fleet/ConsolidateModal.jsx';
 import ReloadIdeas from '../carriers/ReloadIdeas.jsx';
+import { LoadNegotiations } from '../negotiation/NegotiationList.jsx';
 import DetentionPanel from './DetentionPanel.jsx';
 import FitCard from './FitCard.jsx';
 import LoadFormModal from './LoadForm.jsx';
@@ -71,6 +72,7 @@ function Overview({ load, onEdit, onText }) {
             <Button variant="secondary" icon={Pencil} onClick={onEdit}>Edit load</Button>
             {load.carrier && <Button variant="secondary" icon={MessageSquare} onClick={onText}>Text carrier</Button>}
           </div>
+          <LoadNegotiations load={load} />
           <ConsolidationSection load={load} />
         </div>
         <div className="h-fit rounded-md border border-line bg-surface-2/40 p-3">

@@ -30,7 +30,7 @@ export default function OnboardingLinkModal({ open, onClose, carrier, feePercent
     if (template.data && !f) {
       setF({
         title: template.data.title, body: template.data.body, fee: feePercent ?? '', docs: DEFAULT_DOCS, days: String(template.data.days?.default || 14),
-        sendEmail: false, toEmail: carrier?.email || '',
+        askContactConsent: true, sendEmail: false, toEmail: carrier?.email || '',
       });
     }
   }, [open, template.data, f, feePercent, carrier]);
@@ -57,6 +57,7 @@ export default function OnboardingLinkModal({ open, onClose, carrier, feePercent
     agreementBody: f.body,
     feePercent: f.fee === '' ? null : Number(f.fee),
     requestedDocs: ONBOARDING_DOCS.map(([k]) => k).filter((k) => f.docs.includes(k)),
+    askContactConsent: !!f.askContactConsent,
     days: Number(f.days),
     sendEmail: !!(f.sendEmail && hasMailbox && f.toEmail.trim()),
     toEmail: f.sendEmail && f.toEmail.trim() ? f.toEmail.trim() : null,
@@ -129,6 +130,11 @@ export default function OnboardingLinkModal({ open, onClose, carrier, feePercent
               ))}
             </div>
           </fieldset>
+          <div className="space-y-1 rounded-lg border border-line p-3">
+            <Checkbox label={<span className="font-medium">Ask for permission to call and text</span>} checked={!!f.askContactConsent}
+              onChange={(e) => setF((x) => ({ ...x, askContactConsent: e.target.checked }))} />
+            <p className="pl-6 text-xs text-muted">Adds a separate, optional box under the signature where the carrier can agree to automated calls and texts at their number. Signing never depends on it.</p>
+          </div>
           <div className="space-y-2 rounded-lg border border-line p-3">
             <Checkbox label={<span className="font-medium">Email it from my mailbox</span>} checked={f.sendEmail && hasMailbox} disabled={!hasMailbox}
               onChange={(e) => setF((x) => ({ ...x, sendEmail: e.target.checked }))} />

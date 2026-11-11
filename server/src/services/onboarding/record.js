@@ -1,6 +1,7 @@
 import { decodeSignature, signatureSvg } from './signature.js';
 import { agreementHash } from './agreement.js';
-import { DOC_KIND_LABEL, kindOfStored, auditTrail, linkStatus } from './links.js';
+import { DOC_KIND_LABEL, kindOfStored, auditTrail, linkStatus, asksContactConsent } from './links.js';
+import { consentHash, formatPhone, channelsLabel } from '../consent/index.js';
 
 /**
  * Printable record of an onboarding link: the exact agreement text, the signer, the signature, times (UTC and the
@@ -24,7 +25,33 @@ const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max
 
 const STATUS_TEXT = { pending: 'Not signed yet', viewed: 'Opened, not signed yet', signed: 'Signed', revoked: 'Link turned off', expired: 'Expired without a signature' };
 
-export function recordHtml({ link, carrier, documents = [], tz = 'UTC', generatedAt = new Date() }) {
+/** "Consent to calls and texts" section: given (with its proof), declined, or not answered yet; empty when not asked. */
+function contactConsentHtml({ link, contactConsent: cc, tz, rows }) {
+  if (!cc && !asksContactConsent(link)) return '';
+  let body;
+  if (cc) {
+    body = `<p>Given. The signer ticked the optional box to agree to automated calls and texts.</p>
+  <div class="agreement">${esc(cc.consentText)}</div>
+  <table class="kv">${rows([
+    ['Phone number', esc(formatPhone(cc.phone))],
+    ['Channels', esc(channelsLabel(cc.channels))],
+    ['Given by', esc(cc.grantedByName || '')],
+    ['Given', both(cc.grantedAt, tz)],
+    ['IP address', esc(cc.ip || '')],
+    ['Browser (user agent)', `<code>${esc(cc.userAgent || '')}</code>`],
+    ['SHA-256 of the wording', `<code>${esc(cc.consentHash)}</code>`],
+    ['Check of the wording above', consentHash(cc.consentText) === cc.consentHash ? '<span class="ok">Matches the stored hash</span>' : '<span class="bad">Does not match the stored hash</span>'],
+    ['Revoked', cc.revokedAt ? `${both(cc.revokedAt, tz)}${cc.revokeReason ? `<br>${esc(cc.revokeReason)}` : ''}` : '<span class="muted">No</span>'],
+  ])}</table>`;
+  } else if (link.status === 'signed') {
+    body = '<p>Declined. The signer signed without ticking the optional box to agree to automated calls and texts. Signing did not depend on it.</p>';
+  } else {
+    body = '<p class="muted">Not answered yet. The signing page offers an optional box to agree to automated calls and texts.</p>';
+  }
+  return `<h2>Consent to calls and texts</h2>\n  ${body}`;
+}
+
+export function recordHtml({ link, carrier, documents = [], contactConsent = null, tz = 'UTC', generatedAt = new Date() }) {
   const status = linkStatus(link, generatedAt);
   const sig = decodeSignature(link.signatureData);
   const textHash = agreementHash(link.agreementBody);
@@ -36,7 +63,13 @@ export function recordHtml({ link, carrier, documents = [], tz = 'UTC', generate
   const docs = documents.length
     ? `<table class="list"><thead><tr><th>Document</th><th>File</th><th>Size</th><th>Uploaded</th></tr></thead><tbody>${documents.map((d) => `<tr><td>${esc(DOC_KIND_LABEL[kindOfStored(d.storedName)] || d.type)}</td><td>${esc(d.originalName)}</td><td>${esc(kb(d.sizeBytes))}</td><td>${both(d.createdAt, tz)}</td></tr>`).join('')}</tbody></table>`
     : '<p class="muted">No documents uploaded through this link.</p>';
-  const audit = auditTrail(link, documents).map((e) => `<tr><td>${both(e.at, tz)}</td><td>${esc(e.text)}${e.ip ? `<br><span class="muted small">IP ${esc(e.ip)}</span>` : ''}</td></tr>`).join('');
+  const events = auditTrail(link, documents);
+  if (contactConsent) {
+    events.push({ at: contactConsent.grantedAt, event: 'contact_consent', text: `Agreed to automated calls and texts at ${formatPhone(contactConsent.phone)}`, ip: contactConsent.ip });
+    if (contactConsent.revokedAt) events.push({ at: contactConsent.revokedAt, event: 'contact_consent_revoked', text: 'Consent to automated calls and texts revoked' });
+    events.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }
+  const audit = events.map((e) => `<tr><td>${both(e.at, tz)}</td><td>${esc(e.text)}${e.ip ? `<br><span class="muted small">IP ${esc(e.ip)}</span>` : ''}</td></tr>`).join('');
 
   return `<!doctype html>
 <html lang="en">
@@ -83,6 +116,8 @@ export function recordHtml({ link, carrier, documents = [], tz = 'UTC', generate
     ['IP address', esc(link.signerIp || '')],
     ['Browser (user agent)', `<code>${esc(link.signerUserAgent || '')}</code>`],
   ])}</table>
+
+  ${contactConsentHtml({ link, contactConsent, tz, rows })}
 
   <h2>Document integrity</h2>
   <table class="kv">${rows([

@@ -2,7 +2,7 @@ import { prisma } from '../db.js';
 import { notify, logActivity } from '../lib/activity.js';
 import { deliverEmail, pickAccount, blockedReason, MAX_ATTEMPTS, createSendContext, closeSendContext } from '../services/email/index.js';
 import { renderContent } from '../services/email/render.js';
-import { advanceFrom, carrierTz, invalidateQueueCount } from '../services/sequenceEngine.js';
+import { advanceFrom, carrierTz, invalidateQueueCount, isAiEmailStep } from '../services/sequenceEngine.js';
 import { ingestDocument } from '../services/ai/rag.js';
 import { runDueGenerators } from '../services/leadgen.js';
 import { nextBusinessTime, startOfNextUserDay, startOfUserDay, DEFAULT_TZ } from '../lib/timezones.js';
@@ -195,6 +195,8 @@ async function noMailboxNotice(userId) {
  * steps (which wait for the user) from filling the batch. Fair: at most `perUser` rows per user per tick.
  * Range: steps that became due within the window; email steps that cannot run are always moved forward, so none stay
  * behind it (the daily sweep in sweepStaleEmailSteps re-arms any that do, e.g. after downtime).
+ * AI-written steps (aiMode 'auto' | 'review') are left out: an AI call takes seconds, so they are handed off to the
+ * ai-sequence-email job (jobs/extra/ai-sequence-email.js), which writes, queues and advances them itself.
  */
 export async function dueEmailEnrollmentIds(now, { limit = LIMITS.enrollmentsPerTick, perUser = LIMITS.enrollmentsPerUser, windowMs = LIMITS.enrollmentWindowMs } = {}) {
   const from = new Date(now.getTime() - windowMs);
@@ -206,7 +208,7 @@ export async function dueEmailEnrollmentIds(now, { limit = LIMITS.enrollmentsPer
       JOIN SequenceStep s ON s.sequenceId = e.sequenceId AND s."order" = e.currentStep
       JOIN EmailSequence q ON q.id = e.sequenceId
       WHERE e.status = 'active' AND e.nextStepAt > ${from} AND e.nextStepAt <= ${now}
-        AND s.type = 'email' AND q.active = 1
+        AND s.type = 'email' AND (s.aiMode IS NULL OR s.aiMode NOT IN ('auto', 'review')) AND q.active = 1
     ) WHERE rn <= ${perUser}
     ORDER BY nextStepAt ASC
     LIMIT ${limit}`;
@@ -274,6 +276,8 @@ async function runSequenceEmailSteps(now, log, { budgetMs = LIMITS.sequenceBudge
     const sequence = sequences.get(enr.sequenceId);
     const step = sequence?.steps[enr.currentStep];
     if (!sequence?.active || !step || step.type !== 'email') continue;
+    // Switched to AI after the query ran: left due for the ai-sequence-email job (never rendered from the template here).
+    if (isAiEmailStep(step)) continue;
     const carrier = enr.carrier;
     // Lease the step (compare-and-set on step and due time): the dialer's "send now" and a second scheduler skip it.
     const lease = await prisma.sequenceEnrollment.updateMany({
