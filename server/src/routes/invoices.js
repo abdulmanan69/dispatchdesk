@@ -17,7 +17,7 @@ import {
   createWithNumber, invoiceView, agingSummary, csvRows, QB_COLUMNS, effectiveDueAt,
 } from '../services/invoices/index.js';
 import { stageFor } from '../services/invoices/reminders.js';
-import { invoiceHtml, invoiceText } from '../services/invoices/print.js';
+import { invoiceHtml, invoiceText, brandLogo } from '../services/invoices/print.js';
 
 /**
  * Invoices and receivables.
@@ -419,7 +419,8 @@ r.get('/:id/print', ah(async (req, res) => {
   const view = invoiceView(inv);
   const who = await issuer(req.user, view);
   res.set('Cache-Control', 'private, no-store');
-  res.type('html').send(invoiceHtml(view, { ...who, tz: req.user.timezone }));
+  // The dispatcher's logo goes on their own dispatch-fee invoices only: freight invoices are issued in the carrier's name.
+  res.type('html').send(invoiceHtml(view, { ...who, tz: req.user.timezone, logo: inv.kind === 'dispatch_fee' ? await brandLogo(inv.ownerId) : null }));
 }));
 
 export default r;

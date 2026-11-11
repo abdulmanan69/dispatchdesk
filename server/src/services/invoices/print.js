@@ -1,8 +1,77 @@
 /**
  * Print-friendly HTML (the browser's Print / Save as PDF) and plain-text versions of invoices and weekly
- * statements. Every value is HTML-escaped; the pages carry no scripts (the CSP allows inline styles only).
+ * statements. Every value is HTML-escaped; the pages carry no scripts (the CSP allows inline styles only). The
+ * account's logo, when it has one, is embedded as a data: image (the app CSP allows img-src data:).
  */
-const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { prisma } from '../../db.js';
+import { config } from '../../config.js';
+
+/** Upload subdirectory of invoice logos (written by routes/settings.js). */
+export const LOGO_DIR = 'logos';
+const LOGO_FILE_MAX = 600 * 1024; // the upload limit is 500 KB; anything larger on disk is not embedded
+const LOGO_CACHE_MAX = 32;
+const LOGO_CACHE_MAX_CHARS = 8 * 1024 * 1024;
+// storedName -> data: URI, least recently used first. A new upload gets a new name, so entries never go stale.
+const logoCache = new Map();
+let logoCacheChars = 0;
+
+function logoMime(buf) {
+  if (buf.length >= 8 && buf.readUInt32BE(0) === 0x89504e47 && buf.readUInt32BE(4) === 0x0d0a1a0a) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  return null;
+}
+
+/** A stored logo as a data: URI (cached per process), or null when the file is missing or not a PNG or JPEG. */
+export async function logoDataUri(storedName) {
+  if (!storedName) return null;
+  const key = path.basename(String(storedName));
+  const hit = logoCache.get(key);
+  if (hit) {
+    logoCache.delete(key);
+    logoCache.set(key, hit);
+    return hit;
+  }
+  let buf;
+  try { buf = await fsp.readFile(path.join(config.uploadDir, LOGO_DIR, key)); } catch { return null; }
+  const mime = buf.length <= LOGO_FILE_MAX ? logoMime(buf) : null;
+  if (!mime) return null;
+  const uri = `data:${mime};base64,${buf.toString('base64')}`;
+  if (!logoCache.has(key)) {
+    logoCache.set(key, uri);
+    logoCacheChars += uri.length;
+    while (logoCache.size > LOGO_CACHE_MAX || logoCacheChars > LOGO_CACHE_MAX_CHARS) {
+      const [oldKey, oldUri] = logoCache.entries().next().value;
+      logoCache.delete(oldKey);
+      logoCacheChars -= oldUri.length;
+    }
+  }
+  return uri;
+}
+
+/**
+ * The logo printed on an account's invoices and statements: { src, alt } or null. alt is the team name, else the
+ * company name from Settings, else the user's name. Pass the record owner's id (not the viewer's).
+ */
+export async function brandLogo(ownerId) {
+  if (!ownerId) return null;
+  const u = await prisma.user.findUnique({
+    where: { id: String(ownerId) },
+    select: { name: true, companyName: true, invoiceLogo: true, teamMembership: { select: { team: { select: { name: true } } } } },
+  });
+  if (!u?.invoiceLogo) return null;
+  const src = await logoDataUri(u.invoiceLogo);
+  return src ? { src, alt: u.teamMembership?.team?.name || u.companyName || u.name || 'Company logo' } : null;
+}
+
+const DATA_IMAGE = /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+=*$/;
+/** Logo block for the top of a page; empty (no markup at all) without a logo. Only PNG or JPEG data: URIs render. */
+const logoBlock = (logo) => (logo?.src && DATA_IMAGE.test(logo.src)
+  ? `<div class="brand"><img src="${esc(logo.src)}" alt="${esc(logo.alt || 'Company logo')}"></div>`
+  : '');
+
+const esc =(v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 export const usd = (cents) => (cents == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100));
 
 function safeZone(tz) {
@@ -25,6 +94,8 @@ const STYLE = `
   .page { max-width: 820px; margin: 0 auto; padding: 36px 28px 48px; }
   .hint { margin: 0 0 20px; padding: 8px 12px; border: 1px solid #d8dde3; border-radius: 8px; background: #f6f8fa; color: #4b5563; font-size: 13px; }
   header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 20px; border-bottom: 2px solid #1b1f24; padding-bottom: 16px; }
+  .brand { margin: 0 0 12px; }
+  .brand img { display: block; width: auto; height: auto; max-width: 240px; max-height: 80px; }
   h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
   h2 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: #4b5563; text-transform: none; }
   .muted { color: #4b5563; }
@@ -58,7 +129,7 @@ const STATUS_LABEL = { draft: 'Draft', sent: 'Sent', partial: 'Partly paid', pai
  * Invoice page. `from` is who issues it: { name, lines: [] } (the carrier for freight invoices, the dispatcher for
  * dispatch-fee invoices); `preparedBy` names the dispatcher for freight invoices.
  */
-export function invoiceHtml(inv, { from, preparedBy, tz } = {}) {
+export function invoiceHtml(inv, { from, preparedBy, tz, logo } = {}) {
   const m = inv.meta || {};
   const rows = (inv.items || []).map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${esc(qty(l.quantity))}</td><td class="num">${usd(l.unitCents)}</td><td class="num">${usd(l.amountCents)}</td></tr>`).join('');
   const payments = (m.payments || []).map((p) => `<div><span>Payment ${esc(day(p.at, tz))}${p.method ? ` · ${esc(p.method)}` : ''}${p.reference ? ` · ${esc(p.reference)}` : ''}</span><span>−${usd(p.amountCents)}</span></div>`).join('');
@@ -66,6 +137,7 @@ export function invoiceHtml(inv, { from, preparedBy, tz } = {}) {
   const body = `
 <header>
   <div>
+    ${logoBlock(logo)}
     <h1>${inv.kind === 'dispatch_fee' ? 'Dispatch fee invoice' : 'Invoice'}</h1>
     <div><strong>${esc(from?.name || '')}</strong></div>
     ${(from?.lines || []).filter(Boolean).map((x) => `<div class="muted small">${esc(x)}</div>`).join('')}
@@ -118,7 +190,7 @@ export function invoiceText(inv, { from, tz } = {}) {
 }
 
 /** Weekly statement page (also used by the carrier portal). */
-export function statementHtml(st, { from, tz } = {}) {
+export function statementHtml(st, { from, tz, logo } = {}) {
   const end = new Date(new Date(st.periodEnd).getTime() - 1);
   const rows = st.lines.map((l) => `<tr>
     <td>${esc(day(l.date, tz))}</td>
@@ -132,6 +204,7 @@ export function statementHtml(st, { from, tz } = {}) {
   const body = `
 <header>
   <div>
+    ${logoBlock(logo)}
     <h1>Dispatch statement</h1>
     <div><strong>${esc(st.carrier.companyName)}</strong></div>
     <div class="muted small">${[st.carrier.mcNumber && `MC ${st.carrier.mcNumber}`, st.carrier.dotNumber && `USDOT ${st.carrier.dotNumber}`].filter(Boolean).map(esc).join(' · ')}</div>

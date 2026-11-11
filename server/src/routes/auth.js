@@ -3,15 +3,23 @@ import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { ah, badRequest, unauthorized, forbidden, conflict } from '../lib/errors.js';
 import { parse, z, reqEmail, reqStr } from '../lib/validate.js';
-import { randomToken, sha256 } from '../lib/crypto.js';
+import { randomToken, sha256, safeEqual } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { getBool, getSetting } from '../lib/settings.js';
-import { createSession, destroySession, requireAuth, publicUser, invalidateUserSessions, mailFlags } from '../middleware/auth.js';
-import { authLimiter, registerLimiter, mailLimiter } from '../middleware/security.js';
+import { createSession, destroySession, requireAuth, publicUser, invalidateUserSessions, mailFlags, refuseApiToken } from '../middleware/auth.js';
+import { authLimiter, registerLimiter, mailLimiter, makeLimiter, ipOnlyKey } from '../middleware/security.js';
 import { hashPassword, verifyPassword } from '../middleware/passwordHash.js';
 import { sendSystemMail } from '../services/email/system.js';
+import {
+  GoogleSignInError, FLOW_TTL_MS, googleCredentials, googleSignInAvailable, safeNextPath, newFlow, sealFlow, openFlow,
+  googleAuthUrl, exchangeGoogleCode, verifyGoogleIdToken, nameFromClaims, unusablePasswordHash, hasUsablePassword,
+} from '../services/auth/google.js';
 
 const r = Router();
+
+// Google sign-in callback: per network address (the request carries no email), like the login limiter's address ceiling.
+const googleLimiter = makeLimiter('googleauth', 15 * 60_000, Math.max(1, Number(process.env.RATE_LIMIT_GOOGLE_IP) || 60),
+  'Too many sign-in attempts from this network. Try again in 15 minutes.', { key: ipOnlyKey });
 
 const password = z.string().min(8, 'Use at least 8 characters').max(200)
   .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p), 'Include at least one letter and one number');
@@ -179,6 +187,140 @@ r.post('/sessions/revoke-others', requireAuth, ah(async (req, res) => {
   invalidateUserSessions(req.user.id);
   await audit(req, 'auth.sessions_revoked');
   res.json({ revoked: result.count });
+}));
+
+// ---------------------------------------------------------------------------
+// Continue with Google (OpenID Connect, services/auth/google.js)
+// ---------------------------------------------------------------------------
+const GOOGLE_COOKIE = 'dd_google_auth';
+const GOOGLE_COOKIE_PATH = '/api/auth/google';
+
+/** End a Google sign-in attempt on the login page with a short reason code; never signs anyone in. */
+function googleFail(res, reason) {
+  res.clearCookie(GOOGLE_COOKIE, { path: GOOGLE_COOKIE_PATH });
+  res.set('Cache-Control', 'no-store');
+  return res.redirect(`/login?${new URLSearchParams({ error: 'google', reason })}`);
+}
+
+/** Account by email, ignoring letter case (emails are stored lower-case; older rows may not be). */
+async function userByEmail(email) {
+  const exact = await prisma.user.findUnique({ where: { email } });
+  if (exact) return exact;
+  const rows = await prisma.$queryRaw`SELECT id FROM "User" WHERE lower(email) = ${email} LIMIT 1`;
+  return rows[0] ? prisma.user.findUnique({ where: { id: rows[0].id } }) : null;
+}
+
+/**
+ * Link a Google account to an existing account with the same (Google-verified) email. When that account's email was
+ * never verified, whoever set its password never proved they own the address (someone could have registered it ahead
+ * of the real owner): the password, other sessions and API tokens are revoked, so only the address owner keeps access.
+ */
+async function linkGoogle(req, user, sub) {
+  const unverified = !user.emailVerifiedAt;
+  const data = { googleSub: sub, ...(unverified ? { emailVerifiedAt: new Date(), passwordHash: unusablePasswordHash() } : {}) };
+  const linked = await prisma.user.update({ where: { id: user.id }, data });
+  if (unverified) {
+    await prisma.session.deleteMany({ where: { userId: user.id } });
+    await prisma.apiToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+  invalidateUserSessions(user.id);
+  await audit(req, 'auth.google_linked', { entityType: 'user', entityId: user.id, actorId: user.id, details: { via: 'sign_in', ...(unverified ? { credentialsReset: true } : {}) } });
+  return linked;
+}
+
+/** True when Google sign-in is configured (the login and register pages show the button only then). */
+r.get('/providers', ah(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ google: await googleSignInAvailable() });
+}));
+
+r.get('/google/start', ah(async (req, res) => {
+  const creds = await googleCredentials();
+  if (!creds) return googleFail(res, 'not_configured');
+  const mode = req.query.mode === 'register' ? 'register' : 'login';
+  const next = safeNextPath(typeof req.query.next === 'string' ? req.query.next : '');
+  const flow = newFlow();
+  res.cookie(GOOGLE_COOKIE, sealFlow({ s: flow.state, n: flow.nonce, v: flow.verifier, m: mode, next }), {
+    httpOnly: true, sameSite: 'lax', secure: config.cookieSecure, path: GOOGLE_COOKIE_PATH, maxAge: FLOW_TTL_MS,
+  });
+  res.set('Cache-Control', 'no-store');
+  res.redirect(googleAuthUrl({ clientId: creds.clientId, state: flow.state, nonce: flow.nonce, challenge: flow.challenge }));
+}));
+
+r.get('/google/callback', googleLimiter, ah(async (req, res) => {
+  const flow = openFlow(req.cookies?.[GOOGLE_COOKIE]);
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  if (!flow || !state || !safeEqual(state, flow.s)) return googleFail(res, 'state');
+  if (req.query.error) return googleFail(res, req.query.error === 'access_denied' ? 'cancelled' : 'denied');
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  if (!code || code.length > 2048) return googleFail(res, 'failed');
+  const creds = await googleCredentials();
+  if (!creds) return googleFail(res, 'not_configured');
+
+  let claims;
+  try {
+    const idToken = await exchangeGoogleCode({ ...creds, code, verifier: flow.v });
+    claims = await verifyGoogleIdToken(idToken, { clientId: creds.clientId, nonce: flow.n });
+  } catch (err) {
+    const reason = err instanceof GoogleSignInError ? err.code : 'failed';
+    if (!(err instanceof GoogleSignInError)) console.error('[auth] google sign-in failed', err);
+    await audit(req, 'auth.login_failed', { details: { method: 'google', reason } });
+    return googleFail(res, reason);
+  }
+
+  try {
+    const email = claims.email.trim().toLowerCase();
+    let user = await prisma.user.findUnique({ where: { googleSub: claims.sub } });
+    let created = false;
+    if (!user) {
+      const match = await userByEmail(email);
+      if (match) {
+        if (match.status !== 'active') return googleFail(res, 'suspended');
+        if (match.googleSub && match.googleSub !== claims.sub) return googleFail(res, 'linked_other');
+        user = await linkGoogle(req, match, claims.sub);
+      } else {
+        if (!(await getBool('app.registrationOpen'))) return googleFail(res, 'closed');
+        // Same defaults as /register (dispatcher role; plan and trial come from the default plan). The terms are
+        // accepted by the consent line under the button; Google has verified the email address.
+        const role = await prisma.role.findUnique({ where: { key: 'dispatcher' } });
+        user = await prisma.user.create({
+          data: { name: nameFromClaims(claims), email, passwordHash: unusablePasswordHash(), roleId: role.id, emailVerifiedAt: new Date(), googleSub: claims.sub },
+        });
+        created = true;
+        await audit(req, 'auth.register', { entityType: 'user', entityId: user.id, actorId: user.id, details: { method: 'google', mode: flow.m } });
+      }
+    }
+    if (user.status !== 'active') return googleFail(res, 'suspended');
+
+    res.clearCookie(GOOGLE_COOKIE, { path: GOOGLE_COOKIE_PATH });
+    await createSession(res, req, user.id);
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await audit(req, 'auth.login', { entityType: 'user', entityId: user.id, actorId: user.id, details: { method: 'google' } });
+    const next = safeNextPath(flow.next);
+    res.set('Cache-Control', 'no-store');
+    res.redirect(created && next === '/app' ? '/app?welcome=1' : next);
+  } catch (err) {
+    console.error('[auth] google sign-in failed', err);
+    return googleFail(res, 'failed');
+  }
+}));
+
+/** Sign-in methods for Settings → Security. */
+r.get('/google/status', requireAuth, ah(async (req, res) => {
+  const row = await prisma.user.findUnique({ where: { id: req.user.id }, select: { googleSub: true, passwordHash: true } });
+  res.json({ linked: !!row?.googleSub, hasPassword: hasUsablePassword(row?.passwordHash), available: await googleSignInAvailable() });
+}));
+
+/** Remove the Google link. Only with a password set, so the account can still be signed in to. */
+r.post('/google/unlink', requireAuth, ah(async (req, res) => {
+  refuseApiToken(req, 'change sign-in methods');
+  const row = await prisma.user.findUnique({ where: { id: req.user.id }, select: { googleSub: true, passwordHash: true } });
+  if (!row?.googleSub) throw badRequest('No Google account is linked');
+  if (!hasUsablePassword(row.passwordHash)) throw badRequest('Set a password before unlinking Google, otherwise you could not sign in.');
+  await prisma.user.update({ where: { id: req.user.id }, data: { googleSub: null } });
+  invalidateUserSessions(req.user.id);
+  await audit(req, 'auth.google_unlinked');
+  res.json({ ok: true });
 }));
 
 export default r;

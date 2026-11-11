@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Button, Checkbox, Field, Input } from '../../components/ui.jsx';
-import AuthShell, { FormError, safeNext } from './AuthShell.jsx';
+import AuthShell, { FormError, GoogleSignIn, safeNext } from './AuthShell.jsx';
 
 export default function Register() {
   const { user, register } = useAuth();
@@ -37,6 +37,7 @@ export default function Register() {
   return (
     <AuthShell title="Create your account" subtitle="Free plan includes carrier discovery, CRM and prospecting."
       footer={<>Already have an account? <Link to={`/login${params.get('next') ? `?next=${encodeURIComponent(next)}` : ''}`} className="font-medium text-brand-700 hover:underline dark:text-brand-300">Log in</Link></>}>
+      <GoogleSignIn mode="register" next={next} />
       <form onSubmit={submit} className="space-y-4" noValidate>
         <FormError error={error} />
         <Field label="Full name" required><Input autoComplete="name" value={form.name} onChange={set('name')} /></Field>

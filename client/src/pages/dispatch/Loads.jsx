@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Calculator, Pencil, Trash2, Package, Paperclip, FileUp, AlertTriangle, MessageSquare } from 'lucide-react';
+import { Plus, Calculator, Pencil, Trash2, Package, Paperclip, FileUp, AlertTriangle, MessageSquare, List, Columns3, CalendarDays } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { date, dollars, label, money, num, relative, US_STATES } from '../../lib/format.js';
-import { Badge, Button, Card, DataTable, EmptyState, IconButton, Input, PageHeader, Pagination, QueryState, Select, StatCard, Tabs } from '../../components/ui.jsx';
+import { Badge, Button, Card, DataTable, EmptyState, IconButton, Input, PageHeader, Pagination, QueryState, Select, StatCard, Switch, Tabs } from '../../components/ui.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
 import { LOAD_DOC_TYPES } from '../../components/documents/docTypes.js';
@@ -15,6 +15,12 @@ import LoadFormModal from '../../components/dispatch/LoadForm.jsx';
 import LoadDetailModal from '../../components/dispatch/LoadDetail.jsx';
 import { LoadStatusSelect } from '../../components/dispatch/LoadStatus.jsx';
 import { LOAD_STATUSES, LOAD_STATUS_COLOR } from '../../components/dispatch/calc.js';
+import LoadBoard from '../../components/dispatch/LoadBoard.jsx';
+import LoadCalendar from '../../components/dispatch/LoadCalendar.jsx';
+import DedicatedLanes from '../../components/dispatch/LoadTemplates.jsx';
+
+/** URL params that are page state, not list filters. */
+const PAGE_PARAMS = ['load', 'tab', 'new', 'import', 'view', 'section', 'canceled'];
 
 export { LoadStatusSelect };
 
@@ -96,7 +102,7 @@ export function loadMobileRow({ onEdit, onDocs, onText }) {
 function LoadsTab({ onOpen }) {
   const { user } = useAuth();
   const [sp, setSp] = useSearchParams();
-  const params = Object.fromEntries([...sp.entries()].filter(([k]) => !['load', 'tab', 'new', 'import'].includes(k)));
+  const params = Object.fromEntries([...sp.entries()].filter(([k]) => !PAGE_PARAMS.includes(k)));
   const filters = { status: 'all', page: 1, sort: 'pickup', scope: 'mine', ...params };
   const setF = (patch) => setSp({ ...filters, page: 1, ...patch }, { replace: true });
   const q = useQuery({ queryKey: ['loads', 'list', filters], queryFn: () => api.get('/api/loads', { ...filters, pageSize: 25 }) });
@@ -199,9 +205,34 @@ function LanesTab() {
   );
 }
 
+const VIEWS = [
+  { value: 'list', label: 'List', icon: List },
+  { value: 'board', label: 'Board', icon: Columns3 },
+  { value: 'calendar', label: 'Calendar', icon: CalendarDays },
+];
+
+/** Board and calendar: search, team scope and the canceled toggle (kept in the URL with the list filters). */
+function ViewToolbar({ sp, setParams }) {
+  const { user } = useAuth();
+  const q = sp.get('q') || '';
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      <Input type="search" placeholder="Search ref, city, commodity" defaultValue={q} key={q} className="h-8 w-full sm:w-56" aria-label="Search loads"
+        onKeyDown={(e) => { if (e.key === 'Enter') setParams({ q: e.target.value || null }); }} onBlur={(e) => e.target.value !== q && setParams({ q: e.target.value || null })} />
+      {user?.team && (
+        <Select aria-label="Scope" className="h-8 w-32" value={sp.get('scope') || 'mine'} onChange={(e) => setParams({ scope: e.target.value === 'mine' ? null : e.target.value })}>
+          <option value="mine">My loads</option><option value="team">Team</option>
+        </Select>
+      )}
+      <Switch checked={sp.get('canceled') === '1'} onChange={(on) => setParams({ canceled: on ? '1' : null })} label="Show canceled" />
+    </div>
+  );
+}
+
 export default function Loads() {
   const [sp, setSp] = useSearchParams();
-  const [tab, setTab] = useState('loads');
+  const section = ['lanes', 'history'].includes(sp.get('section')) ? sp.get('section') : 'loads';
+  const view = VIEWS.some((v) => v.value === sp.get('view')) ? sp.get('view') : 'list';
   const [creating, setCreating] = useState(() => (sp.get('new') === '1' ? 'new' : sp.get('import') === '1' ? 'import' : null));
   const openId = sp.get('load');
   const setOpen = (id, detailTab) => {
@@ -209,16 +240,39 @@ export default function Loads() {
     if (id) { next.set('load', id); if (detailTab) next.set('tab', detailTab); else next.delete('tab'); } else { next.delete('load'); next.delete('tab'); }
     setSp(next, { replace: !id });
   };
+  /** Set or clear (null) URL params, keeping the rest. */
+  const setParams = (patch) => {
+    const next = new URLSearchParams(sp);
+    for (const [k, v] of Object.entries(patch)) { if (v == null || v === '') next.delete(k); else next.set(k, v); }
+    setSp(next, { replace: true });
+  };
+  const viewFilters = { q: sp.get('q') || undefined, scope: sp.get('scope') || undefined };
   return (
     <div>
-      <PageHeader title="Loads" subtitle="Booked freight, rate per mile, paperwork, detention and lane history."
+      <PageHeader title="Loads" subtitle="Booked freight, rate per mile, paperwork, detention, dedicated lanes and lane history."
         actions={<>
           <Button variant="secondary" icon={Calculator} to="/app/loads/calculator">Rate calculator</Button>
           <Button variant="secondary" icon={FileUp} onClick={() => setCreating('import')}>Import rate con</Button>
           <Button icon={Plus} onClick={() => setCreating('new')}>New load</Button>
         </>} />
-      <Tabs className="mb-4" value={tab} onChange={setTab} tabs={[{ value: 'loads', label: 'Loads' }, { value: 'lanes', label: 'Lane history' }]} />
-      {tab === 'loads' ? <LoadsTab onOpen={(id) => setOpen(id)} /> : <LanesTab />}
+      <Tabs className="mb-4" value={section} onChange={(v) => setParams({ section: v === 'loads' ? null : v })}
+        tabs={[{ value: 'loads', label: 'Loads' }, { value: 'lanes', label: 'Dedicated lanes' }, { value: 'history', label: 'Lane history' }]} />
+      {section === 'loads' && (
+        <>
+          <div className="mb-3 flex w-fit rounded-md border border-line p-0.5" role="group" aria-label="View">
+            {VIEWS.map((v) => (
+              <Button key={v.value} size="sm" variant={view === v.value ? 'secondary' : 'ghost'} icon={v.icon} aria-pressed={view === v.value}
+                onClick={() => setParams({ view: v.value === 'list' ? null : v.value })}>{v.label}</Button>
+            ))}
+          </div>
+          {view !== 'list' && <ViewToolbar sp={sp} setParams={setParams} />}
+          {view === 'list' && <LoadsTab onOpen={(id) => setOpen(id)} />}
+          {view === 'board' && <LoadBoard filters={viewFilters} showCanceled={sp.get('canceled') === '1'} onOpen={(id) => setOpen(id)} />}
+          {view === 'calendar' && <LoadCalendar filters={viewFilters} showCanceled={sp.get('canceled') === '1'} onOpen={(id) => setOpen(id)} />}
+        </>
+      )}
+      {section === 'lanes' && <DedicatedLanes />}
+      {section === 'history' && <LanesTab />}
       <LoadFormModal open={!!creating} importOpen={creating === 'import'} onClose={() => setCreating(null)} onSaved={(l) => l?.id && setOpen(l.id)} />
       <LoadDetailModal id={openId} initialTab={sp.get('tab') || 'overview'} onClose={() => setOpen(null)} />
     </div>

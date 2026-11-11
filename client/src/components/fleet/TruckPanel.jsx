@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, ExternalLink, FileText, Link2, Lock, Megaphone, MessageSquare, Navigation, Pencil, Radio, Route as RouteIcon, Send, StickyNote, X } from 'lucide-react';
+import { Activity, CheckCircle2, ExternalLink, FileText, Layers, Link2, ListOrdered, Lock, MapPin, Megaphone, MessageSquare, Navigation, Pencil, Radio, Route as RouteIcon, Send, StickyNote, Warehouse, X } from 'lucide-react';
 import { api } from '../../lib/api.js';
+import { useApiMutation } from '../../lib/hooks.js';
 import { dateTime, label, money, relative, bytes } from '../../lib/format.js';
 import { Badge, Button, LocalClock, Loading, cx } from '../ui.jsx';
 import CallButton from '../calling/CallButton.jsx';
@@ -11,7 +12,8 @@ import CheckCallModal from './CheckCallModal.jsx';
 import TrackingLinkModal from './TrackingLinkModal.jsx';
 import TextLogModal from '../carriers/TextLogModal.jsx';
 import ReloadIdeas from '../carriers/ReloadIdeas.jsx';
-import { STATUS, TRIP_STATUS, NEXT_TRIP_STATUS, placeLabel, sinceText, isStale, hoursText } from './fleetApi.js';
+import ConsolidateModal from './ConsolidateModal.jsx';
+import { STATUS, TRIP_STATUS, NEXT_TRIP_STATUS, RISK, placeLabel, sinceText, isStale, hoursText, timeIn, windowText } from './fleetApi.js';
 
 export function StatusChip({ status, className }) {
   const s = STATUS[status] || STATUS.unknown;
@@ -40,6 +42,71 @@ function TripLine({ trip, onAdvance, busy }) {
       )}
       {trip.route?.current && trip.route.estimate && <div className="text-[11px] text-muted">Routing service had no answer: straight-line estimate</div>}
       {next && <Button size="sm" variant="secondary" className="mt-2" loading={busy} onClick={() => onAdvance(trip.id, next)}>Mark {TRIP_STATUS[next].label.toLowerCase()}</Button>}
+    </div>
+  );
+}
+
+const OPEN_TRIP = ['planned', 'booked', 'in_transit'];
+const CONSOLIDATION_STATUS = { planned: 'Planned', in_transit: 'In transit', delivered: 'Delivered', canceled: 'Ended' };
+
+/**
+ * A consolidated trip (several loads on this truck) as one trip: numbered stops in driving order with the facility,
+ * window, load and customer, ETA and on-time risk, and the next stop's action.
+ */
+function ConsolidatedTrip({ trip, onAdvance, busy, onEdit }) {
+  const color = TRIP_STATUS[trip.status]?.color || TRIP_STATUS.planned.color;
+  const next = trip.stops.find((s) => !s.done);
+  const planned = trip.loads.filter((l) => l.status === 'planned').length;
+  const bookAll = useApiMutation(() => api.post(`/api/consolidations/${trip.id}/status`, { status: 'booked' }), {
+    success: 'Every load on the trip is booked', invalidate: [['fleet'], ['loads'], ['today']],
+  });
+  const r = trip.route || {};
+  return (
+    <div className="rounded-lg border border-line bg-surface-2 px-3 py-2 text-[13px]" style={{ borderLeft: `3px solid ${color}` }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium" style={{ color }}><Layers className="size-3.5 shrink-0" aria-hidden />Consolidated trip · {CONSOLIDATION_STATUS[trip.status] || trip.status}</span>
+        {trip.risk && RISK[trip.risk] && <Badge color={RISK[trip.risk].color}>{RISK[trip.risk].label}</Badge>}
+      </div>
+      <div className="mt-0.5 font-medium">{trip.title}</div>
+      <div className="text-xs text-muted">
+        {trip.loads.length} loads
+        {r.miles != null ? ` · ${r.miles.toLocaleString('en-US')} ${r.estimate ? 'mi (estimate)' : 'road mi'}` : ''}
+        {r.minutes != null ? ` · ${hoursText(r.minutes)} driving` : ''}
+      </div>
+      {r.pending && <div className="text-[11px] text-muted">Road route is being worked out</div>}
+      {!r.pending && r.estimate && r.miles != null && <div className="text-[11px] text-muted">{r.stateOnly ? 'Only the state is known for a stop: straight-line estimate' : 'Routing service had no answer: straight-line estimate'}</div>}
+      <ol className="mt-2 space-y-1.5">
+        {trip.stops.map((s) => {
+          const risk = s.risk ? RISK[s.risk] : null;
+          const Icon = s.done ? CheckCircle2 : s.kind === 'pickup' ? Warehouse : MapPin;
+          return (
+            <li key={`${s.loadId}-${s.kind}`} className={cx('flex gap-2 rounded-md border border-line bg-surface px-2 py-1.5 text-[12.5px]', s.done && 'opacity-60')}>
+              <span className={cx('mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tabular', s === next ? 'bg-brand-600 text-white' : 'bg-fg text-bg')}>{s.n}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <Icon className={cx('size-3.5 shrink-0', s.kind === 'pickup' && !s.done ? 'text-c-blue' : 'text-c-green')} aria-hidden />
+                  <span className="font-medium">{s.kind === 'pickup' ? 'Pickup' : 'Delivery'} · {s.city}, {s.state}</span>
+                  {s.done && <span className="sr-only">(done)</span>}
+                  {risk && <Badge color={risk.color}>{risk.label}</Badge>}
+                </span>
+                {s.facility && <span className="block truncate text-fg-2">{s.facility}</span>}
+                <span className="block text-muted">{windowText(s.window)}</span>
+                <span className="block truncate text-fg-2">{s.load.referenceNumber ? `Load #${s.load.referenceNumber}` : 'Load'}{s.load.broker ? ` · ${s.load.broker.companyName}` : ''}</span>
+                {!s.done && (s.legalEta || s.eta) && <span className="block text-fg-2">ETA {timeIn(s.legalEta || s.eta, s.window?.tz)}</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {next && (
+          <Button size="sm" variant="secondary" loading={busy} onClick={() => onAdvance(next.loadId, next.kind === 'pickup' ? 'in_transit' : 'delivered')}>
+            {next.kind === 'pickup' ? `Mark stop ${next.n} picked up` : `Mark stop ${next.n} delivered`}
+          </Button>
+        )}
+        {planned > 0 && <Button size="sm" variant="secondary" loading={bookAll.isPending} onClick={() => bookAll.mutate()}>Mark all booked</Button>}
+        <Button size="sm" variant="ghost" icon={ListOrdered} onClick={onEdit}>Edit stops</Button>
+      </div>
     </div>
   );
 }
@@ -95,9 +162,9 @@ function LiveRow({ truck }) {
 
 const EVENT_TEXT = {
   arrived_pickup: 'Arrived at pickup', loaded: 'Loaded', departed_pickup: 'Left pickup', arrived_delivery: 'Arrived at delivery', delivered: 'Delivered',
-  issue: 'Issue', check_call: 'Check call', detention_start: 'Detention started', detention_stop: 'Detention stopped', document: 'Document', status: 'Status', note: 'Note',
+  issue: 'Issue', check_call: 'Check call', detention_start: 'Detention started', detention_stop: 'Detention stopped', document: 'Document', status: 'Status', note: 'Note', pod_signed: 'POD signed',
 };
-const EVENT_DOT = { issue: 'bg-c-red', check_call: 'bg-c-purple', document: 'bg-c-teal', status: 'bg-c-blue', delivered: 'bg-c-green', loaded: 'bg-c-green' };
+const EVENT_DOT = { issue: 'bg-c-red', check_call: 'bg-c-purple', document: 'bg-c-teal', status: 'bg-c-blue', delivered: 'bg-c-green', loaded: 'bg-c-green', pod_signed: 'bg-c-green' };
 
 /** Load timeline: check-ins, check calls, documents and status changes for the truck's trip. */
 function Timeline({ trip, carrierId }) {
@@ -170,7 +237,7 @@ function TripDocuments({ trip }) {
 export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, advancing, onTrail, trailOn, onShowRoute }) {
   const [share, setShare] = useState(null); // { tripId }
   const [tab, setTab] = useState('trip');
-  const [modal, setModal] = useState(null); // 'checkcall' | 'tracking' | 'text'
+  const [modal, setModal] = useState(null); // 'checkcall' | 'tracking' | 'text' | { kind: 'consolidate', trip? }
   const trip = truck.currentTrip || truck.nextTrip;
   // An empty truck (nothing in transit) gets reload ideas for where it is now.
   const empty = !truck.currentTrip && truck.truckStatus !== 'off_duty' && truck.truckStatus !== 'maintenance';
@@ -179,6 +246,20 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
     queryFn: () => api.get(`/api/fleet/carriers/${truck.id}/plan`),
     enabled: !!trip, refetchInterval: 60000, placeholderData: (prev) => prev,
   });
+  // Consolidated trips on this truck (several loads, one stop order), with ETAs per stop.
+  const openTrips = (truck.trips || []).filter((t) => OPEN_TRIP.includes(t.status));
+  const consQ = useQuery({
+    queryKey: ['fleet', 'consolidations', 'truck', truck.id],
+    queryFn: () => api.get('/api/consolidations', { carrierId: truck.id }),
+    enabled: openTrips.length > 0, refetchInterval: 60000, placeholderData: (prev) => prev,
+  });
+  const consolidations = openTrips.length ? consQ.data?.items || [] : [];
+  const tripCons = trip ? consolidations.find((c) => c.loadIds.includes(trip.id)) || null : null;
+  const otherCons = consolidations.filter((c) => c !== tripCons);
+  const grouped = new Set(consolidations.flatMap((c) => c.loadIds));
+  const canConsolidate = openTrips.length >= 2 && !consolidations.length;
+  // The truck plan lists stops trip by trip; grouped loads are shown in the consolidated trip's own order instead.
+  const planData = planQ.data?.plan && grouped.size ? { ...planQ.data, plan: { ...planQ.data.plan, stops: planQ.data.plan.stops.filter((s) => !grouped.has(s.loadId)) } } : planQ.data;
   return (
     <div className="dd-enter absolute left-3 top-14 z-[5] flex max-h-[calc(100%-120px)] w-[min(380px,calc(100%-24px))] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-xl">
       <div className="border-b border-line p-4" style={{ borderTop: `3px solid ${(STATUS[truck.truckStatus] || STATUS.unknown).color}` }}>
@@ -216,11 +297,14 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         {tab === 'trip' && (
           <>
-            {trip ? <TripLine trip={trip} busy={advancing} onAdvance={onAdvance} /> : <p className="text-sm text-muted">No trip planned for this truck.</p>}
+            {tripCons ? <ConsolidatedTrip trip={tripCons} busy={advancing} onAdvance={onAdvance} onEdit={() => setModal({ kind: 'consolidate', trip: tripCons })} />
+              : trip ? <TripLine trip={trip} busy={advancing} onAdvance={onAdvance} /> : <p className="text-sm text-muted">No trip planned for this truck.</p>}
+            {otherCons.map((c) => <ConsolidatedTrip key={c.id} trip={c} busy={advancing} onAdvance={onAdvance} onEdit={() => setModal({ kind: 'consolidate', trip: c })} />)}
             {trip && planQ.isLoading && <Loading className="py-3" label="Working out ETAs…" />}
-            {trip && planQ.data && <TripPlan data={planQ.data} onCheckCall={() => setModal('checkcall')} />}
+            {trip && planData && <TripPlan data={planData} onCheckCall={() => setModal('checkcall')} />}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" icon={Navigation} onClick={onPlan}>Plan trip</Button>
+              {canConsolidate && <Button size="sm" variant="secondary" icon={Layers} onClick={() => setModal({ kind: 'consolidate' })}>Consolidate</Button>}
               {trip && <Button size="sm" variant="secondary" icon={RouteIcon} onClick={onShowRoute}>Show route</Button>}
               {trip && <Button size="sm" variant="secondary" icon={Send} onClick={() => setShare({ tripId: trip.id })}>Send trip to driver</Button>}
               {trip && <Button size="sm" variant="secondary" icon={Link2} onClick={() => setModal('tracking')}>Tracking link</Button>}
@@ -247,6 +331,10 @@ export default function TruckPanel({ truck, onClose, onPlan, onEdit, onAdvance, 
       {share && <ShareLocation truck={truck} tripId={share.tripId} onClose={() => setShare(null)} />}
       {modal === 'checkcall' && trip && <CheckCallModal trip={truck.currentTrip || trip} truck={truck} onClose={() => setModal(null)} onSaved={() => planQ.refetch()} />}
       {modal === 'tracking' && trip && <TrackingLinkModal trip={trip} onClose={() => setModal(null)} />}
+      {modal?.kind === 'consolidate' && (
+        <ConsolidateModal carrierId={truck.id} carrierName={truck.companyName} trip={modal.trip || null}
+          initialLoadIds={modal.trip ? [] : openTrips.filter((t) => !grouped.has(t.id)).map((t) => t.id).slice(0, 6)} onClose={() => setModal(null)} />
+      )}
       {modal === 'text' && (
         <TextLogModal carrier={{ id: truck.id, companyName: truck.companyName, phone: truck.phone, state: truck.state, timezone: truck.timezone }}
           loadId={trip?.id} category="driver" title={`Text ${truck.companyName}`} onClose={() => setModal(null)} />

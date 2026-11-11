@@ -4,11 +4,11 @@ import { prisma } from '../../db.js';
  * Load timeline events (LoadEvent). Shared contract used by fleet/driver links, loads (detention, status), and Today board.
  *   recordLoadEvent({ loadId, ownerId, type, at?, lat?, lng?, note?, source?, data? }) -> LoadEvent
  *   type: arrived_pickup | loaded | departed_pickup | arrived_delivery | delivered | issue | check_call |
- *         detention_start | detention_stop | document | status | note
+ *         detention_start | detention_stop | document | status | note | pod_signed
  *   source: dispatcher | driver_link | broker_link | system
  * Callers must have already checked that the load belongs to ownerId.
  */
-export const LOAD_EVENT_TYPES = ['arrived_pickup', 'loaded', 'departed_pickup', 'arrived_delivery', 'delivered', 'issue', 'check_call', 'detention_start', 'detention_stop', 'document', 'status', 'note'];
+export const LOAD_EVENT_TYPES = ['arrived_pickup', 'loaded', 'departed_pickup', 'arrived_delivery', 'delivered', 'issue', 'check_call', 'detention_start', 'detention_stop', 'document', 'status', 'note', 'pod_signed'];
 
 export async function recordLoadEvent({ loadId, ownerId, type, at = new Date(), lat = null, lng = null, note = null, source = 'dispatcher', data = null }) {
   if (!LOAD_EVENT_TYPES.includes(type)) throw new Error(`Unknown load event type: ${type}`);

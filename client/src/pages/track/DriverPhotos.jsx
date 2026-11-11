@@ -20,6 +20,8 @@ async function upload(token, secret, item) {
   fd.append('pages', String(item.pages || 1));
   // The trip shown when the photo was taken: a POD sent after "Delivered" belongs to that trip, not the next one.
   if (item.loadId) fd.append('loadId', item.loadId);
+  // A POD signed on the phone carries the receiver's name, pieces, exceptions, time and position.
+  for (const [k, v] of Object.entries(item.meta || {})) if (v != null && v !== '') fd.append(k, String(v));
   fd.append('file', item.blob, item.name);
   let res;
   try {
@@ -36,13 +38,15 @@ async function upload(token, secret, item) {
 }
 
 const ago = (t) => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const itemLabel = (item) => (item.meta?.receiverName ? 'Signed POD' : LABEL[item.type] || 'File');
 
 /**
  * "Send photos" on the driver page: pick the paper type, take one or more photos (or choose a PDF), and send.
  * Photos are made upright and compressed on the phone; several pages go as one PDF. Without signal the file waits on the
  * phone and is sent automatically when the connection is back.
+ * The same queue also sends signed PODs composed in PodSignature; bump `kick` after queueing one to send it now.
  */
-const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret, uploads, preferType, onSent, onLinkGone }, ref) {
+const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret, uploads, preferType, onSent, onLinkGone, kick }, ref) {
   const [type, setType] = useState(preferType || 'bol');
   const [pages, setPages] = useState([]); // { id, blob, url, width, height }
   const [working, setWorking] = useState(false);
@@ -68,7 +72,7 @@ const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret
         try {
           const r = await upload(token, getSecret(), item);
           await remove(item.id);
-          setSent((s) => [{ id: item.id, type: item.type, pages: item.pages, at: Date.now() }, ...s].slice(0, 10));
+          setSent((s) => [{ id: item.id, type: item.type, label: itemLabel(item), pages: item.pages, at: Date.now() }, ...s].slice(0, 10));
           if (r?.uploadsLeft != null) setLeft(r.uploadsLeft);
           onSent?.(item);
         } catch (err) {
@@ -90,6 +94,7 @@ const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret
     const t = setInterval(() => { if (navigator.onLine !== false) drain(); }, RETRY_MS);
     return () => { window.removeEventListener('online', online); clearInterval(t); };
   }, [drain]);
+  useEffect(() => { if (kick) drain(); }, [kick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFiles = async (files) => {
     setError(null);
@@ -215,7 +220,7 @@ const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret
       )}
       {failed.map((item) => (
         <div key={item.id} className="rounded-xl border border-red-300 p-3 text-sm dark:border-red-900" role="alert">
-          <p className="font-medium text-red-700 dark:text-red-300">{LABEL[item.type] || 'File'} not sent</p>
+          <p className="font-medium text-red-700 dark:text-red-300">{itemLabel(item)} not sent</p>
           <p className="text-fg-2">{item.error}</p>
           <div className="mt-2 flex gap-2">
             <button type="button" onClick={() => retry(item)} className="flex min-h-11 items-center gap-1.5 rounded-xl border border-line-strong px-3 font-medium"><RotateCw className="size-4" aria-hidden />Try again</button>
@@ -226,7 +231,7 @@ const DriverPhotos = forwardRef(function DriverPhotos({ token, tripId, getSecret
       {sent.length > 0 && (
         <ul className="space-y-1 text-sm">
           {sent.map((s) => (
-            <li key={s.id} className="flex items-center gap-2 text-c-green"><CheckCircle2 className="size-4 shrink-0" aria-hidden /><span className="text-fg">{LABEL[s.type]}{s.pages > 1 ? ` (${s.pages} pages)` : ''} sent at {ago(s.at)}</span></li>
+            <li key={s.id} className="flex items-center gap-2 text-c-green"><CheckCircle2 className="size-4 shrink-0" aria-hidden /><span className="text-fg">{s.label}{s.pages > 1 ? ` (${s.pages} pages)` : ''} sent at {ago(s.at)}</span></li>
           ))}
         </ul>
       )}

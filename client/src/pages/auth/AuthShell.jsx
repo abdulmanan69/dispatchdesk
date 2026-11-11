@@ -1,5 +1,10 @@
+import { Link } from 'react-router';
+import { useQuery } from '@tanstack/react-query';
 import { Crosshair, PhoneOutgoing, CalendarClock, MapPinned, Check } from 'lucide-react';
 import ShaderBackground from '../../components/ShaderBackground.jsx';
+import { Button } from '../../components/ui.jsx';
+import { api } from '../../lib/api.js';
+import GoogleMark from '../../components/account/GoogleMark.jsx';
 
 const POINTS = [
   { icon: Crosshair, cls: 'bg-c-blue-soft text-c-blue', title: 'Carrier leads from the FMCSA census', text: 'Scored, de-duplicated and added to your call queue.' },
@@ -54,7 +59,49 @@ export function FormError({ error }) {
   return <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{error}</p>;
 }
 
-/** Only allow same-site relative redirects after login. */
+/** Only allow same-site relative redirects after login (no protocol-relative, backslash or control-character tricks). */
 export function safeNext(next, fallback = '/app') {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : fallback;
+  return typeof next === 'string' && next.startsWith('/') && !next.startsWith('//') && !/[\\\s\u0000-\u001f]/.test(next) ? next : fallback;
+}
+
+/** Sign-in providers configured on the server ({ google }); cached for the session. */
+export function useAuthProviders() {
+  return useQuery({ queryKey: ['auth-providers'], queryFn: () => api.get('/api/auth/providers'), staleTime: 5 * 60_000, retry: false });
+}
+
+/**
+ * "Continue with Google" above the email form, shown only when an admin has configured the Google OAuth client.
+ * A plain link: the server redirects to Google and back, then sends the browser to `next`.
+ */
+export function GoogleSignIn({ mode = 'login', next = '/app' }) {
+  const providers = useAuthProviders();
+  if (!providers.data?.google) return null;
+  const href = `/api/auth/google/start?${new URLSearchParams({ mode, next: safeNext(next) })}`;
+  return (
+    <div className="mb-5 space-y-3">
+      <Button variant="secondary" href={href} icon={GoogleMark} className="h-10 w-full">Continue with Google</Button>
+      <p className="text-center text-xs text-muted">By continuing you agree to the <Link to="/terms" className="underline">Terms</Link> and <Link to="/privacy" className="underline">Privacy Policy</Link></p>
+      <div className="flex items-center gap-3 text-xs text-muted" role="separator" aria-label="or">
+        <span className="h-px flex-1 bg-line" aria-hidden />or<span className="h-px flex-1 bg-line" aria-hidden />
+      </div>
+    </div>
+  );
+}
+
+const GOOGLE_ERRORS = {
+  not_configured: 'Google sign-in is not set up on this server. Log in with your email and password.',
+  cancelled: 'Google sign-in was cancelled.',
+  denied: 'Google did not allow the sign-in. Try again.',
+  state: 'The Google sign-in expired or was started in another tab. Try again.',
+  token: 'Could not reach Google to finish signing in. Try again.',
+  keys: 'Could not reach Google to finish signing in. Try again.',
+  unverified: 'Google has not verified the email on that account. Verify it with Google, or sign up with email and password.',
+  closed: 'Registration is currently closed. Only existing accounts can sign in.',
+  suspended: 'This account is suspended. Contact support.',
+  linked_other: 'This account is linked to a different Google account. Log in with your password or with that Google account.',
+};
+
+/** Message for /login?error=google&reason=<code> (verification failures share one message). */
+export function googleErrorMessage(reason) {
+  return GOOGLE_ERRORS[reason] || 'Google sign-in could not be completed. Try again.';
 }

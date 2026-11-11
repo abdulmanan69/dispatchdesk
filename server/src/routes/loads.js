@@ -22,6 +22,7 @@ import { recordLoadEvent, loadEvents } from '../services/fleet/events.js';
 import { cachedVetting, knownContacts, parseJson, vettingView } from '../services/brokers/vetting.js';
 import { computeFlags, topLevel } from '../services/brokers/flags.js';
 import { normMc } from '../services/carriers/normalize.js';
+import { syncConsolidation, scheduleConsolidationRoute } from '../services/fleet/consolidation.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -59,7 +60,8 @@ const calcFields = {
   dispatchFeePercent: optNum(0, 100),
 };
 
-const loadFields = {
+/** Load field rules, shared with load templates (services/loads/templates.js). */
+export const loadFields = {
   ...calcFields,
   referenceNumber: optStr(60),
   originCity: reqStr(100),
@@ -219,9 +221,90 @@ const listQuery = z.object({
   missing: z.enum(['rate_confirmation', 'pod']).optional(),
   scope: z.enum(['mine', 'team']).default('mine'),
   sort: z.enum(['pickup', 'created', 'rate', 'rpm']).default('pickup'),
+  // list: the table (default). board: kanban columns by status. calendar: pickups and deliveries in from..to.
+  view: z.enum(['list', 'board', 'calendar']).default('list'),
+  canceled: z.preprocess((v) => (v === 'true' || v === '1' ? true : v === 'false' || v === '0' ? false : v), z.boolean().default(false)),
 });
 const ACTIVE = ['planned', 'booked', 'in_transit'];
 const endOfDay = (d) => new Date(d.getTime() + 86399999);
+
+/** Board columns in workflow order; canceled loads show only when asked for. */
+const BOARD_STATUSES = ['planned', 'booked', 'in_transit', 'delivered', 'invoiced', 'paid'];
+const BOARD_PAGE = 50;
+const CALENDAR_CAP = 500;
+const CALENDAR_MAX_DAYS = 100;
+/** Only what a board card or a calendar entry shows. */
+const LIGHT_SELECT = {
+  id: true, ownerId: true, referenceNumber: true, originCity: true, originState: true, destCity: true, destState: true,
+  pickupDate: true, deliveryDate: true, pickupWindowStart: true, pickupWindowEnd: true, deliveryWindowStart: true, deliveryWindowEnd: true,
+  pickupTz: true, deliveryTz: true, rateCents: true, loadedMiles: true, status: true, equipment: true, templateId: true,
+  carrier: { select: { id: true, companyName: true } },
+  broker: { select: { id: true, companyName: true } },
+};
+const lightView = (l, badges) => {
+  const counts = badges?.get(l.id);
+  return {
+    ...l,
+    ratePerMile: l.loadedMiles > 0 ? Math.round((l.rateCents / 100 / l.loadedMiles) * 100) / 100 : null,
+    ...(badges ? { docs: { rateCon: !!counts?.rate_confirmation, bol: !!counts?.bol, pod: !!counts?.pod } } : {}),
+  };
+};
+
+/** Prisma filter shared by the list, board and calendar views (owner/team scoped). */
+async function listWhere(user, q, { dates = true } = {}) {
+  const where = { ...(await ownerWhere(user, q.scope)) };
+  if (q.status === 'active') where.status = { in: ACTIVE };
+  else if (q.status !== 'all') where.status = q.status;
+  if (q.brokerId) where.brokerId = q.brokerId;
+  if (q.carrierId) where.carrierId = q.carrierId;
+  if (dates && (q.from || q.to)) where.pickupDate = { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: endOfDay(q.to) } : {}) };
+  if (q.originState) where.originState = q.originState.toUpperCase();
+  if (q.destState) where.destState = q.destState.toUpperCase();
+  if (q.q) where.OR = [{ referenceNumber: { contains: q.q } }, { commodity: { contains: q.q } }, { originCity: { contains: q.q } }, { destCity: { contains: q.q } }];
+  if (q.missing) where.documents = { none: { type: q.missing } };
+  return where;
+}
+
+/**
+ * Kanban columns: the first page of each status (or one status's next page for "load more"), lightweight rows.
+ * Open work sorts by soonest pickup, finished work by latest pickup.
+ */
+async function boardColumns(user, q) {
+  const base = await listWhere(user, { ...q, status: 'all' });
+  const statuses = LOAD_STATUSES.includes(q.status) ? [q.status] : [...BOARD_STATUSES, ...(q.canceled ? ['canceled'] : [])];
+  const take = Math.min(q.pageSize, 100);
+  const skip = LOAD_STATUSES.includes(q.status) ? (q.page - 1) * take : 0;
+  const columns = await Promise.all(statuses.map(async (status) => {
+    const where = { ...base, status };
+    const open = ACTIVE.includes(status);
+    const orderBy = open ? [{ pickupDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }] : [{ pickupDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }];
+    const [rows, total] = await Promise.all([prisma.load.findMany({ where, orderBy, skip, take, select: LIGHT_SELECT }), prisma.load.count({ where })]);
+    return { status, total, page: skip / take + 1, pageSize: take, rows };
+  }));
+  const badges = await docBadges(columns.flatMap((c) => c.rows.map((l) => l.id)));
+  return columns.map(({ rows, ...c }) => ({ ...c, items: rows.map((l) => lightView(l, badges)) }));
+}
+
+/**
+ * Calendar: loads whose pickup or delivery date falls in from..to (both indexed per owner), lightweight rows, at most
+ * 500. `tooMany` tells the page to narrow the range or the filters.
+ */
+async function calendarLoads(user, q) {
+  if (!q.from || !q.to) throw badRequest('Pick a date range for the calendar');
+  const to = endOfDay(q.to);
+  if (to < q.from) throw badRequest('The calendar range ends before it starts');
+  if (to.getTime() - q.from.getTime() > CALENDAR_MAX_DAYS * 86_400_000) throw badRequest(`Pick a range of ${CALENDAR_MAX_DAYS} days or less`);
+  const where = await listWhere(user, q, { dates: false });
+  if (q.status === 'all' && !q.canceled) where.status = { not: 'canceled' };
+  const range = { gte: q.from, lte: to };
+  const inRange = { OR: [{ pickupDate: range }, { deliveryDate: range }] };
+  const rows = await prisma.load.findMany({
+    where: where.OR ? { ...where, OR: undefined, AND: [{ OR: where.OR }, inRange] } : { ...where, ...inRange },
+    orderBy: [{ pickupDate: 'asc' }, { id: 'asc' }], take: CALENDAR_CAP + 1, select: LIGHT_SELECT,
+  });
+  const tooMany = rows.length > CALENDAR_CAP;
+  return { items: rows.slice(0, CALENDAR_CAP).map((l) => lightView(l)), tooMany, cap: CALENDAR_CAP, from: q.from, to };
+}
 
 /** Page of load ids ordered by rate per loaded mile, in SQL (so the order holds across pages). */
 async function rpmPageIds(ownerIds, q) {
@@ -262,16 +345,9 @@ async function docBadges(ids) {
 
 r.get('/', ah(async (req, res) => {
   const q = parse(listQuery, req.query);
-  const where = { ...(await ownerWhere(req.user, q.scope)) };
-  if (q.status === 'active') where.status = { in: ACTIVE };
-  else if (q.status !== 'all') where.status = q.status;
-  if (q.brokerId) where.brokerId = q.brokerId;
-  if (q.carrierId) where.carrierId = q.carrierId;
-  if (q.from || q.to) where.pickupDate = { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: endOfDay(q.to) } : {}) };
-  if (q.originState) where.originState = q.originState.toUpperCase();
-  if (q.destState) where.destState = q.destState.toUpperCase();
-  if (q.q) where.OR = [{ referenceNumber: { contains: q.q } }, { commodity: { contains: q.q } }, { originCity: { contains: q.q } }, { destCity: { contains: q.q } }];
-  if (q.missing) where.documents = { none: { type: q.missing } };
+  if (q.view === 'board') return res.json({ columns: await boardColumns(req.user, { ...q, pageSize: req.query.pageSize ? q.pageSize : BOARD_PAGE }) });
+  if (q.view === 'calendar') return res.json(await calendarLoads(req.user, q));
+  const where = await listWhere(req.user, q);
 
   let rows;
   if (q.sort === 'rpm') {
@@ -417,6 +493,9 @@ r.post('/:id/status', ah(async (req, res) => {
   changed(existing.ownerId, req.user);
   await afterLoadSave(load, existing);
   const after = await afterStatusChange(req.user, existing, load);
+  // A grouped load whose stops or truck changed: re-route its consolidated trip (afterStatusChange keeps its status in step).
+  const moved = ['originCity', 'originState', 'destCity', 'destState', 'carrierId', 'pickupWindowStart', 'deliveryWindowStart'].some((k) => k in body);
+  if (existing.consolidationId && moved) scheduleConsolidationRoute(existing.consolidationId);
   res.json({ load: view(load), ...after });
 }));
 
@@ -516,6 +595,7 @@ r.delete('/:id', ah(async (req, res) => {
   const docs = await prisma.document.findMany({ where: { loadId: load.id }, select: { storedName: true } });
   await prisma.load.delete({ where: { id: load.id } });
   changed(load.ownerId, req.user);
+  if (load.consolidationId) await syncConsolidation(load.consolidationId).catch((err) => console.warn('[loads] consolidation sync failed', err.message));
   const { removeFile } = await import('../middleware/upload.js');
   for (const d of docs) removeFile('documents', d.storedName);
   res.json({ ok: true });

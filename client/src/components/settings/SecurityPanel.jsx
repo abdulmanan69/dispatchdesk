@@ -6,6 +6,7 @@ import { useApiMutation } from '../../lib/hooks.js';
 import { relative, dateTime } from '../../lib/format.js';
 import { Card, Field, Input, Button, Badge, QueryState, IconButton } from '../ui.jsx';
 import { X } from 'lucide-react';
+import GoogleLink from '../account/GoogleLink.jsx';
 
 function browserName(ua = '') {
   if (/Edg\//.test(ua)) return 'Edge';
@@ -41,8 +42,16 @@ export default function SecurityPanel() {
     change.mutate({ currentPassword: pw.currentPassword, newPassword: pw.newPassword });
   };
 
+  // Google-only accounts have no current password to type: show a short note instead of the change form.
+  const googleStatus = useQuery({ queryKey: ['google-link'], queryFn: () => api.get('/api/auth/google/status'), retry: false });
+
   return (
     <div className="grid gap-5 lg:grid-cols-2">
+      {googleStatus.data?.hasPassword === false ? (
+        <Card title="Password">
+          <p className="text-sm text-muted">You sign in with Google and have no password yet. Use Set a password in the Google card to add one.</p>
+        </Card>
+      ) : (
       <Card title="Change password">
         <form className="space-y-3" onSubmit={submit}>
           <Field label="Current password" required><Input type="password" autoComplete="current-password" value={pw.currentPassword} onChange={(e) => setPw({ ...pw, currentPassword: e.target.value })} required /></Field>
@@ -51,6 +60,8 @@ export default function SecurityPanel() {
           <Button type="submit" icon={KeyRound} loading={change.isPending}>Update password</Button>
         </form>
       </Card>
+      )}
+      <GoogleLink />
       <Card title="Active sessions" actions={<Button variant="secondary" size="sm" loading={revokeOthers.isPending} onClick={() => revokeOthers.mutate()}>Sign out other sessions</Button>} bodyClass="p-0">
         <QueryState query={sessions}>
           {(d) => (

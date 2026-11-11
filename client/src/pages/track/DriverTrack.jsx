@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router';
-import { AlertTriangle, Camera, CheckCircle2, KeyRound, Loader2, Lock, MapPin, Monitor, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Smartphone, Truck, Warehouse } from 'lucide-react';
+import { AlertTriangle, Camera, CheckCircle2, FileSignature, KeyRound, Loader2, Lock, MapPin, Monitor, Navigation, PackageCheck, PauseCircle, Radio, ShieldCheck, Smartphone, Truck, Warehouse } from 'lucide-react';
 import { Logo } from '../../components/Logo.jsx';
 import { Checkbox, cx } from '../../components/ui.jsx';
 import DriverPhotos from './DriverPhotos.jsx';
 import DriverHours from './DriverHours.jsx';
+import PodSignature from './PodSignature.jsx';
+import { enqueue } from './uploadQueue.js';
+import { STOP_CHECKINS, currentStopIndex, stopDone, stopKey, tripStops, withLoadStatus } from './stops.js';
 
 /**
  * Public driver page for a live-location link. No login: the secret token in the URL is the credential.
@@ -92,6 +95,8 @@ function navLinks(stop) {
   };
 }
 
+const CHECKIN_UI = { arrived_pickup: ['Arrived at pickup', Warehouse], loaded: ['Loaded', Truck], arrived_delivery: ['Arrived at delivery', MapPin], delivered: ['Delivered', PackageCheck] };
+
 function BigButton({ children, className, ...props }) {
   return (
     <button type="button" className={cx('flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl px-4 text-base font-medium transition-ui active:scale-[0.99] disabled:opacity-50', className)} {...props}>
@@ -113,16 +118,26 @@ function windowText(stop) {
   } catch { return fmtDate(start); }
 }
 
-function Stop({ kind, stop }) {
+/**
+ * One stop card. On a consolidated trip it also shows its number, its load's reference, whether it is done, and a
+ * button to make it the stop the check-ins apply to.
+ */
+function Stop({ kind, stop, number, current, done, onSelect }) {
   const links = navLinks(stop.address ? { ...stop, lat: null, city: `${stop.address}, ${stop.city}` } : stop);
   const Icon = kind === 'Pickup' ? Warehouse : MapPin;
   const when = windowText(stop);
   return (
-    <div className="rounded-2xl border border-line bg-surface p-4">
+    <div className={cx('rounded-2xl border bg-surface p-4', current ? 'border-2 border-brand-600' : 'border-line')} aria-current={current ? 'step' : undefined}>
       <div className="flex items-start gap-3">
-        <span className={cx('flex size-10 shrink-0 items-center justify-center rounded-xl', kind === 'Pickup' ? 'bg-c-blue-soft text-c-blue' : 'bg-c-green-soft text-c-green')}><Icon className="size-5" aria-hidden /></span>
+        <span className={cx('flex size-10 shrink-0 items-center justify-center rounded-xl', done ? 'bg-c-green text-white' : kind === 'Pickup' ? 'bg-c-blue-soft text-c-blue' : 'bg-c-green-soft text-c-green')}>
+          {done ? <CheckCircle2 className="size-5" aria-hidden /> : number ? <span className="text-base font-semibold">{number}</span> : <Icon className="size-5" aria-hidden />}
+        </span>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted">{kind}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted">
+            {number ? `Stop ${number} · ${kind}` : kind}{stop.referenceNumber && number ? ` · Ref ${stop.referenceNumber}` : ''}
+            {done && <span className="ml-1 normal-case tracking-normal text-c-green">· Done</span>}
+            {current && !done && <span className="ml-1 normal-case tracking-normal text-brand-700 dark:text-brand-300">· Current stop</span>}
+          </p>
           <p className="text-lg font-medium">{stop.city}, {stop.state}</p>
           {stop.facility && <p className="text-sm font-medium text-fg">{stop.facility}</p>}
           {stop.address && <p className="text-sm text-fg-2">{stop.address}</p>}
@@ -133,6 +148,9 @@ function Stop({ kind, stop }) {
         <a href={links.google} target="_blank" rel="noopener noreferrer" className="flex h-11 items-center justify-center gap-1.5 rounded-xl border border-line-strong text-sm font-medium hover:bg-surface-2"><Navigation className="size-4" aria-hidden />Google Maps</a>
         <a href={links.apple} target="_blank" rel="noopener noreferrer" className="flex h-11 items-center justify-center gap-1.5 rounded-xl border border-line-strong text-sm font-medium hover:bg-surface-2"><Navigation className="size-4" aria-hidden />Apple Maps</a>
       </div>
+      {onSelect && !current && (
+        <button type="button" onClick={onSelect} className="mt-2 flex h-11 w-full items-center justify-center rounded-xl border border-line-strong text-sm font-medium text-fg hover:bg-surface-2">Check in at this stop</button>
+      )}
     </div>
   );
 }
@@ -157,6 +175,10 @@ export default function DriverTrack() {
   const [issueOpen, setIssueOpen] = useState(false);
   const [wakeOn, setWakeOn] = useState(false);
   const [podPrompt, setPodPrompt] = useState(false);
+  const [stopSel, setStopSel] = useState(null); // stop the driver picked on a consolidated trip (else the first not done)
+  const [signing, setSigning] = useState(null); // delivery stop being signed for
+  const [podSaved, setPodSaved] = useState(null);
+  const [kick, setKick] = useState(0); // send the upload queue now
   const watchId = useRef(null);
   const lastSent = useRef(null); // { lat, lng, t }
   const lastFix = useRef(null); // latest fix from the phone, sent with check-ins
@@ -299,22 +321,28 @@ export default function DriverTrack() {
     } finally { setBusy(null); }
   };
 
-  const checkin = async (event) => {
+  // The phone's latest fix when it is recent (sent with check-ins and printed on a signed POD).
+  const recentFix = useCallback(() => (lastFix.current && Date.now() - lastFix.current.t < 10 * 60_000 ? lastFix.current : null), []);
+
+  /** Check in. loadId: the load of the stop the driver is at (consolidated trips), else the trip on screen. */
+  const checkin = async (event, loadId) => {
     setBusy(event);
+    const target = loadId || info?.trip?.id || null;
     try {
-      // Where the check-in happened: the phone's latest fix when it is recent.
-      const f = lastFix.current && Date.now() - lastFix.current.t < 10 * 60_000 ? lastFix.current : null;
+      const f = recentFix();
       const r = await api('POST', '/checkin', {
         event, note: event === 'issue' ? note : undefined, signals: deviceSignals(),
         ...(f ? { lat: f.lat, lng: f.lng, accuracy: f.accuracy } : {}),
         // The trip on screen: after "Delivered" the link moves on to the next trip, and a second tap must not deliver it.
-        ...(info?.trip?.id ? { loadId: info.trip.id } : {}),
+        ...(target ? { loadId: target } : {}),
       });
       remember(r.deviceSecret);
-      setDone((d) => ({ ...d, [event]: new Date() }));
+      setDone((d) => ({ ...d, [event === 'issue' ? 'issue' : `${target}:${event}`]: new Date() }));
       if (event === 'issue') { setNote(''); setIssueOpen(false); }
       if (event === 'delivered') setPodPrompt(true);
-      if (r.tripStatus) setInfo((i) => (i?.trip ? { ...i, trip: { ...i.trip, status: r.tripStatus } } : i));
+      if (r.tripStatus) setInfo((i) => (i?.trip ? { ...i, trip: withLoadStatus(i.trip, target, r.tripStatus) } : i));
+      // Stay on this stop (its BOL or POD still goes to this load) until the driver taps "Next stop".
+      if (event === 'loaded' || event === 'delivered') setStopSel(`${target}:${event === 'loaded' ? 'pickup' : 'delivery'}`);
       if (r.deviceSecret) load();
     } catch (e) {
       if (!fail(e)) setGeoError(e.message);
@@ -330,6 +358,15 @@ export default function DriverTrack() {
     }
   };
   const getSecret = useCallback(() => getDevice(token) || memSecret.current || '', [token]);
+
+  /** Queue the signed POD receipt like a POD photo (it survives a spell without signal) and send it now. */
+  const savePod = async ({ blob, meta }) => {
+    await enqueue({ token, loadId: signing?.loadId || info?.trip?.id || null, type: 'pod', pages: 1, name: 'pod-signed.jpg', mime: 'image/jpeg', blob, meta });
+    setSigning(null);
+    setPodPrompt(false);
+    setPodSaved(new Date());
+    setKick((n) => n + 1);
+  };
   const linkGone = useCallback((e) => { fail(e); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error?.mismatch) {
@@ -385,7 +422,21 @@ export default function DriverTrack() {
 
   const trip = info.trip;
   const expires = fmtDate(info.expiresAt);
-  const tripDone = trip?.status === 'delivered';
+  const canSend = (info.bound || (!info.pinEnabled && info.consentAt)) && !!info.uploads;
+  // Stops in driving order; check-ins go to the load of the current stop (the first not done, or the one picked).
+  const stops = tripStops(trip);
+  const consolidated = !!trip?.consolidation?.stops?.length;
+  const picked = stops.findIndex((s) => stopKey(s) === stopSel);
+  const active = consolidated ? stops[picked >= 0 ? picked : currentStopIndex(stops)] : null;
+  const actionLoadId = active?.loadId || trip?.id || null;
+  const actionStatus = active?.status || trip?.status;
+  const tripDone = stopDone({ kind: 'delivery', status: actionStatus });
+  const deliveryStop = consolidated ? (active?.kind === 'delivery' ? active : null) : stops[1];
+  const canSign = canSend && !!deliveryStop && (!!done[`${actionLoadId}:arrived_delivery`] || ['in_transit', 'delivered'].includes(actionStatus));
+  const checkins = consolidated ? STOP_CHECKINS[active.kind] : [...STOP_CHECKINS.pickup, ...STOP_CHECKINS.delivery];
+  const stopsDone = stops.filter(stopDone).length;
+  const nextStop = consolidated && stopDone(active) ? stops[currentStopIndex(stops)] : null;
+  const showNext = !!nextStop && nextStop !== active && !stopDone(nextStop);
 
   return (
     <Shell company={info.company}>
@@ -445,41 +496,88 @@ export default function DriverTrack() {
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-medium">Your trip</h2>
-            <span className={cx('rounded-full px-2.5 py-1 text-xs font-medium', tripDone ? 'bg-c-green-soft text-c-green' : trip.status === 'in_transit' ? 'bg-c-blue-soft text-c-blue' : 'bg-c-purple-soft text-c-purple')}>
-              {tripDone ? 'Delivered' : trip.status === 'in_transit' ? 'In transit' : trip.status === 'booked' ? 'Booked' : 'Planned'}
-            </span>
+            {consolidated ? (
+              <span className={cx('rounded-full px-2.5 py-1 text-xs font-medium', stopsDone === stops.length ? 'bg-c-green-soft text-c-green' : 'bg-c-blue-soft text-c-blue')}>{stopsDone} of {stops.length} stops done</span>
+            ) : (
+              <span className={cx('rounded-full px-2.5 py-1 text-xs font-medium', tripDone ? 'bg-c-green-soft text-c-green' : trip.status === 'in_transit' ? 'bg-c-blue-soft text-c-blue' : 'bg-c-purple-soft text-c-purple')}>
+                {tripDone ? 'Delivered' : trip.status === 'in_transit' ? 'In transit' : trip.status === 'booked' ? 'Booked' : 'Planned'}
+              </span>
+            )}
           </div>
-          {(trip.referenceNumber || trip.commodity) && <p className="text-sm text-muted">{[trip.referenceNumber && `Ref ${trip.referenceNumber}`, trip.commodity].filter(Boolean).join(' · ')}</p>}
-          <Stop kind="Pickup" stop={trip.pickup} />
-          <Stop kind="Delivery" stop={trip.delivery} />
+          {consolidated ? (
+            <>
+              <p className="text-sm text-muted">{stops.length} stops on this trip, in order. Check-ins go to the current stop.</p>
+              <ol className="space-y-3" aria-label="Stops in order">
+                {stops.map((s, i) => (
+                  <li key={stopKey(s)}>
+                    <Stop kind={s.kind === 'pickup' ? 'Pickup' : 'Delivery'} stop={s} number={i + 1} current={s === active} done={stopDone(s)} onSelect={() => { setStopSel(stopKey(s)); setPodPrompt(false); }} />
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : (
+            <>
+              {(trip.referenceNumber || trip.commodity) && <p className="text-sm text-muted">{[trip.referenceNumber && `Ref ${trip.referenceNumber}`, trip.commodity].filter(Boolean).join(' · ')}</p>}
+              <Stop kind="Pickup" stop={trip.pickup} />
+              <Stop kind="Delivery" stop={trip.delivery} />
+            </>
+          )}
 
           <h2 className="pt-2 text-lg font-medium">Check in</h2>
+          {consolidated && (
+            <p className="-mt-2 text-sm text-fg-2">Stop {stops.indexOf(active) + 1}: {active.facility || `${active.city}, ${active.state}`}{active.referenceNumber ? ` · Ref ${active.referenceNumber}` : ''}</p>
+          )}
           {podPrompt && (
-            <div className="flex items-center gap-3 rounded-2xl border border-c-green bg-c-green-soft p-3">
-              <PackageCheck className="size-6 shrink-0 text-c-green" aria-hidden />
-              <p className="min-w-0 flex-1 text-sm"><span className="font-medium">Delivered.</span> Send a photo of the signed POD now so your dispatcher can bill the load.</p>
-              <button type="button" onClick={() => { setPodPrompt(false); photos.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
-                className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-600 px-3 text-sm font-medium text-white"><Camera className="size-4" aria-hidden />POD</button>
+            <div className="space-y-3 rounded-2xl border border-c-green bg-c-green-soft p-3">
+              <p className="flex items-start gap-2 text-sm"><PackageCheck className="size-5 shrink-0 text-c-green" aria-hidden /><span><span className="font-medium">Delivered.</span> Get the receiver's signature or send a photo of the signed POD so your dispatcher can bill the load.</span></p>
+              <div className="grid grid-cols-2 gap-2">
+                {canSign && (
+                  <button type="button" onClick={() => setSigning(deliveryStop)}
+                    className="flex min-h-12 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-3 text-sm font-medium text-white"><FileSignature className="size-4" aria-hidden />Get signature</button>
+                )}
+                <button type="button" onClick={() => { setPodPrompt(false); photos.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                  className={cx('flex min-h-12 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-medium', canSign ? 'border border-line-strong bg-surface text-fg' : 'col-span-2 bg-brand-600 text-white')}><Camera className="size-4" aria-hidden />POD photo</button>
+              </div>
             </div>
           )}
           <div className="grid grid-cols-2 gap-2">
-            {[['arrived_pickup', 'Arrived at pickup', Warehouse], ['loaded', 'Loaded', Truck], ['arrived_delivery', 'Arrived at delivery', MapPin], ['delivered', 'Delivered', PackageCheck]].map(([key, text, Icon]) => (
-              <BigButton key={key} disabled={!!busy || tripDone && key !== 'delivered'} onClick={() => checkin(key)}
-                className={cx('flex-col gap-1 border py-3 text-sm', done[key] ? 'border-c-green bg-c-green-soft text-fg' : 'border-line-strong bg-surface text-fg hover:bg-surface-2')}>
-                {busy === key ? <Loader2 className="size-5 animate-spin" aria-hidden /> : done[key] ? <CheckCircle2 className="size-5 text-c-green" aria-hidden /> : <Icon className="size-5" aria-hidden />}
-                {text}
-                {done[key] && <span className="text-xs text-muted">Sent {fmtTime(done[key])}</span>}
-              </BigButton>
-            ))}
+            {checkins.map((key) => {
+              const [text, Icon] = CHECKIN_UI[key];
+              const at = done[`${actionLoadId}:${key}`];
+              return (
+                <BigButton key={key} disabled={!!busy || tripDone && key !== 'delivered'} onClick={() => checkin(key, actionLoadId)}
+                  className={cx('flex-col gap-1 border py-3 text-sm', at ? 'border-c-green bg-c-green-soft text-fg' : 'border-line-strong bg-surface text-fg hover:bg-surface-2')}>
+                  {busy === key ? <Loader2 className="size-5 animate-spin" aria-hidden /> : at ? <CheckCircle2 className="size-5 text-c-green" aria-hidden /> : <Icon className="size-5" aria-hidden />}
+                  {text}
+                  {at && <span className="text-xs text-muted">Sent {fmtTime(at)}</span>}
+                </BigButton>
+              );
+            })}
           </div>
+          {canSign && !podPrompt && (
+            <BigButton className="border border-brand-600 bg-surface text-brand-700 hover:bg-surface-2 dark:text-brand-300" onClick={() => setSigning(deliveryStop)}>
+              <FileSignature className="size-5" aria-hidden />Get signature
+            </BigButton>
+          )}
+          {showNext && (
+            <BigButton className="bg-brand-600 text-white hover:bg-brand-700" onClick={() => { setStopSel(null); setPodPrompt(false); }}>
+              <Navigation className="size-5" aria-hidden />Next stop: {nextStop.facility || `${nextStop.city}, ${nextStop.state}`}
+            </BigButton>
+          )}
+          {podSaved && (
+            <p role="status" className="flex items-start gap-2 rounded-xl border border-c-green bg-c-green-soft p-3 text-sm">
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-c-green" aria-hidden />
+              <span>Signed POD saved at {fmtTime(podSaved)}. It goes to dispatch now, or as soon as you have signal.</span>
+            </p>
+          )}
         </section>
       ) : (
         <section className="rounded-2xl border border-line bg-surface p-4 text-sm text-fg-2">No trip is attached to this link yet. Your dispatcher still sees your location while you share it.</section>
       )}
 
       {/* Paperwork and hours (only on the phone that holds the link) */}
-      {(info.bound || (!info.pinEnabled && info.consentAt)) && info.uploads && (
-        <DriverPhotos ref={photos} token={token} tripId={trip?.id || null} getSecret={getSecret} uploads={info.uploads} preferType={podPrompt || tripDone ? 'pod' : null} onLinkGone={linkGone} />
+      {canSend && (
+        <DriverPhotos ref={photos} token={token} tripId={actionLoadId} getSecret={getSecret} uploads={info.uploads} preferType={podPrompt || tripDone ? 'pod' : null} onLinkGone={linkGone} kick={kick} />
       )}
       {info.bound && trip && <DriverHours send={sendHours} />}
 
@@ -492,7 +590,7 @@ export default function DriverTrack() {
               className="w-full rounded-xl border border-line-strong bg-surface px-3 py-2 text-base text-fg placeholder:text-muted focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15" />
             <div className="grid grid-cols-2 gap-2">
               <BigButton className="border border-line-strong bg-surface text-fg" onClick={() => setIssueOpen(false)}>Cancel</BigButton>
-              <BigButton className="bg-red-600 text-white hover:bg-red-700" disabled={!note.trim() || busy === 'issue'} onClick={() => checkin('issue')}>
+              <BigButton className="bg-red-600 text-white hover:bg-red-700" disabled={!note.trim() || busy === 'issue'} onClick={() => checkin('issue', actionLoadId)}>
                 {busy === 'issue' && <Loader2 className="size-5 animate-spin" aria-hidden />}Send to dispatch
               </BigButton>
             </div>
@@ -503,6 +601,10 @@ export default function DriverTrack() {
           </BigButton>
         )}
       </section>
+
+      {signing && (
+        <PodSignature stop={signing} driverName={info.driverName} company={info.company} getPosition={recentFix} onClose={() => setSigning(null)} onSave={savePod} />
+      )}
 
       <p className="pb-6 text-center text-xs text-muted">Your location goes to {info.company} dispatch. If they share a tracking page for this load, the broker sees the nearest city (the exact position only if dispatch turns that on) and the arrival estimate. Location history is deleted after 30 days.</p>
     </Shell>

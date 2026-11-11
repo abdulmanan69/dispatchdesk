@@ -5,12 +5,13 @@ import { ah, badRequest } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, optEmail, optInt, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { requirePermission } from '../middleware/auth.js';
 import { makeLimiter } from '../middleware/security.js';
-import { loadOwned, ownerWhere } from '../lib/access.js';
+import { loadOwned, ownerWhere, readableOwnerIds } from '../lib/access.js';
 import { audit } from '../lib/audit.js';
 import { withCalc } from '../services/loads/rateCalc.js';
 import { normDot, normMc } from '../services/carriers/normalize.js';
 import { vet, verifyAndStore, setTeamFlag, vettingView, knownContacts, parseJson } from '../services/brokers/vetting.js';
 import { qcConfigured } from '../services/brokers/fmcsa.js';
+import { brokerPaymentDetail, paysInFor } from '../services/reports/payments.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -68,23 +69,11 @@ export function statsView(row) {
   };
 }
 
-/** Real payment history from this workspace's paid freight invoices to the broker. */
-async function paymentHistory(brokerId) {
-  const [paid, open] = await Promise.all([
-    prisma.invoice.findMany({
-      where: { brokerId, kind: 'freight', status: 'paid', issuedAt: { not: null }, paidAt: { not: null } },
-      select: { issuedAt: true, paidAt: true }, orderBy: { paidAt: 'desc' }, take: 200,
-    }),
-    prisma.invoice.aggregate({ where: { brokerId, status: { in: ['sent', 'partial'] } }, _sum: { amountCents: true, paidCents: true }, _count: true }),
-  ]);
-  const days = paid.map((i) => Math.max(0, (i.paidAt - i.issuedAt) / 86_400_000));
-  return {
-    paidInvoices: paid.length,
-    avgDaysToPay: days.length ? Math.round(days.reduce((a, b) => a + b, 0) / days.length) : null,
-    openInvoices: open._count,
-    openCents: n(open._sum.amountCents) - n(open._sum.paidCents),
-  };
-}
+/**
+ * Payment history comes from the freight invoices the user can read (their own, plus the team's with team rights), so
+ * a broker shared inside a team shows every teammate's experience with it and never another workspace's.
+ */
+const paymentOwners = (user) => readableOwnerIds(user, 'team');
 
 r.get('/', ah(async (req, res) => {
   const q = parse(z.object({
@@ -106,10 +95,12 @@ r.get('/', ah(async (req, res) => {
   }
   const orderBy ={ name: { companyName: 'asc' }, created: { createdAt: 'desc' }, updated: { updatedAt: 'desc' } }[q.sort];
   const [rows, total] = await Promise.all([prisma.broker.findMany({ where, orderBy, ...paginate(q) }), prisma.broker.count({ where })]);
-  const stats = await statsFor(rows.map((b) => b.id));
+  const ids = rows.map((b) => b.id);
+  // Load stats and the "Pays in" badge: one GROUP BY each for the whole page.
+  const [stats, pays] = await Promise.all([statsFor(ids), paysInFor(await paymentOwners(req.user), ids)]);
   const items = rows.map(({ fmcsaSnapshot, flags, ...b }) => {
     const v = vettingView({ fmcsaSnapshot, flags, fmcsaCheckedAt: b.fmcsaCheckedAt, watch: b.watch });
-    return { ...b, stats: statsView(stats.get(b.id)), vetting: { level: v.level, checkedAt: v.checkedAt, doNotUse: !!v.teamFlag, flags: v.flags.length } };
+    return { ...b, stats: statsView(stats.get(b.id)), payments: pays.get(b.id), vetting: { level: v.level, checkedAt: v.checkedAt, doNotUse: !!v.teamFlag, flags: v.flags.length } };
   });
   res.json(pageResult(items, total, q));
 }));
@@ -142,7 +133,7 @@ r.get('/:id', ah(async (req, res) => {
     }),
     statsFor([broker.id]),
     prisma.email.findMany({ where: { brokerId: broker.id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, subject: true, status: true, sentAt: true, createdAt: true, toEmail: true } }),
-    paymentHistory(broker.id),
+    paymentOwners(req.user).then((ids) => brokerPaymentDetail(ids, broker.id)),
   ]);
   const { fmcsaSnapshot, flags, ...b } = broker;
   res.json({

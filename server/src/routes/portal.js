@@ -6,7 +6,7 @@ import { filePath } from '../middleware/upload.js';
 import { linkLimiter } from '../middleware/security.js';
 import { customerForToken } from '../services/invoices/portal.js';
 import { buildStatement, weekFromKey, weeklySummaries, isBilledLoad } from '../services/invoices/statements.js';
-import { statementHtml } from '../services/invoices/print.js';
+import { statementHtml, brandLogo } from '../services/invoices/print.js';
 
 /**
  * Public carrier portal (token link, no session): the carrier's weekly dispatch-fee statements and the rate con,
@@ -77,7 +77,7 @@ r.get('/:token/statements/:week/print', ah(async (req, res) => {
   const customer = await portalCustomer(req.params.token);
   const statement = await buildStatement({ customer, carrier: customer.carrier, week: portalWeek(customer, req.params.week) });
   const d = dispatcherOf(customer);
-  res.type('html').send(statementHtml(statement, { from: { name: d.company || d.name }, tz: zoneOf(customer) }));
+  res.type('html').send(statementHtml(statement, { from: { name: d.company || d.name }, tz: zoneOf(customer), logo: await brandLogo(customer.ownerId) }));
 }));
 
 r.get('/:token/documents/:documentId', ah(async (req, res) => {

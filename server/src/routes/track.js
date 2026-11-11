@@ -18,6 +18,7 @@ import { withRouteGeometry } from '../services/fleet/route.js';
 import { normalizeClocks, hoursText } from '../services/fleet/hos.js';
 import { recordLoadEvent } from '../services/fleet/events.js';
 import { invalidateToday } from '../services/fleet/today.js';
+import { syncConsolidation } from '../services/fleet/consolidation.js';
 
 /**
  * Public driver endpoints. The secret token in the URL is the credential (no session, no CSRF), and once a phone has
@@ -154,6 +155,82 @@ const tripPublic = (l) => l && {
   equipment: l.equipment, commodity: l.commodity,
 };
 
+// ---------------------------------------------------------------------------
+// Consolidated trips: several loads on one truck, driven in the order of Consolidation.stops
+// ---------------------------------------------------------------------------
+
+/** Only what a stop card needs from a sibling load: never rates, broker, notes or costs. */
+const STOP_LOAD_SELECT = {
+  id: true, status: true, referenceNumber: true,
+  originCity: true, originState: true, originLat: true, originLng: true, destCity: true, destState: true, destLat: true, destLng: true,
+  pickupDate: true, deliveryDate: true, pickupWindowStart: true, pickupWindowEnd: true, deliveryWindowStart: true, deliveryWindowEnd: true,
+  pickupTz: true, deliveryTz: true, pickupFacility: true, pickupAddress: true, deliveryFacility: true, deliveryAddress: true,
+};
+const STOP_KINDS = ['pickup', 'delivery'];
+const MAX_CONSOLIDATED_LOADS = 50;
+
+function parseStops(json) {
+  try {
+    const v = JSON.parse(json || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+
+/**
+ * Every stop of the consolidated trip the shown load belongs to, in the dispatcher's order (Consolidation.stops).
+ * Only loads of this dispatcher on this truck (or not yet assigned to one) count; canceled loads are left out.
+ * A load the stop list does not mention yet still shows, its pickup and delivery last. Null when the trip is not
+ * consolidated (or has a single load left).
+ */
+async function consolidationPublic(share, trip) {
+  if (!trip?.consolidationId) return null;
+  const cons = await prisma.consolidation.findFirst({ where: { id: trip.consolidationId, ownerId: share.ownerId, carrierId: share.carrierId }, select: { id: true, stops: true } });
+  if (!cons) return null;
+  const loads = await prisma.load.findMany({
+    where: { consolidationId: cons.id, ownerId: share.ownerId, status: { not: 'canceled' }, OR: [{ carrierId: share.carrierId }, { carrierId: null }] },
+    select: STOP_LOAD_SELECT, orderBy: [{ pickupDate: 'asc' }, { createdAt: 'asc' }], take: MAX_CONSOLIDATED_LOADS,
+  });
+  if (loads.length < 2) return null;
+  const byId = new Map(loads.map((l) => [l.id, l]));
+  const seen = new Set();
+  const order = [];
+  const add = (loadId, kind) => {
+    const key = `${loadId}:${kind}`;
+    if (!byId.has(loadId) || !STOP_KINDS.includes(kind) || seen.has(key)) return;
+    seen.add(key);
+    order.push({ loadId, kind });
+  };
+  for (const s of parseStops(cons.stops)) add(typeof s?.loadId === 'string' ? s.loadId : null, s?.kind);
+  for (const l of loads) for (const kind of STOP_KINDS) add(l.id, kind);
+  return {
+    id: cons.id,
+    stops: order.map(({ loadId, kind }) => {
+      const l = byId.get(loadId);
+      return { loadId, kind, referenceNumber: l.referenceNumber ?? null, status: l.status, ...stopPublic(l, kind) };
+    }),
+  };
+}
+
+/**
+ * The load a driver's action (check-in, photo, signed POD) is for. On a consolidated trip the page sends the load of the
+ * stop the driver is at: it must be a load of this dispatcher in the same consolidation and not on another truck
+ * (404 when this dispatcher has no such load, 403 when it is not part of this trip). Otherwise see shownTrip.
+ */
+async function tripForAction(share, current, loadId) {
+  if (!loadId || loadId === current?.id || !current?.consolidationId) return shownTrip(share, current, loadId);
+  // A link without a fixed trip may still send the truck's previous trip (delivered just before it moved on).
+  if (!share.loadId) {
+    const own = await shownTrip(share, null, loadId);
+    if (own) return own;
+  }
+  const load = await prisma.load.findFirst({ where: { id: loadId, ownerId: share.ownerId } });
+  if (!load) throw new HttpError(404, 'That stop is not on your trip. Reload the page.', { code: 'STOP_NOT_FOUND' });
+  if (load.consolidationId !== current.consolidationId || (load.carrierId && load.carrierId !== share.carrierId) || load.status === 'canceled') {
+    throw new HttpError(403, 'That stop is not on your trip. Reload the page.', { code: 'STOP_NOT_ON_TRIP' });
+  }
+  return load;
+}
+
 // Photos and scans from the driver: images and PDF only, 8 MB each, 20 per link and day.
 export const DRIVER_DOC_TYPES = ['bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'other'];
 const DOC_LABEL = { bol: 'BOL', pod: 'POD', lumper_receipt: 'lumper receipt', scale_ticket: 'scale ticket', fuel_receipt: 'fuel receipt', other: 'document' };
@@ -181,7 +258,7 @@ async function fullInfo(share, bound) {
     pinRequired: false,
     pinEnabled: !!share.pinHash,
     bound,
-    trip: tripPublic(trip),
+    trip: trip ? { ...tripPublic(trip), consolidation: await consolidationPublic(share, trip) } : null,
     uploads: { types: DRIVER_DOC_TYPES, maxMb: MAX_DOC_MB, perDay: MAX_DOCS_PER_DAY, left: Math.max(0, MAX_DOCS_PER_DAY - used) },
   };
 }
@@ -377,13 +454,21 @@ r.post('/:token/checkin', ah(async (req, res) => {
   }
   const def = CHECKINS[body.event];
   const now = new Date();
-  const trip = await shownTrip(share, await tripFor(share), body.loadId);
+  const trip = await tripForAction(share, await tripFor(share), body.loadId);
   let tripStatus = trip?.status ?? null;
   if (trip && def.status && TRIP_FLOW.includes(trip.status) && TRIP_FLOW.indexOf(def.status) > TRIP_FLOW.indexOf(trip.status)) {
     await prisma.load.update({ where: { id: trip.id }, data: { status: def.status } });
     tripStatus = def.status;
-    const data = truckUpdateForTrip(trip.status, def.status, trip);
+    let data = truckUpdateForTrip(trip.status, def.status, trip);
+    // One stop of a consolidated trip delivered while others are still ahead: the truck is not free yet.
+    if (def.status === 'delivered' && trip.consolidationId && await prisma.load.count({
+      where: { consolidationId: trip.consolidationId, ownerId: share.ownerId, id: { not: trip.id }, status: { in: ['planned', 'booked', 'in_transit'] } },
+    })) {
+      const { availableAt, ...rest } = data; // eslint-disable-line no-unused-vars
+      data = { ...rest, truckStatus: 'loaded' };
+    }
     if (Object.keys(data).length) await prisma.carrier.update({ where: { id: share.carrierId }, data });
+    if (trip.consolidationId) await syncConsolidation(trip.consolidationId, { source: 'driver' }).catch((err) => console.warn('[track] consolidation sync failed', err.message));
     await recordLoadEvent({
       loadId: trip.id, ownerId: trip.ownerId, type: 'status', source: 'driver_link', at: now,
       note: `Status changed from ${trip.status.replace('_', ' ')} to ${def.status.replace('_', ' ')} (driver check-in)`, data: { from: trip.status, to: def.status },
@@ -474,6 +559,46 @@ const driverUpload = uploader('driver', 'documents', MAX_DOC_MB, { quotaUser: (r
 
 const cleanName = (s) => String(s || '').replace(/[^\w .()-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
+/*
+ * A POD signed on the driver's phone arrives as the receipt image plus these fields (multipart, so all strings).
+ * Plain text only: one line for names and pieces, line breaks allowed in the exceptions (over, short, damaged).
+ */
+const blank = (v) => (v == null || (typeof v === 'string' && !v.trim()) ? undefined : v);
+// eslint-disable-next-line no-control-regex
+const ONE_LINE = /^[^\u0000-\u001f\u007f]*$/;
+// eslint-disable-next-line no-control-regex
+const MULTI_LINE = /^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]*$/;
+const plainText = (max, re = ONE_LINE) => z.preprocess(blank, z.string().trim().max(max).regex(re, 'must be plain text').optional());
+const optNumber = (schema) => z.preprocess(blank, schema.optional());
+export const POD_LIMITS = { receiverName: 80, receiverTitle: 80, pieces: 40, exceptions: 500 };
+const podSignatureFields = {
+  receiverName: plainText(POD_LIMITS.receiverName),
+  receiverTitle: plainText(POD_LIMITS.receiverTitle),
+  pieces: plainText(POD_LIMITS.pieces),
+  exceptions: plainText(POD_LIMITS.exceptions, MULTI_LINE),
+  signedAt: optNumber(z.coerce.number().int().min(0)), // when the receiver signed, from the phone (ms)
+  lat: optNumber(z.coerce.number().min(-90).max(90)),
+  lng: optNumber(z.coerce.number().min(-180).max(180)),
+  accuracy: optNumber(z.coerce.number().min(0).max(100000)),
+};
+const SIGNED_LATE_MS = 7 * 86400000; // a POD signed without signal may wait on the phone for days
+const POD_REPEAT_MS = 2 * 60_000;
+
+/** The same receiver's signature on this load in the last two minutes (a double tap or a retried upload). */
+async function repeatedPodSignature(trip, receiverName, now) {
+  const rows = await prisma.loadEvent.findMany({
+    where: { loadId: trip.id, type: 'pod_signed', createdAt: { gte: new Date(now.getTime() - POD_REPEAT_MS) } },
+    select: { id: true, data: true }, take: 10,
+  });
+  const name = receiverName.toLowerCase();
+  for (const row of rows) {
+    let data = null;
+    try { data = JSON.parse(row.data || 'null'); } catch { /* unreadable: not a match */ }
+    if (String(data?.receiverName || '').toLowerCase() === name) return data;
+  }
+  return null;
+}
+
 r.post('/:token/documents', beforeUpload, driverUpload.single('file'), ah(async (req, res) => {
   const share = req.trackShare;
   let trip = req.trackTrip;
@@ -483,15 +608,33 @@ r.post('/:token/documents', beforeUpload, driverUpload.single('file'), ah(async 
       type: z.enum(DRIVER_DOC_TYPES).default('other'),
       pages: z.coerce.number().int().min(1).max(30).default(1),
       loadId: z.string().trim().max(40).optional(),
+      ...podSignatureFields,
     }), req.body || {});
+    const signed = body.receiverName != null;
+    if (!signed && (body.receiverTitle != null || body.pieces != null || body.exceptions != null || body.signedAt != null)) {
+      throw badRequest('Enter the receiver\'s printed name.');
+    }
+    if (signed && body.type !== 'pod') throw badRequest('Only a POD can carry the receiver\'s signature.');
     verifyFileSignature(req.file);
-    trip = await shownTrip(share, trip, body.loadId);
+    trip = await tripForAction(share, trip, body.loadId);
+    if (signed && !trip) throw badRequest('No trip is attached to this link yet.');
+    const now = new Date();
+    if (signed) {
+      const repeat = await repeatedPodSignature(trip, body.receiverName, now);
+      if (repeat) {
+        // The first upload already landed: keep it, drop this copy, and answer as if it was this one.
+        fs.rmSync(req.file.path, { force: true });
+        const doc = repeat.documentId ? await prisma.document.findFirst({ where: { id: repeat.documentId, ownerId: share.ownerId }, select: { id: true, type: true, originalName: true, sizeBytes: true, createdAt: true } }) : null;
+        return res.json({ document: doc, uploadsLeft: Math.max(0, MAX_DOCS_PER_DAY - (await uploadsToday(share, trip))), repeat: true });
+      }
+    }
     if (trip?.id !== req.trackTrip?.id && (await uploadsToday(share, trip)) >= MAX_DOCS_PER_DAY) {
       throw new HttpError(429, `This link can send ${MAX_DOCS_PER_DAY} files a day. Ask your dispatcher if you need to send more.`, { code: 'UPLOAD_CAP' });
     }
     const ext = path.extname(req.file.originalname).toLowerCase();
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
-    const name = `${cleanName(`${DOC_LABEL[body.type].replace(/^\w/, (c) => c.toUpperCase())} ${trip?.referenceNumber ? `${trip.referenceNumber} ` : ''}${stamp}`)}${ext}`;
+    const label = `${DOC_LABEL[body.type].replace(/^\w/, (c) => c.toUpperCase())}${signed ? ' signed' : ''}`;
+    const name = `${cleanName(`${label} ${trip?.referenceNumber ? `${trip.referenceNumber} ` : ''}${stamp}`)}${ext}`;
     const doc = await prisma.document.create({
       data: {
         ownerId: share.ownerId, uploadedById: share.ownerId, carrierId: trip ? null : share.carrierId, loadId: trip?.id ?? null,
@@ -501,17 +644,40 @@ r.post('/:token/documents', beforeUpload, driverUpload.single('file'), ah(async 
     });
     const who = share.driverName || share.carrier.companyName;
     const what = `${DOC_LABEL[body.type]}${body.pages > 1 ? ` (${body.pages} pages)` : ''}`;
-    if (trip) {
+    const lane = trip ? `${trip.originCity}, ${trip.originState} → ${trip.destCity}, ${trip.destState}${trip.referenceNumber ? ` · ref ${trip.referenceNumber}` : ''}` : null;
+    if (signed) {
+      // When the receiver signed: the phone's time if it is plausible (signed without signal, sent later), else now.
+      const at = body.signedAt != null && body.signedAt <= now.getTime() + 5 * 60_000 && body.signedAt >= now.getTime() - SIGNED_LATE_MS ? new Date(body.signedAt) : now;
+      // Where: the phone's position sent with it, else this link's trusted fix from around that time.
+      let pos = null;
+      if (body.lat != null && body.lng != null && !(body.accuracy > 5000)) pos = { lat: body.lat, lng: body.lng };
+      else if (share.trustedAt && Math.abs(at - share.trustedAt) < FRESH_FIX_MS) pos = { lat: share.trustedLat, lng: share.trustedLng };
+      const sig = { receiverName: body.receiverName, receiverTitle: body.receiverTitle ?? null, pieces: body.pieces ?? null, exceptions: body.exceptions ?? null };
+      const by = `${sig.receiverName}${sig.receiverTitle ? `, ${sig.receiverTitle}` : ''}`;
       await recordLoadEvent({
-        loadId: trip.id, ownerId: trip.ownerId, type: 'document', source: 'driver_link', note: `Driver sent a ${what}`,
-        data: { documentId: doc.id, type: body.type, pages: body.pages, shareId: share.id },
+        loadId: trip.id, ownerId: trip.ownerId, type: 'pod_signed', source: 'driver_link', at, lat: pos?.lat ?? null, lng: pos?.lng ?? null,
+        note: `POD signed by ${by}${sig.pieces ? ` · ${sig.pieces}` : ''}${sig.exceptions ? ` · Exceptions: ${sig.exceptions}` : ''}`,
+        data: {
+          documentId: doc.id, ...sig, signedAt: at.toISOString(), receivedAt: now.toISOString(), shareId: share.id,
+          ...(body.accuracy != null ? { accuracyM: Math.round(body.accuracy) } : {}),
+        },
       });
+      // Over, short or damaged freight is a claim in the making: it goes out as a driver issue.
+      await notify(share.ownerId, {
+        type: sig.exceptions ? 'fleet_issue' : 'fleet',
+        title: (sig.exceptions ? `${who}: POD signed with exceptions` : `${who} sent a signed POD`).slice(0, 200),
+        body: [`Received by ${by}`, sig.pieces, sig.exceptions && `Exceptions: ${sig.exceptions}`, lane].filter(Boolean).join(' · ').slice(0, 500),
+        link: `/app/fleet?truck=${share.carrierId}`,
+      });
+    } else {
+      if (trip) {
+        await recordLoadEvent({
+          loadId: trip.id, ownerId: trip.ownerId, type: 'document', source: 'driver_link', note: `Driver sent a ${what}`,
+          data: { documentId: doc.id, type: body.type, pages: body.pages, shareId: share.id },
+        });
+      }
+      await notify(share.ownerId, { type: 'fleet', title: `${who} sent a ${what}`.slice(0, 200), body: lane, link: `/app/fleet?truck=${share.carrierId}` });
     }
-    await notify(share.ownerId, {
-      type: 'fleet', title: `${who} sent a ${what}`.slice(0, 200),
-      body: trip ? `${trip.originCity}, ${trip.originState} → ${trip.destCity}, ${trip.destState}${trip.referenceNumber ? ` · ref ${trip.referenceNumber}` : ''}` : null,
-      link: `/app/fleet?truck=${share.carrierId}`,
-    });
     invalidateToday(share.ownerId);
     const left = Math.max(0, MAX_DOCS_PER_DAY - (await uploadsToday(share, trip)));
     res.status(201).json({ document: { id: doc.id, type: doc.type, originalName: doc.originalName, sizeBytes: doc.sizeBytes, createdAt: doc.createdAt }, uploadsLeft: left });

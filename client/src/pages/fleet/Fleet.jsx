@@ -78,6 +78,25 @@ function useRoutes(trucks) {
   return useMemo(() => new Map((q.data || []).map((r) => [r.id, { points: decodePolyline(r.geometry), estimate: r.estimate, miles: r.miles }])), [q.data]);
 }
 
+/**
+ * Consolidated trips (several loads on one truck): one road route through every stop in order, drawn on the map instead
+ * of the grouped loads' own routes, with numbered stops. Asked again shortly while a route is still being worked out.
+ */
+function useConsolidations(trucks) {
+  const enabled = trucks.some((t) => (t.trips || []).length > 0);
+  const q = useQuery({
+    queryKey: ['fleet', 'consolidations', 'map'],
+    queryFn: ({ signal }) => api.get('/api/consolidations', { team: 1, geometry: 1 }, { signal }),
+    enabled, staleTime: 60_000, placeholderData: (prev) => prev,
+    refetchInterval: (query) => (query.state.data?.items?.some((c) => c.route?.pending) ? 15_000 : 120_000),
+  });
+  return useMemo(() => (enabled ? q.data?.items || EMPTY : EMPTY).map((c) => ({
+    id: c.id, carrierId: c.carrierId, status: c.status, loadIds: c.loadIds,
+    points: decodePolyline(c.route?.geometry || ''), estimate: !!c.route?.estimate,
+    stops: c.stops.map((s) => ({ n: s.n, kind: s.kind, done: s.done, lat: s.lat, lng: s.lng, city: s.city })),
+  })), [enabled, q.data]);
+}
+
 /** Road route from each truck to its next pickup (only for trucks that are not hauling a load). */
 function useDeadheads(trucks) {
   const pairs = useMemo(() => trucks
@@ -132,6 +151,14 @@ export default function Fleet() {
   const trucks = q.data?.trucks || EMPTY;
   const routes = useRoutes(trucks);
   const deadheads = useDeadheads(trucks);
+  const consolidations = useConsolidations(trucks);
+  // Grouped loads follow their consolidated trip's route (truck parking ahead, "Show route").
+  const tripRoutes = useMemo(() => {
+    if (!consolidations.length) return routes;
+    const m = new Map(routes);
+    for (const c of consolidations) if (c.points.length > 1) for (const id of c.loadIds) m.set(id, { points: c.points, estimate: c.estimate });
+    return m;
+  }, [routes, consolidations]);
   const trailQ = useQuery({ queryKey: ['fleet', 'trail', trailFor], queryFn: () => api.get(`/api/fleet/carriers/${trailFor}/trail`, { hours: 24 }), enabled: !!trailFor, refetchInterval: 30000 });
   const trail = useMemo(() => (trailFor ? (trailQ.data?.items || []).map((p) => [p.lng, p.lat]) : null), [trailFor, trailQ.data]);
   const liveCount = trucks.filter((t) => t.live?.sharing && !isStale(t.live)).length;
@@ -177,7 +204,7 @@ export default function Fleet() {
   const selected = trucks.find((t) => t.id === selectedId) || null;
   const unplaced = visible.filter((t) => t.location?.lat == null).length;
   // Truck parking along the road ahead of the truck whose panel is open.
-  const parkingRoute = useMemo(() => (layers.parking && selected && !panel ? routeAhead(selected, routes, deadheads) : null), [layers.parking, selected, panel, routes, deadheads]);
+  const parkingRoute = useMemo(() => (layers.parking && selected && !panel ? routeAhead(selected, tripRoutes, deadheads) : null), [layers.parking, selected, panel, tripRoutes, deadheads]);
 
   // Weather alerts for trucks (only when the layer is on; capped to keep the weather service polite).
   const located = useMemo(() => visible.filter((t) => t.location?.lat != null).slice(0, 20), [visible]);
@@ -201,7 +228,7 @@ export default function Fleet() {
   };
   /** Fit the map to a truck and its trips' road routes. */
   const showRoute = (t) => {
-    const lists = (t.trips || []).map((tr) => routes.get(tr.id)?.points || [[tr.origin.lng, tr.origin.lat], [tr.dest.lng, tr.dest.lat]]);
+    const lists = (t.trips || []).map((tr) => tripRoutes.get(tr.id)?.points || [[tr.origin.lng, tr.origin.lat], [tr.dest.lng, tr.dest.lat]]);
     if (t.location?.lat != null) lists.push([[t.location.lng, t.location.lat]]);
     const b = boundsOf(...lists);
     if (b) setFocus({ key: `route-${t.id}-${Date.now()}`, bounds: b });
@@ -273,7 +300,7 @@ export default function Fleet() {
         <div className="relative min-w-0 flex-1">
           {listOpen && <button type="button" aria-label="Close truck list" className="absolute inset-0 z-[9] bg-black/20 md:hidden" onClick={() => setListOpen(false)} />}
           <FleetMap className="absolute inset-0" dark={dark} trucks={visible} openLoads={q.data?.openLoads || EMPTY} alerts={alerts} layers={layers}
-            routes={routes} deadheads={deadheads}
+            routes={routes} deadheads={deadheads} consolidations={consolidations}
             selectedId={selectedId} onSelect={(id) => { setSelectedId(id); }} pickMode={pickMode}
             onPick={(p) => { setMapPoint(p); setPickMode(false); }} editPoint={editPoint} onEditMove={setMapPoint}
             plannedRoute={plannedRoute} focus={focus} fitKey={fitKey} trail={trail} onMap={setMapObj}
@@ -365,6 +392,7 @@ export default function Fleet() {
             <span className="flex items-center gap-1.5"><span className="h-1 w-3 rounded bg-zinc-400" />Driven</span>
             <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dashed border-zinc-500" />Empty miles</span>
             <span className="flex items-center gap-1.5"><span className="h-0 w-3 border-t-2 border-dotted border-blue-600" />Estimate</span>
+            {consolidations.length > 0 && <span className="flex items-center gap-1.5"><span className="flex size-3 items-center justify-center rounded-full bg-violet-600 text-[7px] font-semibold text-white">1</span>Consolidated trip stop</span>}
             {layers.parking && <ParkingLegend />}
           </div>
         </div>

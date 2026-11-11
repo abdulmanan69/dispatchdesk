@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Pencil, Receipt, FileText, ShieldAlert, MessageSquare } from 'lucide-react';
+import { Pencil, Receipt, FileText, ShieldAlert, MessageSquare, Layers, ListOrdered, Map as MapIcon } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { date, dollars, label, money, num } from '../../lib/format.js';
-import { Badge, Button, ErrorState, Loading, Tabs } from '../ui.jsx';
+import { Badge, Button, ErrorState, Loading, Tabs, cx } from '../ui.jsx';
 import { Modal } from '../Modal.jsx';
 import { useToast } from '../Toast.jsx';
 import DocumentsPanel from '../documents/DocumentsPanel.jsx';
 import { LOAD_DOC_TYPES } from '../documents/docTypes.js';
 import TextLogModal from '../carriers/TextLogModal.jsx';
+import ConsolidateModal from '../fleet/ConsolidateModal.jsx';
 import ReloadIdeas from '../carriers/ReloadIdeas.jsx';
 import DetentionPanel from './DetentionPanel.jsx';
 import FitCard from './FitCard.jsx';
@@ -23,7 +24,7 @@ import { formatAt, formatWindow } from './zoned.js';
 const EVENT_LABEL = {
   arrived_pickup: 'Arrived at pickup', loaded: 'Loaded', departed_pickup: 'Departed pickup', arrived_delivery: 'Arrived at delivery',
   delivered: 'Unloaded and departed', issue: 'Issue', check_call: 'Check call', detention_start: 'Detention started', detention_stop: 'Detention ended',
-  document: 'Document', status: 'Status change', note: 'Note',
+  document: 'Document', status: 'Status change', note: 'Note', pod_signed: 'POD signed',
 };
 const SOURCE = { driver_link: ['teal', 'Driver'], dispatcher: ['gray', 'Dispatcher'], system: ['purple', 'System'], broker_link: ['blue', 'Broker link'] };
 const INVOICE_COLOR = { draft: 'gray', sent: 'blue', partial: 'amber', paid: 'green', void: 'red' };
@@ -70,6 +71,7 @@ function Overview({ load, onEdit, onText }) {
             <Button variant="secondary" icon={Pencil} onClick={onEdit}>Edit load</Button>
             {load.carrier && <Button variant="secondary" icon={MessageSquare} onClick={onText}>Text carrier</Button>}
           </div>
+          <ConsolidationSection load={load} />
         </div>
         <div className="h-fit rounded-md border border-line bg-surface-2/40 p-3">
           <FitCard load={load} carrierId={load.carrierId} loadId={load.id} stored={load.fit} />
@@ -78,6 +80,64 @@ function Overview({ load, onEdit, onText }) {
       {RELOAD_STATUSES.includes(load.status) && (
         <ReloadIdeas state={load.destState} city={load.destCity} equipment={load.equipment || undefined} compact title="Reload ideas near delivery" />
       )}
+    </div>
+  );
+}
+
+const OPEN_LOAD = ['planned', 'booked', 'in_transit'];
+const TRIP_STATUS_TEXT = { planned: ['purple', 'Planned'], in_transit: ['blue', 'In transit'], delivered: ['green', 'Delivered'], canceled: ['gray', 'Ended'] };
+
+/**
+ * Consolidated trip this load is on (several loads on one truck, one stop order), or a way to start one with the
+ * truck's other open loads. The load keeps its own rate, invoice and documents either way.
+ */
+function ConsolidationSection({ load }) {
+  const [dialog, setDialog] = useState(null); // 'create' | 'edit'
+  const q = useQuery({
+    queryKey: ['fleet', 'consolidations', 'one', load.consolidationId],
+    queryFn: () => api.get(`/api/consolidations/${load.consolidationId}`),
+    enabled: !!load.consolidationId,
+  });
+  if (!load.consolidationId) {
+    if (!load.carrierId || !OPEN_LOAD.includes(load.status)) return null;
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-sm">
+        <span className="min-w-0 flex-1 text-muted">Room on the truck for more freight? Put this load on one trip with the carrier's other open loads.</span>
+        <Button size="sm" variant="secondary" icon={Layers} onClick={() => setDialog('create')}>Consolidate</Button>
+        {dialog && <ConsolidateModal carrierId={load.carrierId} carrierName={load.carrier?.companyName} initialLoadIds={[load.id]} onClose={() => setDialog(null)} />}
+      </div>
+    );
+  }
+  const t = q.data?.consolidation;
+  if (!t) return q.isLoading ? <Loading className="py-2" /> : null;
+  const [color, text] = TRIP_STATUS_TEXT[t.status] || ['gray', t.status];
+  const r = t.route || {};
+  return (
+    <div className="space-y-2 rounded-md border border-line p-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5 font-medium"><Layers className="size-4 shrink-0 text-brand-600" aria-hidden />Consolidated trip · {t.title}</span>
+        <Badge color={color}>{text}</Badge>
+      </div>
+      <p className="text-xs text-muted">
+        {t.loads.length} loads on {load.carrier?.companyName || 'one truck'}
+        {r.miles != null ? ` · ${num(r.miles)} ${r.estimate ? 'mi (estimate)' : 'road mi'}` : ''}. Rate, invoice and documents stay with each load.
+      </p>
+      <ol className="space-y-1">
+        {t.stops.map((s) => {
+          const mine = s.loadId === load.id;
+          return (
+            <li key={`${s.loadId}-${s.kind}`} className={cx('flex items-baseline gap-2 text-[13px]', mine ? 'font-medium' : 'text-fg-2', s.done && 'opacity-60')}>
+              <span className={cx('flex size-5 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tabular', mine ? 'bg-brand-600 text-white' : 'bg-surface-2 text-fg-2')}>{s.n}</span>
+              <span className="min-w-0">{s.kind === 'pickup' ? 'Pickup' : 'Delivery'} · {s.city}, {s.state}{mine ? ' · this load' : s.load.referenceNumber ? ` · #${s.load.referenceNumber}` : ''}{s.done ? ' · done' : ''}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="flex flex-wrap gap-2">
+        {['planned', 'in_transit'].includes(t.status) && <Button size="sm" variant="secondary" icon={ListOrdered} onClick={() => setDialog('edit')}>Edit stops</Button>}
+        <Button size="sm" variant="ghost" icon={MapIcon} to={`/app/fleet?truck=${t.carrierId}&trip=${load.id}`}>Fleet map</Button>
+      </div>
+      {dialog && <ConsolidateModal carrierId={t.carrierId} carrierName={load.carrier?.companyName} trip={t} onClose={() => setDialog(null)} />}
     </div>
   );
 }

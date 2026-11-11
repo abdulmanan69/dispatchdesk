@@ -168,6 +168,7 @@ export async function buildChecklist(req) {
         ],
         values: [
           { label: 'Redirect URI', value: redirectUri(prov), copy: true },
+          ...(prov === 'gmail' ? [{ label: 'Redirect URI for Continue with Google (sign-in)', value: `${config.appUrl}/api/auth/google/callback`, copy: true }] : []),
           { label: 'Scopes', value: OAUTH_PROVIDERS[prov].scope, copy: true },
         ],
         links: [console],

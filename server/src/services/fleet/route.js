@@ -1,6 +1,6 @@
 import { prisma } from '../../db.js';
-import { routeEncoded } from '../market/live.js';
-import { decodePolyline, encodePolyline, pinEnds } from './polyline.js';
+import { routeEncoded, estimateRoute } from '../market/live.js';
+import { decodePolyline, encodePolyline, pinEnds, simplifyToBudget, MAX_ROUTE_POINTS } from './polyline.js';
 import { measureRoute, projectOnRoute, routeLru } from './progress.js';
 import { loadEnds, routeIsCurrent } from './index.js';
 
@@ -21,6 +21,7 @@ import { loadEnds, routeIsCurrent } from './index.js';
  *   ensureLoadRoute(load, { force }) -> stored fields | null   compute now (one in flight per load and process)
  *   scheduleLoadRoute(load)                                    same, in the background (bounded queue)
  *   deadheadRoute({ carrierId, loadId, from, to }) -> { encoded, miles, minutes, source, estimate }
+ *   multiStopRoute(points, { known, deadlineMs }) -> { geometry, miles, minutes, estimate, legs }   consolidated trips
  * routeIsCurrent(load) and routeMeta(load) live in ./index.js (they are part of the trip views).
  */
 
@@ -162,4 +163,71 @@ export async function deadheadRoute({ carrierId, loadId, from, to, fetch = true 
 
 function estimateFor(from, to) {
   return { encoded: encodePolyline([[from.lng, from.lat], [to.lng, to.lat]]), miles: null, minutes: null, source: 'estimate', estimate: true };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-stop routes (consolidated trips): one road route through every stop, in order.
+// ---------------------------------------------------------------------------
+
+/** Resolves to null after `ms` (and lets the timer go), for racing a routing call against a deadline. */
+function after(ms) {
+  let timer;
+  const p = new Promise((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, ms)); });
+  return { p, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * Road route through `points` ([{ lat, lng }], at least 2, consecutive duplicates already merged by the caller), leg by
+ * leg through routeEncoded: the same per-process cache, cluster-wide one-request-per-second throttle and straight-line
+ * fallback as load routes, so a leg that is also a load's own pickup -> delivery or another trip's leg is usually cached.
+ *   known[i]: { encoded, miles, minutes } for leg i (points[i] -> points[i + 1]) that is already known, for example the
+ *             stored road route of a load whose pickup and delivery are back to back. Costs no routing call.
+ *   deadlineMs: legs not answered within this budget (counted from the call) are straight-line estimates, so a long
+ *             trip never holds a request for many seconds; the caller computes it again later.
+ * The joined line passes exactly through every point (each leg is pinned to its stops), and is simplified leg by leg to
+ * about MAX_ROUTE_POINTS in total, in proportion to each leg's miles. Returns
+ * { geometry, miles, minutes, estimate, legs: [{ miles, minutes, estimate }] }; estimate is true when any leg is one.
+ */
+export async function multiStopRoute(points, { known = [], deadlineMs = 8000 } = {}) {
+  const pts = (points || []).filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  if (pts.length < 2) return null;
+  const started = Date.now();
+  const legs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const from = pts[i];
+    const to = pts[i + 1];
+    const hint = known[i];
+    if (hint?.encoded && hint.miles != null && hint.minutes != null) {
+      legs.push({ line: decodePolyline(hint.encoded), miles: hint.miles, minutes: hint.minutes, estimate: false, from, to });
+      continue;
+    }
+    const left = deadlineMs - (Date.now() - started);
+    let r = null;
+    if (left > 0) {
+      const timer = after(left);
+      r = await Promise.race([routeEncoded(from, to), timer.p]).finally(timer.cancel);
+    }
+    if (!r) {
+      const est = estimateRoute(from, to);
+      legs.push({ line: est.geometry, miles: est.miles, minutes: est.minutes, estimate: true, from, to });
+    } else {
+      legs.push({ line: decodePolyline(r.encoded), miles: r.miles, minutes: r.minutes, estimate: !!r.estimate, from, to });
+    }
+  }
+  const totalMiles = legs.reduce((s, l) => s + (l.miles || 0), 0);
+  const out = [];
+  for (const leg of legs) {
+    const share = totalMiles > 0 ? (leg.miles || 0) / totalMiles : 1 / legs.length;
+    const budget = Math.max(2, Math.round(MAX_ROUTE_POINTS * share));
+    const line = simplifyToBudget(pinEnds(leg.line, leg.from, leg.to), budget);
+    // The first point of each leg is the last point of the previous one.
+    out.push(...(out.length ? line.slice(1) : line));
+  }
+  return {
+    geometry: encodePolyline(out),
+    miles: Math.round(totalMiles),
+    minutes: Math.round(legs.reduce((s, l) => s + (l.minutes || 0), 0)),
+    estimate: legs.some((l) => l.estimate),
+    legs: legs.map((l) => ({ miles: l.miles, minutes: l.minutes, estimate: l.estimate })),
+  };
 }

@@ -25,6 +25,7 @@ import { checkLoadFit } from '../services/loads/fit.js';
 import { rulesOf } from '../services/loads/fitCheck.js';
 import { invalidateToday } from '../services/fleet/today.js';
 import { LINK_DAYS, newLoadShareToken, loadTrackUrl, defaultExpiry, loadShareView, invalidateLoadTrack } from '../services/fleet/loadShare.js';
+import { scheduleConsolidationRoute, syncConsolidation } from '../services/fleet/consolidation.js';
 
 /**
  * Fleet map: where each truck is, what it is doing, and the trips planned for it.
@@ -322,6 +323,8 @@ r.patch('/trips/:id', ah(async (req, res) => {
   // Moving the pickup or delivery makes the stored road route stale: compute it again. Finished trips keep no road
   // route (it is cleared on delivery), so editing one does not route it again.
   if (ACTIVE_TRIP_STATUSES.includes(load.status) && !routeIsCurrent(load)) load = await routeNow(load);
+  // A moved stop on a consolidated trip changes the trip's road route too.
+  if (load.consolidationId && (b.origin || b.dest)) scheduleConsolidationRoute(load.consolidationId);
   invalidateToday(load.ownerId, req.user.id);
   res.json({ trip: tripView(load) });
 }));
@@ -353,6 +356,8 @@ r.delete('/trips/:id', ah(async (req, res) => {
   const load = await loadOwned('load', req.user, req.params.id, { write: true });
   if (!['planned', 'booked', 'canceled'].includes(load.status)) throw badRequest('Only planned, booked or canceled trips can be deleted');
   await prisma.load.delete({ where: { id: load.id } });
+  // A deleted load leaves its consolidated trip (which ends when fewer than 2 loads are left).
+  if (load.consolidationId) await syncConsolidation(load.consolidationId, { by: req.user.id });
   invalidateToday(load.ownerId, req.user.id);
   res.json({ ok: true });
 }));

@@ -8,6 +8,7 @@ import { dollars, money, phoneFmt, relative, US_STATES } from '../../lib/format.
 import { Badge, Button, Card, DataTable, EmptyState, Input, PageHeader, Pagination, QueryState, Select } from '../../components/ui.jsx';
 import BrokerFormModal from '../../components/dispatch/BrokerForm.jsx';
 import { LevelBadge } from '../../components/dispatch/BrokerVetting.jsx';
+import { PaysInBadge } from '../reports/PaysIn.jsx';
 
 function VettingBadge({ v }) {
   if (!v) return null;
@@ -60,6 +61,7 @@ export default function Brokers() {
                       <VettingBadge v={b.vetting} />
                     </div>
                     <p className="text-xs text-muted">{[b.mcNumber && `MC ${b.mcNumber}`, `${b.stats.loads} load${b.stats.loads === 1 ? '' : 's'}`, b.stats.avgRatePerMile != null && `${dollars(b.stats.avgRatePerMile)}/mi`, b.paymentTerms].filter(Boolean).join(' · ')}</p>
+                    <PaysInBadge p={b.payments} quiet />
                   </div>
                 )}
                 columns={[
@@ -67,6 +69,8 @@ export default function Brokers() {
                   { key: 'check', header: 'FMCSA check', render: (b) => <VettingBadge v={b.vetting} /> },
                   { key: 'contact', header: 'Contact', render: (b) => <div className="text-sm"><div>{b.contactName || '—'}</div><div className="text-xs text-muted">{b.phone ? phoneFmt(b.phone) : b.email || ''}</div></div> },
                   { key: 'terms', header: 'Terms', render: (b) => <span className="text-sm">{b.paymentTerms || '—'}{b.daysToPay != null ? <span className="text-xs text-muted"> · {b.daysToPay}d</span> : null}</span> },
+                  // Measured from this workspace's own paid invoices (not industry data); see pages/reports/PaysIn.jsx.
+                  { key: 'pays', header: <span title="Average days from your invoice to the broker's payment, from your own invoices">Pays in</span>, render: (b) => <PaysInBadge p={b.payments} /> },
                   { key: 'loads', header: 'Loads', className: 'text-right', render: (b) => <span className="tabular">{b.stats.loads}</span> },
                   { key: 'rev', header: 'Revenue', className: 'text-right', render: (b) => <span className="tabular">{money(b.stats.revenueCents, { digits: 0 })}</span> },
                   { key: 'rpm', header: 'Avg RPM', className: 'text-right', render: (b) => <span className="tabular">{b.stats.avgRatePerMile != null ? dollars(b.stats.avgRatePerMile) : '—'}</span> },

@@ -14,7 +14,7 @@ import { homeDays } from '../services/loads/fit.js';
 import { rulesOf, rulesForCarrier, RULE_FIELDS } from '../services/loads/fitCheck.js';
 import { parseJson } from '../services/brokers/vetting.js';
 import { buildStatement, weekFromKey, weekOf, weeklySummaries } from '../services/invoices/statements.js';
-import { statementHtml, statementText } from '../services/invoices/print.js';
+import { statementHtml, statementText, brandLogo } from '../services/invoices/print.js';
 import { createPortalLink, revokePortalLink, portalStatus } from '../services/invoices/portal.js';
 import { queueUserEmail } from '../services/email/compose.js';
 
@@ -341,7 +341,7 @@ r.get('/:id/statements/:week/print', ah(async (req, res) => {
   const week = weekFromKey(req.user.timezone, req.params.week);
   const statement = await buildStatement({ customer, carrier, week });
   res.set('Cache-Control', 'private, no-store');
-  res.type('html').send(statementHtml(statement, { from: { name: await senderName(req.user) }, tz: req.user.timezone }));
+  res.type('html').send(statementHtml(statement, { from: { name: await senderName(req.user) }, tz: req.user.timezone, logo: await brandLogo(customer.ownerId) }));
 }));
 
 /**

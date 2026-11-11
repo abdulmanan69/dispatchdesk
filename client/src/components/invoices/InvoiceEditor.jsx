@@ -8,6 +8,7 @@ import { date, money, toDateInput } from '../../lib/format.js';
 import { Button, ErrorState, Field, IconButton, Input, Loading, Select, Switch, Textarea } from '../ui.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
 import { useToast } from '../Toast.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { openPrintable } from './print.js';
 import { PaymentModal, SendInvoiceModal, StatusBadge } from './InvoiceModals.jsx';
 
@@ -21,7 +22,23 @@ const PRESET_LINES = [
   { kind: 'other', description: '' },
 ];
 
-const toRow = (l) => ({ kind: l.kind || 'other', description: l.description || '', quantity: String(l.quantity ?? 1), unit: String((l.unitCents ?? 0) / 100) });
+/** The signed-in user's invoice logo as a data: URL, or null (same query key and data as Settings, Invoice branding). */
+async function fetchInvoiceLogo({ signal }) {
+  try {
+    const blob = await (await api.get('/api/settings/invoice-logo', undefined, { raw: true, signal })).blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
+const toRow = (l) =>({ kind: l.kind || 'other', description: l.description || '', quantity: String(l.quantity ?? 1), unit: String((l.unitCents ?? 0) / 100) });
 const rowCents = (r) => Math.round((Number(r.quantity) || 0) * Math.round((Number(r.unit) || 0) * 100));
 
 /** Invoice detail and editor (line items while it is a draft), with print, email, payments and void. */
@@ -30,6 +47,10 @@ export default function InvoiceEditor({ id, onClose }) {
   const confirm = useConfirm();
   const q = useQuery({ queryKey: ['invoices', 'one', id], queryFn: () => api.get(`/api/invoices/${id}`), enabled: !!id });
   const inv = q.data?.invoice;
+  const { user } = useAuth();
+  // Printouts carry the invoice owner's logo; the preview shows it only on the signed-in user's own invoices.
+  const own = !!inv && inv.ownerId === user?.id;
+  const logo = useQuery({ queryKey: ['settings', 'invoice-logo'], queryFn: fetchInvoiceLogo, staleTime: 5 * 60_000, enabled: own, retry: false });
   const [rows, setRows] = useState([]);
   const [f, setF] = useState({});
   const [sending, setSending] = useState(false);
@@ -82,6 +103,11 @@ export default function InvoiceEditor({ id, onClose }) {
             <StatusBadge invoice={inv} />
             <span className="text-muted">{inv.issuedAt ? `Issued ${date(inv.issuedAt)}` : 'Not issued yet'} · due {date(inv.dueAt)}</span>
             {inv.load && <Link to={`/app/loads?load=${inv.load.id}`} className="text-brand-700 hover:underline dark:text-brand-300">Load {inv.load.referenceNumber || `${inv.load.originCity} → ${inv.load.destCity}`}</Link>}
+            {own && logo.data && (
+              <span className="ml-auto rounded bg-white px-2 py-1 ring-1 ring-line" title="Your logo, printed at the top of this invoice">
+                <img src={logo.data} alt="Your logo" className="block h-7 w-auto max-w-[140px] object-contain" />
+              </span>
+            )}
           </div>
 
           <section className="space-y-2">

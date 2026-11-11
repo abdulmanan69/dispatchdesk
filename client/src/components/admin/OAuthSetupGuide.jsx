@@ -11,9 +11,11 @@ const GUIDES = {
       'In Google Cloud Console, create or pick a project and enable the Gmail API.',
       'Open OAuth consent screen. Choose External (or Internal for one Workspace), add your app name, support email and the scopes below.',
       'While the app is in Testing, add each user as a test user. Publish it for everyone; Google may ask for verification because gmail.send is a sensitive scope.',
-      'Credentials → Create credentials → OAuth client ID → Web application. Add the redirect URI below exactly.',
+      'Credentials → Create credentials → OAuth client ID → Web application. Add both redirect URIs below exactly: one connects mailboxes, the other is for Continue with Google.',
       'Paste the client ID and client secret into the fields below, save, then press Check Google.',
     ],
+    // Continue with Google (sign-in) uses the same OAuth client with its own redirect URI and only the basic scopes.
+    signIn: { path: '/api/auth/google/callback', scopes: ['openid', 'email', 'profile'] },
   },
   outlook: {
     name: 'Microsoft (Outlook.com and Microsoft 365)',
@@ -41,6 +43,10 @@ function CopyRow({ value }) {
   );
 }
 
+function Scopes({ list }) {
+  return <div className="flex flex-wrap gap-1">{list.map((s) => <code key={s} className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono">{s}</code>)}</div>;
+}
+
 /** Step-by-step OAuth app registration guide with the exact redirect URIs and scopes for this server. */
 export default function OAuthSetupGuide({ oauth, appUrl }) {
   const [open, setOpen] = useState(null);
@@ -48,7 +54,7 @@ export default function OAuthSetupGuide({ oauth, appUrl }) {
   const insecure = !/^https:\/\//.test(appUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)/.test(appUrl);
   return (
     <div className="mb-4 space-y-2">
-      <p className="text-xs text-muted">Register one OAuth app per provider. After that every user connects their own mailbox with one click from Email → Mailboxes.</p>
+      <p className="text-xs text-muted">Register one OAuth app per provider. After that every user connects their own mailbox with one click from Email → Mailboxes. The Google app also turns on Continue with Google for sign-in.</p>
       {insecure && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">APP_URL is {appUrl}. Google and Microsoft only accept HTTPS redirect URIs (localhost is the exception). Set APP_URL to your public HTTPS address first.</p>}
       {Object.entries(GUIDES).map(([key, g]) => (
         <div key={key} className="rounded-lg border border-line">
@@ -60,8 +66,15 @@ export default function OAuthSetupGuide({ oauth, appUrl }) {
           {open === key && (
             <div className="space-y-3 border-t border-line p-3 text-xs">
               <ol className="list-decimal space-y-1 pl-4 text-fg-2">{g.steps.map((s) => <li key={s}>{s}</li>)}</ol>
-              <div><p className="mb-1 text-muted">Redirect URI</p><CopyRow value={oauth[key].redirectUri} /></div>
-              <div><p className="mb-1 text-muted">Scopes</p><div className="flex flex-wrap gap-1">{oauth[key].scopes.map((s) => <code key={s} className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono">{s}</code>)}</div></div>
+              <div><p className="mb-1 text-muted">{g.signIn ? 'Redirect URI for mailboxes' : 'Redirect URI'}</p><CopyRow value={oauth[key].redirectUri} /></div>
+              <div><p className="mb-1 text-muted">Scopes</p><Scopes list={oauth[key].scopes} /></div>
+              {g.signIn && (
+                <div className="space-y-2 rounded-md bg-surface-2 p-2.5">
+                  <div><p className="mb-1 text-muted">Redirect URI for Continue with Google</p><CopyRow value={`${appUrl}${g.signIn.path}`} /></div>
+                  <p className="text-fg-2">Sign-in needs only the basic profile scopes below, not the Gmail API. Once the client ID and secret are saved, Continue with Google appears on the log in and sign up pages.</p>
+                  <Scopes list={g.signIn.scopes} />
+                </div>
+              )}
               <a href={g.console} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-brand-700 hover:underline dark:text-brand-300">Open console <ArrowUpRight className="size-3.5" /></a>
             </div>
           )}

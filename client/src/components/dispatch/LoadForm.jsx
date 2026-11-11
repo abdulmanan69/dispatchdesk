@@ -15,6 +15,7 @@ import LegalEtaCard from './LegalEtaCard.jsx';
 import RateConImport from './RateConImport.jsx';
 import { RateConVetting } from './BrokerVetting.jsx';
 import { formatWindow, zonedInput, zoneAbbr } from './zoned.js';
+import { SaveTemplateButton, TemplatePickerButton } from './LoadTemplates.jsx';
 import { diesel, geocode, route } from '../fleet/fleetApi.js';
 
 const EMPTY = {
@@ -343,6 +344,8 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
   const [rcFile, setRcFile] = useState(null);
   const [attach, setAttach] = useState(false);
   const [showImport, setShowImport] = useState(importOpen);
+  // Carrier filled from a template: remount the picker so it shows that carrier's name.
+  const [tplCarrier, setTplCarrier] = useState(null);
   // Fill the form once per opening (and when a different load is opened). A refetch of the same load while the
   // form is open (acknowledging warnings, a driver check-in, window focus) must not wipe what the user typed.
   const filledFor = useRef(null);
@@ -356,6 +359,7 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
     setRcFile(null);
     setAttach(false);
     setShowImport(importOpen && !load?.id);
+    setTplCarrier(null);
   }, [open, load, initial, importOpen]);
   const calc = useMemo(() => formCalc(form), [form]);
   const fitLoad = useMemo(() => formToFitLoad(form), [form]);
@@ -418,10 +422,16 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
     },
   );
   const submit = (e) => { e.preventDefault(); save.mutate({ body: formToBody(form) }); };
+  const applyTemplate = (tplInitial) => {
+    setForm(loadToForm(tplInitial));
+    setTplCarrier({ key: Date.now(), label: tplInitial.carrierLabel || '' });
+    toast.success('Filled from the template. Check the dates and times before saving.');
+  };
 
   return (
     <Modal open={open} onClose={onClose} title={editing ? 'Edit load' : 'New load'} size="xl"
       footer={<>
+        <SaveTemplateButton form={form} className="sm:mr-auto" />
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
         <Button type="submit" form="load-form" loading={save.isPending}>{editing ? 'Save changes' : 'Save load'}</Button>
       </>}>
@@ -430,7 +440,10 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
           {showImport ? (
             <RateConImport onParsed={onParsed} />
           ) : (
-            <Button size="sm" variant="secondary" icon={FileUp} onClick={() => setShowImport(true)}>Import rate con</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" icon={FileUp} onClick={() => setShowImport(true)}>Import rate con</Button>
+              {!editing && <TemplatePickerButton onPick={applyTemplate} />}
+            </div>
           )}
           {rcFile && (
             <Checkbox checked={attach} onChange={(e) => setAttach(e.target.checked)} label={`Attach ${rcFile.name} to this load as its rate confirmation`} />
@@ -444,7 +457,7 @@ export default function LoadFormModal({ open, onClose, load, initial, onSaved, i
             <Field label="Broker"><BrokerSelect value={form.brokerId} onChange={(v) => setForm({ ...form, brokerId: v })} /></Field>
           </div>
           <Field label="Assigned carrier" hint="Carrier hauling this load (usually one of your customers).">
-            <CarrierPicker value={form.carrierId} initialLabel={load?.carrier?.companyName || initial?.carrierLabel || ''} onChange={(v) => setForm((f) => ({ ...f, carrierId: v }))} />
+            <CarrierPicker key={tplCarrier?.key || 'carrier'} value={form.carrierId} initialLabel={tplCarrier?.label || load?.carrier?.companyName || initial?.carrierLabel || ''} onChange={(v) => setForm((f) => ({ ...f, carrierId: v }))} />
           </Field>
           <LoadFields form={form} set={setForm} stops assist={!editing} />
           <Field label="Notes"><Textarea rows={4} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} maxLength={5000} /></Field>

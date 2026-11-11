@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Upload, Trash2, Sun, Moon, Monitor, Mail, Bot, Radar, BellRing, Smartphone, Send, Copy, CalendarDays, RefreshCw, ExternalLink, Share, ShieldAlert } from 'lucide-react';
+import { Download, Upload, Trash2, Sun, Moon, Monitor, Mail, Bot, Radar, BellRing, Smartphone, Send, Copy, CalendarDays, RefreshCw, ExternalLink, Share, ShieldAlert, FileImage, ImagePlus } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation, errorToast } from '../../lib/hooks.js';
 import { dateTime, relative } from '../../lib/format.js';
@@ -9,7 +9,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { applyTheme } from '../../context/theme.js';
-import { Card, PageHeader, Tabs, Field, Input, Textarea, Select, Button, Switch, Checkbox, Avatar, Badge, QueryState, IconButton, cx } from '../../components/ui.jsx';
+import { Card, PageHeader, Tabs, Field, Input, Textarea, Select, Button, Switch, Checkbox, Avatar, Badge, QueryState, IconButton, Spinner, cx } from '../../components/ui.jsx';
 import { pushSupport, enablePush, disablePush, currentSubscription, thisDeviceId, deviceLabel } from '../../context/push.js';
 import SecurityPanel from '../../components/settings/SecurityPanel.jsx';
 import CallingSettings from '../../components/calling/CallingSettings.jsx';
@@ -103,7 +103,106 @@ function Profile() {
           </div>
         </form>
       </Card>
+      <InvoiceBranding />
     </div>
+  );
+}
+
+// Same query key and data (a data: URL, or null without a logo) as the invoice editor's header preview.
+const LOGO_KEY = ['settings', 'invoice-logo'];
+const LOGO_MAX_BYTES = 500 * 1024;
+async function fetchInvoiceLogo({ signal }) {
+  try {
+    const res = await api.get('/api/settings/invoice-logo', undefined, { raw: true, signal });
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
+}
+
+/** Logo printed on invoices and weekly statements: preview, upload (drop or choose), replace and remove. */
+function InvoiceBranding() {
+  const { user } = useAuth();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const qc = useQueryClient();
+  const fileRef = useRef(null);
+  const [drag, setDrag] = useState(false);
+  const logo = useQuery({ queryKey: LOGO_KEY, queryFn: fetchInvoiceLogo, staleTime: 5 * 60_000 });
+  const upload = useApiMutation((file) => { const fd = new FormData(); fd.append('file', file); return api.upload('/api/settings/invoice-logo', fd); },
+    { success: 'Logo saved', invalidate: [LOGO_KEY] });
+  const remove = useApiMutation(() => api.del('/api/settings/invoice-logo'), { success: 'Logo removed', onSuccess: () => qc.setQueryData(LOGO_KEY, null) });
+  const has = !!logo.data;
+  const busy = upload.isPending || remove.isPending;
+  const companyName = user.team?.name || user.companyName || '';
+
+  const pick = (file) => {
+    if (!file || busy) return;
+    const name = (file.name || '').toLowerCase();
+    if (file.type === 'image/svg+xml' || name.endsWith('.svg')) return toast.error('SVG logos are not supported. Export your logo as a PNG or JPEG.');
+    if (!['image/png', 'image/jpeg'].includes(file.type) && !/\.(png|jpe?g)$/.test(name)) return toast.error('Choose a PNG or JPEG image');
+    if (file.size > LOGO_MAX_BYTES) return toast.error('Choose an image under 500 KB');
+    upload.mutate(file);
+  };
+  const onRemove = async () => {
+    if (await confirm({ title: 'Remove your logo?', message: 'Invoices and statements print without a logo until you upload one again.', confirmLabel: 'Remove', danger: true })) remove.mutate();
+  };
+
+  return (
+    <Card className="lg:col-span-3"
+      title={<div className="flex items-center gap-2"><FileImage className="size-4 text-c-teal" aria-hidden /><h2 className="text-sm font-medium">Invoice branding</h2></div>}>
+      <div className="grid gap-5 md:grid-cols-[minmax(0,320px)_1fr] md:items-start">
+        <div onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer?.files?.[0]); }}
+          className={cx('flex min-h-36 items-center justify-center rounded-lg border border-dashed p-4 transition-ui', drag ? 'border-c-blue bg-c-blue-soft' : 'border-line bg-surface-2/40')}>
+          {logo.isPending || upload.isPending ? <Spinner label="Loading logo" />
+            : logo.isError ? (
+              <div className="text-center text-sm text-muted" role="alert">
+                <p>The logo preview could not load.</p>
+                <Button variant="link" size="sm" onClick={() => logo.refetch()}>Try again</Button>
+              </div>
+            ) : has ? (
+              // White like the printed page, so a dark logo stays visible in dark mode.
+              <div className="rounded-md bg-white p-3 ring-1 ring-line">
+                <img src={logo.data} alt={companyName ? `${companyName} logo` : 'Your logo'} className="block h-auto max-h-20 w-auto max-w-full sm:max-w-[240px]" />
+              </div>
+            ) : (
+              <button type="button" onClick={() => fileRef.current?.click()} className="flex flex-col items-center gap-1.5 rounded-md p-2 text-center text-sm text-muted hover:text-fg">
+                <ImagePlus className="size-6" strokeWidth={1.5} aria-hidden />
+                Drop your logo here or choose a file
+              </button>
+            )}
+        </div>
+        <div className="space-y-3">
+          <p className="text-sm text-fg-2">Printed at the top of your invoices and weekly statements, including the statements carriers open from their portal link.</p>
+          <div>
+            <p className="text-xs text-muted">Company name</p>
+            <p className="text-sm font-medium">{companyName || user.name}</p>
+            <p className="mt-0.5 text-xs text-muted">
+              {user.team?.name ? 'Your team name describes the logo on printouts while you are on a team.'
+                : user.companyName ? 'Describes the logo on printouts. Change it in your profile above.'
+                  : 'Add your company name in the profile above. Until then your name describes the logo.'}
+            </p>
+          </div>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg" className="hidden" aria-label="Choose a logo file"
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; pick(f); }} />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" icon={Upload} loading={upload.isPending} disabled={remove.isPending || logo.isPending} onClick={() => fileRef.current?.click()}>
+              {has ? 'Replace logo' : 'Upload logo'}
+            </Button>
+            {has && <Button variant="ghost" size="sm" icon={Trash2} loading={remove.isPending} disabled={upload.isPending} onClick={onRemove}>Remove</Button>}
+          </div>
+          <p className="text-xs text-muted">PNG or JPEG, up to 500 KB and 2000 x 2000 pixels. SVG files are not supported. A wide logo on a white or transparent background prints best.</p>
+        </div>
+      </div>
+    </Card>
   );
 }
 

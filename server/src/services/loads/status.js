@@ -5,6 +5,7 @@ import { logActivity } from '../../lib/activity.js';
 import { LOAD_STATUSES } from '../../lib/constants.js';
 import { truckUpdateForTrip } from '../fleet/index.js';
 import { recordLoadEvent } from '../fleet/events.js';
+import { syncConsolidation } from '../fleet/consolidation.js';
 
 /**
  * Load status changes, shared by every page that moves a load (Loads page, load detail, fleet trips).
@@ -14,6 +15,9 @@ import { recordLoadEvent } from '../fleet/events.js';
  *     moves the truck (truckUpdateForTrip: loaded on in_transit, available at the destination on delivered),
  *     records a LoadEvent of type 'status' and an activity, and reports missing paperwork (rate con when booked,
  *     POD when delivered) so the page can offer "Upload now" or "Remind me".
+ *     A load on a consolidated trip keeps the trip in step (syncConsolidation: in transit, delivered, canceled loads drop
+ *     out), and delivering or canceling one of its loads leaves the truck busy while other loads are still on board or
+ *     ahead. Pass { syncConsolidation: false } when moving several loads of one trip and sync once at the end.
  */
 export const STATUS_FLOW = ['planned', 'booked', 'in_transit', 'delivered', 'invoiced', 'paid'];
 const ACTIVE = ['planned', 'booked', 'in_transit'];
@@ -56,12 +60,29 @@ export async function missingPaperwork(load) {
   return need.filter((t) => !got.has(t));
 }
 
-export async function afterStatusChange(user, before, after, { source = 'dispatcher' } = {}) {
+/** Other loads of the same consolidated trip that are still ahead (not delivered or canceled), with their statuses. */
+async function tripmatesAhead(load) {
+  if (!load.consolidationId || !['delivered', 'canceled'].includes(load.status)) return [];
+  return prisma.load.findMany({
+    where: { consolidationId: load.consolidationId, id: { not: load.id }, carrierId: load.carrierId, status: { in: ACTIVE } },
+    select: { status: true }, take: 20,
+  });
+}
+
+export async function afterStatusChange(user, before, after, { source = 'dispatcher', syncConsolidation: sync = true } = {}) {
   let truck = null;
   if (after.carrierId) {
     const carrier = await loadCarrier(user, after.carrierId, { write: true }).catch(() => null);
     if (carrier) {
-      const data = truckUpdateForTrip(before.status, after.status, after);
+      let data = truckUpdateForTrip(before.status, after.status, after);
+      // One load of a consolidated trip delivered or canceled while others are still on board or ahead: the truck is
+      // not free yet (same rule as the driver's check-in). It still moves to the delivery it just made.
+      const ahead = await tripmatesAhead(after);
+      if (ahead.length) {
+        const { availableAt, truckStatus, ...rest } = data; // eslint-disable-line no-unused-vars
+        data = after.status === 'delivered' ? { ...rest, truckStatus: 'loaded' } : rest;
+        if (after.status === 'canceled' && !ahead.some((l) => l.status === 'in_transit') && truckStatus) data.truckStatus = truckStatus;
+      }
       // A delivered load moves the truck to the destination: a dispatcher-set position, not GPS.
       if (after.status === 'delivered') data.locationSource = 'manual';
       if (Object.keys(data).length) truck = await prisma.carrier.update({ where: { id: carrier.id }, data, select: { id: true, truckStatus: true, locationCity: true, locationState: true } });
@@ -84,6 +105,10 @@ export async function afterStatusChange(user, before, after, { source = 'dispatc
     type: 'load', carrierId: after.carrierId,
     summary: `Load ${after.referenceNumber || `${after.originCity} → ${after.destCity}`} is now ${pretty(after.status)}`,
   });
+  if (sync && after.consolidationId) {
+    // The status change itself is saved: a failed trip sync is logged, and the next read of the trip heals it.
+    await syncConsolidation(after.consolidationId, { by: user.id }).catch((err) => console.error(`[loads] consolidated trip sync for load ${after.id} failed: ${err.message}`));
+  }
   const missing = await missingPaperwork(after);
   return { truck, paperwork: { missing } };
 }

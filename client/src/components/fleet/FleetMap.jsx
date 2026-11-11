@@ -19,19 +19,57 @@ const fc = (features) => ({ type: 'FeatureCollection', features });
 const straight = (a, b) => [[a.lng, a.lat], [b.lng, b.lat]];
 
 /**
+ * Numbered stops of consolidated trips: one point per place (stops back to back at the same place share it, labelled
+ * "1, 2"), colored by the trip's status, muted once done.
+ */
+function consolidationStops(c, carrierId) {
+  const byPlace = new Map();
+  for (const s of c.stops || []) {
+    if (s.lat == null || s.lng == null) continue;
+    const key = `${s.lng.toFixed(4)},${s.lat.toFixed(4)}`;
+    const hit = byPlace.get(key);
+    if (hit) { hit.ns.push(s.n); hit.done = hit.done && !!s.done; continue; }
+    byPlace.set(key, { at: [s.lng, s.lat], ns: [s.n], done: !!s.done, city: s.city || '' });
+  }
+  return [...byPlace.values()].map((p) => point(p.at, { label: p.ns.join(', '), wide: p.ns.length > 1, done: p.done, status: c.status, carrierId, city: p.city }));
+}
+
+/**
  * Trip lines from the stored road routes. An in-transit trip with a known truck position is split at the truck:
  * the driven part is drawn muted, the part ahead in the trip color with direction arrows. The truck's run to its next
  * pickup (deadhead) is a dashed grey road route. Straight lines appear only when the routing service had no route
  * for a trip, and are dashed and labelled "Estimate".
+ * Loads on a consolidated trip are drawn as that trip: one route through every stop in order, with numbered stops,
+ * instead of each load's own pickup-to-delivery line.
  */
-function buildTrips(trucks, routes, deadheads) {
+export function buildTrips(trucks, routes, deadheads, consolidations = []) {
   const lines = [];
   const ends = [];
+  const stops = [];
   const pins = new Map(); // truck id -> displayed [lng, lat]
+  const grouped = new Set(consolidations.flatMap((c) => c.loadIds || []));
+  const consByTruck = new Map();
+  for (const c of consolidations) consByTruck.set(c.carrierId, [...(consByTruck.get(c.carrierId) || []), c]);
   for (const t of trucks) {
     const pos = t.location?.lat != null ? { lat: t.location.lat, lng: t.location.lng } : null;
     if (pos) pins.set(t.id, [pos.lng, pos.lat]);
+    for (const c of consByTruck.get(t.id) || []) {
+      const pts = c.points?.length > 1 ? c.points : (c.stops || []).filter((s) => s.lat != null).map((s) => [s.lng, s.lat]);
+      if (pts.length < 2) continue;
+      const road = c.points?.length > 1 && !c.estimate;
+      const props = { id: `c:${c.id}`, carrierId: t.id, status: c.status, estimate: !road };
+      if (c.status === 'in_transit' && pos) {
+        const { done, ahead, snap } = splitRoute(pts, pos);
+        if (done.length > 1) lines.push(line(done, { ...props, part: 'done' }));
+        if (ahead.length > 1) lines.push(line(ahead, { ...props, part: 'ahead' }));
+        if (snap && road && snap.offMiles < SNAP_PIN_MILES) pins.set(t.id, snap.point);
+      } else {
+        lines.push(line(pts, { ...props, part: 'ahead' }));
+      }
+      stops.push(...consolidationStops(c, t.id));
+    }
     for (const trip of t.trips || []) {
+      if (grouped.has(trip.id)) continue;
       if (trip.origin.lat == null || trip.dest.lat == null) continue;
       const r = routes.get(trip.id);
       const road = r?.points?.length > 1;
@@ -59,7 +97,7 @@ function buildTrips(trucks, routes, deadheads) {
       lines.push(line(pts, { id: `${next.id}-dh`, carrierId: t.id, status: 'deadhead', part: 'ahead', estimate: !dh?.points?.length || !!dh.estimate }));
     }
   }
-  return { lines: fc(lines), ends: fc(ends), pins };
+  return { lines: fc(lines), ends: fc(ends), stops: fc(stops), pins };
 }
 
 function truckFeatures(trucks, pins) {
@@ -124,7 +162,7 @@ function paintPin(el, t, selected) {
  */
 export default function FleetMap({
   trucks = [], openLoads = [], alerts = [], layers, selectedId, onSelect, onOpenLoad, pickMode, onPick, editPoint, onEditMove,
-  plannedRoute, focus, fitKey, dark, trail, className, routes, deadheads, onMap,
+  plannedRoute, focus, fitKey, dark, trail, className, routes, deadheads, onMap, consolidations,
 }) {
   const box = useRef(null);
   const mapRef = useRef(null);
@@ -135,11 +173,13 @@ export default function FleetMap({
 
   const routeMap = routes || EMPTY_MAP;
   const deadheadMap = deadheads || EMPTY_MAP;
-  const trips = useMemo(() => buildTrips(trucks, routeMap, deadheadMap), [trucks, routeMap, deadheadMap]);
+  const consList = consolidations || EMPTY_LIST;
+  const trips = useMemo(() => buildTrips(trucks, routeMap, deadheadMap, consList), [trucks, routeMap, deadheadMap, consList]);
   const data = useMemo(() => ({
     trucks: truckFeatures(trucks, trips.pins),
     trips: trips.lines,
     'trip-ends': trips.ends,
+    'consolidation-stops': trips.stops,
   }), [trucks, trips]);
   const originData = useMemo(() => pointFeatures(openLoads.map((l) => ({ id: l.id, lat: l.origin.lat, lng: l.origin.lng, label: `${l.origin.city} → ${l.dest.city}` })), 'load'), [openLoads]);
   const alertData = useMemo(() => pointFeatures(alerts, 'alert'), [alerts]);
@@ -212,7 +252,7 @@ export default function FleetMap({
     // Other trucks' trips step back while one truck is selected.
     const sel = latest.current.selectedId;
     const fade = (on) => (sel ? ['case', ['==', ['get', 'carrierId'], sel], on, on * 0.35] : on);
-    for (const [id, prop, on] of [['trip-lines', 'line-opacity', 1], ['trip-casing', 'line-opacity', 0.9], ['trip-estimate', 'line-opacity', 0.9], ['trip-deadhead', 'line-opacity', 0.9], ['trip-done', 'line-opacity', 0.75]]) {
+    for (const [id, prop, on] of [['trip-lines', 'line-opacity', 1], ['trip-casing', 'line-opacity', 0.9], ['trip-estimate', 'line-opacity', 0.9], ['trip-deadhead', 'line-opacity', 0.9], ['trip-done', 'line-opacity', 0.75], ['cons-stop', 'circle-opacity', 1], ['cons-stop-num', 'text-opacity', 1]]) {
       if (map.getLayer(id)) map.setPaintProperty(id, prop, fade(on));
     }
   };
@@ -225,7 +265,7 @@ export default function FleetMap({
     for (const l of map.getStyle().layers || []) if (HIDE.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
 
     map.addSource('trucks', { type: 'geojson', data: empty, cluster: true, clusterRadius: 48, clusterMaxZoom: 7 });
-    for (const id of ['trips', 'trip-ends', 'origins', 'alerts', 'plan']) map.addSource(id, { type: 'geojson', data: empty });
+    for (const id of ['trips', 'trip-ends', 'origins', 'alerts', 'plan', 'consolidation-stops']) map.addSource(id, { type: 'geojson', data: empty });
     map.addSource('trail', { type: 'geojson', data: empty, lineMetrics: true });
 
     const isDh = ['==', ['get', 'status'], 'deadhead'];
@@ -252,6 +292,13 @@ export default function FleetMap({
       'circle-stroke-color': tripColor, 'circle-stroke-width': 2.5,
     } });
     map.addLayer({ id: 'trip-end-labels', type: 'symbol', source: 'trip-ends', minzoom: 4.5, layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-offset': [0, 1.2], 'text-anchor': 'top', 'text-optional': true }, paint: { 'text-color': isDark ? '#e4e4e7' : '#27272a', 'text-halo-color': casing, 'text-halo-width': 1.5 } });
+    // Consolidated trips: numbered stops in driving order.
+    map.addLayer({ id: 'cons-stop', type: 'circle', source: 'consolidation-stops', paint: {
+      'circle-radius': ['case', ['get', 'wide'], 12, 9], 'circle-color': ['case', ['get', 'done'], muted, tripColor],
+      'circle-stroke-color': casing, 'circle-stroke-width': 2,
+    } });
+    map.addLayer({ id: 'cons-stop-num', type: 'symbol', source: 'consolidation-stops', layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 10.5, 'text-allow-overlap': true, 'text-ignore-placement': true }, paint: { 'text-color': '#ffffff' } });
+    map.addLayer({ id: 'cons-stop-city', type: 'symbol', source: 'consolidation-stops', minzoom: 5, layout: { 'text-field': ['get', 'city'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-offset': [0, 1.35], 'text-anchor': 'top', 'text-optional': true }, paint: { 'text-color': isDark ? '#e4e4e7' : '#27272a', 'text-halo-color': casing, 'text-halo-width': 1.5 } });
     map.addLayer({ id: 'origin-dot', type: 'circle', source: 'origins', paint: { 'circle-radius': 7, 'circle-color': casing, 'circle-stroke-color': '#7c3aed', 'circle-stroke-width': 3 } });
     map.addLayer({ id: 'alert-dot', type: 'circle', source: 'alerts', paint: { 'circle-radius': 18, 'circle-color': '#dc2626', 'circle-opacity': 0.16, 'circle-stroke-color': '#dc2626', 'circle-stroke-width': 1.5 } });
     map.addLayer({ id: 'clusters', type: 'circle', source: 'trucks', filter: ['has', 'point_count'], paint: { 'circle-color': '#0f7d73', 'circle-opacity': 0.92, 'circle-radius': ['step', ['get', 'point_count'], 18, 10, 22, 30, 28], 'circle-stroke-color': casing, 'circle-stroke-width': 3 } });
@@ -315,7 +362,7 @@ export default function FleetMap({
     map.setStyle(dark ? MAP_STYLES.dark : MAP_STYLES.light, { diff: false });
   }, [dark]);
 
-  // Data: only sources whose inputs changed are sent to the map.
+  // Data: only sources whose inputs changed are sent to the map (consolidated-trip stops ride along with the trips).
   useEffect(() => { pushSources(); syncPins(); }, [data, originData, alertData, trailData, planData]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { applyLayers(); syncPins(); }, [layers, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -370,4 +417,5 @@ export default function FleetMap({
 }
 
 const EMPTY_MAP = new Map();
-const TRIP_LAYERS = ['trip-casing', 'trip-lines', 'trip-estimate', 'trip-deadhead', 'trip-done', 'trip-arrows', 'trip-estimate-label', 'trip-ends', 'trip-end-labels'];
+const EMPTY_LIST = [];
+const TRIP_LAYERS = ['trip-casing', 'trip-lines', 'trip-estimate', 'trip-deadhead', 'trip-done', 'trip-arrows', 'trip-estimate-label', 'trip-ends', 'trip-end-labels', 'cons-stop', 'cons-stop-num', 'cons-stop-city'];

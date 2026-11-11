@@ -61,7 +61,7 @@ export async function destroySession(req, res) {
 }
 
 // Routes a personal API token (browser extension / integrations) may never reach.
-const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^\/api\/auth\/(change-password|sessions|logout|resend-verification)/, /^\/api\/billing\/(checkout|portal|cancel|resume|change-plan)/, /^\/api\/teams/,
+const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^\/api\/auth\/(change-password|sessions|logout|resend-verification|google)/, /^\/api\/billing\/(checkout|portal|cancel|resume|change-plan)/, /^\/api\/teams/,
   // Device push subscriptions and the private calendar link are account secrets (both routers also refuse tokens).
   /^\/api\/push/, /^\/api\/calendar/,
   // Long-lived public links (carrier portal, broker tracking, driver location) and bulk exports or sends of financial
@@ -69,7 +69,8 @@ const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^
   /^\/api\/customers\/[^/]+\/(portal|statements\/[^/]+\/send)(\/|$)/,
   /^\/api\/fleet\/(trips\/[^/]+\/tracking-links|carriers\/[^/]+\/share)(\/|$)/,
   /^\/api\/invoices\/(export\.csv|[^/]+\/send)(\/|$)/,
-  /^\/api\/carriers\/export\.csv(\/|$)/];
+  /^\/api\/carriers\/export\.csv(\/|$)/,
+  /^\/api\/reports\/profit\.csv(\/|$)/];
 
 /** Throw 403 when the request uses a personal API token (for routes that mint public links or export in bulk). */
 export function refuseApiToken(req, what = 'this') {
