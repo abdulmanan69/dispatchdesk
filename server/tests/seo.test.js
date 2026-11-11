@@ -24,6 +24,15 @@ describe('SEO and link previews', () => {
     expect(body).not.toContain('SECRET-TOKEN-123');
   });
 
+  it('broker tracking links get the load tracking image (not the driver one), noindex, and never echo the token', () => {
+    const { body } = renderIndex(TEMPLATE, '/t/SECRET-LOAD-TOKEN-9');
+    expect(body).toContain('/og/og-load.png');
+    expect(body).not.toContain('/og/og-track.png');
+    expect(body).toContain('noindex');
+    expect(body).toContain('Load tracking');
+    expect(body).not.toContain('SECRET-LOAD-TOKEN-9');
+  });
+
   it('home page carries JSON-LD; app pages are noindex; unknown pages are 404', () => {
     expect(renderIndex(TEMPLATE, '/').body).toContain('application/ld+json');
     expect(renderIndex(TEMPLATE, '/app/carriers').body).toContain('noindex');

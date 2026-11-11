@@ -129,6 +129,32 @@ const images = {
       <text x="150" y="480" font-size="14" fill="${MUTED}" text-anchor="middle">Arrived · Loaded · Delivered</text>
     </g>
   `),
+  // Broker / shipper tracking link (/t/:token): read-only load status, no driver actions.
+  'og/og-load.png': frame(`
+    ${logo(64, 58, 52)}
+    <text x="130" y="96" font-size="34" font-weight="700" fill="${FG}">Dispatch<tspan fill="${BRAND}">Desk</tspan></text>
+    <rect x="64" y="150" width="252" height="40" rx="20" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.6"/>
+    <circle cx="86" cy="170" r="6" fill="#3b82f6"/>
+    <text x="102" y="177" font-size="18" font-weight="600" fill="${FG}">Shared by the dispatcher</text>
+    ${text(['Load tracking'], 64, 268, { size: 64 })}
+    ${text(['Live status and estimated arrival for', 'one load. Opens in any browser, no', 'login needed.'], 64, 330, { size: 27, weight: 400, color: FG2, lh: 1.38 })}
+    ${chips(64, 482, [['Live status', '#22c55e'], ['Estimated arrival', '#3b82f6'], ['Pickup and delivery', '#a855f7']], 560)}
+    <g transform="translate(760 60)">
+      <rect x="0" y="0" width="300" height="520" rx="44" fill="#111827" stroke="#334155" stroke-width="3"/>
+      <rect x="18" y="20" width="264" height="480" rx="30" fill="#0f172a"/>
+      <rect x="110" y="30" width="80" height="10" rx="5" fill="#1f2937"/>
+      <clipPath id="screenLoad"><rect x="18" y="56" width="264" height="230"/></clipPath>
+      <g clip-path="url(#screenLoad)">${usMap({ x: -150, y: 20, w: 460, h: 320, route: ROUTE, lineColor: '#0f172a' })}</g>
+      <rect x="36" y="300" width="228" height="120" rx="14" fill="#1e293b"/>
+      <text x="54" y="330" font-size="17" font-weight="600" fill="${FG}">In transit</text>
+      <text x="246" y="330" font-size="15" fill="${MUTED}" text-anchor="end">60% of the way</text>
+      <rect x="54" y="344" width="192" height="8" rx="4" fill="#334155"/>
+      <rect x="54" y="344" width="115" height="8" rx="4" fill="#3b82f6"/>
+      <text x="54" y="380" font-size="15" fill="${MUTED}">Estimated delivery</text>
+      <text x="54" y="404" font-size="18" font-weight="600" fill="${FG}">Atlanta, GA · 6:30 PM</text>
+      <text x="150" y="458" font-size="14" fill="${MUTED}" text-anchor="middle">Pickup · In transit · Delivered</text>
+    </g>
+  `),
   'og/og-invite.png': frame(`
     ${logo(64, 58, 52)}
     <text x="130" y="96" font-size="34" font-weight="700" fill="${FG}">Dispatch<tspan fill="${BRAND}">Desk</tspan></text>

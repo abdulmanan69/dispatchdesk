@@ -8,7 +8,7 @@ import { config } from '../config.js';
  */
 const SITE = 'DispatchDesk';
 const DEFAULT_DESC = 'The CRM and dispatch desk for truck dispatchers: generate carrier leads from the FMCSA census, call with Google Voice or your phone service, run sequences and follow-ups, and plan every truck’s next trip on a live map. Free plan, no card needed.';
-const IMG = { default: '/og/og-default.png', track: '/og/og-track.png', invite: '/og/og-invite.png' };
+const IMG = { default: '/og/og-default.png', track: '/og/og-track.png', load: '/og/og-load.png', invite: '/og/og-invite.png' };
 
 const PAGES = [
   { match: /^\/$/, title: `${SITE} · CRM and dispatch desk for truck dispatchers`, description: DEFAULT_DESC, sitemap: { path: '/', priority: '1.0' }, home: true },
@@ -25,7 +25,7 @@ const PAGES = [
   { match: /^\/terms\/?$/, title: `Terms of service · ${SITE}`, description: 'The terms for using DispatchDesk.', sitemap: { path: '/terms', priority: '0.2' } },
   { match: /^\/privacy\/?$/, title: `Privacy policy · ${SITE}`, description: 'How DispatchDesk handles your data.', sitemap: { path: '/privacy', priority: '0.2' } },
   { match: /^\/track\/.+/, title: `Trip check-in link · ${SITE}`, description: 'From your dispatcher. Open this on the phone in your truck to share your location and check in at pickup and delivery. Works on one phone, and you can stop anytime.', image: IMG.track, noindex: true, alt: 'Trip check-in link: share your location from the phone in your truck' },
-  { match: /^\/t\/.+/, title: `Load tracking · ${SITE}`, description: 'Live status and estimated arrival for one load, shared by the dispatcher.', image: IMG.track, noindex: true, alt: 'Load tracking link' },
+  { match: /^\/t\/.+/, title: `Load tracking · ${SITE}`, description: 'Live status and estimated arrival for one load, shared by the dispatcher.', image: IMG.load, noindex: true, alt: 'Load tracking link' },
   { match: /^\/portal\/.+/, title: `Carrier portal · ${SITE}`, description: 'Statements and documents from your dispatcher.', noindex: true },
   { match: /^\/invite\/.+/, title: `You are invited to a dispatch team · ${SITE}`, description: 'Join your team on DispatchDesk: shared pipeline, call queue, team board and leaderboard.', image: IMG.invite, noindex: true, alt: 'Invitation to a DispatchDesk team' },
   { match: /^\/(forgot-password|reset-password|verify-email|unsubscribe)\/?/, title: SITE, description: DEFAULT_DESC, noindex: true },
