@@ -65,6 +65,21 @@ describe('admin setup checklist', () => {
     await setSetting('eia.apiKey', prevEia || '');
   });
 
+  it('marks platform email done when a Brevo API key and From address are set (no SMTP host)', async () => {
+    const prev = { host: await getSetting('smtp.host'), from: await getSetting('smtp.from'), brevo: await getSetting('brevo.apiKey') };
+    await setSetting('smtp.host', '');
+    await setSetting('smtp.from', 'DispatchDesk <no-reply@example.com>');
+    await setSetting('brevo.apiKey', 'xkeysib-test-secret');
+    const res = await admin.agent.get('/api/admin/setup');
+    const item = res.body.items.find((i) => i.key === 'platform_email');
+    expect(item.status).toBe('done');
+    expect(item.detail || item.description || JSON.stringify(item)).toContain('Brevo API');
+    expect(JSON.stringify(res.body)).not.toContain('xkeysib-test-secret');
+    await setSetting('smtp.host', prev.host || '');
+    await setSetting('smtp.from', prev.from || '');
+    await setSetting('brevo.apiKey', prev.brevo || '');
+  });
+
   it('is admin-only', async () => {
     const u = await registerUser();
     expect((await u.agent.get('/api/admin/setup')).status).toBe(403);

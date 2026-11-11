@@ -33,7 +33,7 @@ export const STRIPE_WEBHOOK_EVENTS = [
 ];
 
 const KEYS = [
-  'smtp.host', 'smtp.port', 'smtp.user', 'smtp.pass', 'smtp.from', 'app.requireEmailVerification', 'app.registrationOpen',
+  'smtp.host', 'smtp.port', 'smtp.user', 'smtp.pass', 'smtp.from', 'brevo.apiKey', 'app.requireEmailVerification', 'app.registrationOpen',
   'stripe.secretKey', 'stripe.webhookSecret',
   'google.clientId', 'google.clientSecret', 'microsoft.clientId', 'microsoft.clientSecret',
   'eia.apiKey', 'fred.apiKey', 'usda.marsApiKey', 'ai.apiKey', 'ai.baseUrl', 'ai.model',
@@ -72,7 +72,9 @@ export async function buildChecklist(req) {
     }));
 
   // 2. Platform email
-  const smtpReady = set('smtp.host') && set('smtp.from');
+  // Ready with either SMTP (host + From) or a Brevo API key (+ From), the same rule sendSystemMail uses.
+  const viaBrevo = set('brevo.apiKey');
+  const smtpReady = (set('smtp.host') || viaBrevo) && set('smtp.from');
   const domain = mailDomain(s['smtp.from']);
   // Today's platform mail use (UTC day, all processes): failing sends show here instead of only in the logs.
   const mail = await platformMailStatus().catch(() => null);
@@ -80,16 +82,16 @@ export async function buildChecklist(req) {
     ? ` Today: ${mail.sent} of ${mail.limit} sent (${mail.reserve} kept for sign-in and reset mail)${mail.refused ? `, ${mail.refused} held back by the daily budget` : ''}${mail.failed ? `, ${mail.failed} failed${mail.lastError ? ` (last error: ${mail.lastError})` : ''}` : ''}.`
     : '';
   items.push(item('platform_email', 'Platform email (verification, password reset, invites)',
-    smtpReady ? (set('smtp.user') && set('smtp.pass') && !(mail?.failed && !mail?.sent) ? 'done' : 'partial') : 'todo',
+    smtpReady ? ((viaBrevo || (set('smtp.user') && set('smtp.pass'))) && !(mail?.failed && !mail?.sent) ? 'done' : 'partial') : 'todo',
     smtpReady
-      ? `Sending as ${s['smtp.from']} through ${s['smtp.host']}. Email verification is ${s['app.requireEmailVerification'] === 'true' ? 'required: unverified accounts can sign in and look around, but cannot make changes until they verify' : 'optional'}.${mailToday}`
+      ? `Sending as ${s['smtp.from']} through ${viaBrevo ? 'the Brevo API' : s['smtp.host']}. Email verification is ${s['app.requireEmailVerification'] === 'true' ? 'required: unverified accounts can sign in and look around, but cannot make changes until they verify' : 'optional'}.${mailToday}`
       : 'Not configured. Accounts work, but verification, password-reset and team-invite emails cannot be sent (admins can set temporary passwords in Users).', {
       required: true,
       mail,
       testService: 'smtp',
       settingsGroup: 'email',
       steps: [
-        '**Pick a provider.** Brevo (free, 300 emails/day): SMTP host `smtp-relay.brevo.com`, port `587`, secure off, login = your Brevo SMTP login, password = an SMTP key (Brevo → SMTP & API → SMTP keys).',
+        '**Pick a provider.** Brevo (free, 300 emails/day): paste a Brevo **API key** in System settings → Email (no SMTP key needed), or use SMTP host `smtp-relay.brevo.com`, port `587`, secure off, login = your Brevo SMTP login, password = an SMTP key (Brevo → SMTP & API → SMTP keys).',
         'Resend (free, 3,000 emails/month): host `smtp.resend.com`, port `465`, secure on, user `resend`, password = your API key.',
         'Gmail / Google Workspace: host `smtp.gmail.com`, port `465`, secure on, user = full address, password = an **app password** (needs 2-Step Verification). About 500 emails/day.',
         'Zoho Mail: `smtp.zoho.com`, `465`, secure on. Hostinger: `smtp.hostinger.com`, `465`, secure on. Use the mailbox address and password.',
