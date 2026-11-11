@@ -18,6 +18,8 @@ import { normDot, normMc, normPhone, dateOrNull } from '../carriers/normalize.js
  * the Broker / Carrier row (fmcsaSnapshot), so one lookup serves every page view of that row.
  */
 const TTL_MS = 6 * 60 * 60_000;
+// A snapshot made while the licensing dataset did not answer is kept only briefly, so the next view retries it.
+const RETRY_TTL_MS = 2 * 60_000;
 const MAX_ENTRIES = 2000;
 const TIMEOUT_MS = 12_000;
 const QC_BASE = 'https://mobile.fmcsa.dot.gov/qc/services';
@@ -140,8 +142,8 @@ export function bestCensusRow(rows) {
 const padDot = (d) => String(d).padStart(8, '0'); // the licensing dataset stores USDOT numbers as 8 digits
 
 /**
- * Licensing (L&I) rows for up to 200 USDOT and 200 MC numbers in one request. Best effort: [] when the dataset is
- * unreachable (the census facts still stand).
+ * Licensing (L&I) rows for up to 200 USDOT and 200 MC numbers in one request. Best effort: null when the dataset did
+ * not answer (the census facts still stand; callers retry sooner), [] when it answered with no rows.
  */
 export async function licensingRows({ dots = [], mcs = [] } = {}) {
   const d = [...new Set(dots.map(normDot).filter(Boolean))].slice(0, 200);
@@ -156,11 +158,15 @@ export async function licensingRows({ dots = [], mcs = [] } = {}) {
   try {
     const token = await getSetting('fmcsa.socrataAppToken');
     const res = await limited(() => timedFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) } }));
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[fmcsa] licensing dataset answered ${res.status}`);
+      return null;
+    }
     const rows = await res.json().catch(() => null);
-    return Array.isArray(rows) ? rows : [];
-  } catch {
-    return [];
+    return Array.isArray(rows) ? rows : null;
+  } catch (err) {
+    console.warn(`[fmcsa] licensing dataset unreachable: ${err.message}`);
+    return null;
   }
 }
 
@@ -196,13 +202,13 @@ export const qcConfigured = async () => !!(await getSetting('fmcsa.webKey'));
 export function cachedSnapshot(q) {
   const key = keyOf(q);
   const hit = key && cache.get(key);
-  return hit && Date.now() - hit.at < TTL_MS ? hit.value : null;
+  return hit && Date.now() - hit.at < (hit.ttl || TTL_MS) ? hit.value : null;
 }
 
-function remember(key, value) {
+function remember(key, value, ttl = TTL_MS) {
   cache.delete(key);
   if (cache.size >= MAX_ENTRIES) cache.delete(cache.keys().next().value);
-  cache.set(key, { at: Date.now(), value });
+  cache.set(key, { at: Date.now(), ttl, value });
 }
 
 /**
@@ -225,11 +231,12 @@ export async function lookupBroker({ mc, dot }, { fresh = false, now = new Date(
     const [qc, licRows] = row
       ? await Promise.all([qcCarrier(row.dot_number), licensingRows({ dots: [row.dot_number], mcs: rowMc ? [rowMc] : [] })])
       : [null, []];
-    const lic = row ? pickLicensing(licRows, { dot: row.dot_number, mc: rowMc }) : null;
+    const lic = row ? pickLicensing(licRows || [], { dot: row.dot_number, mc: rowMc }) : null;
     const snap = snapshotFrom(row, { qc, lic, query: { mc: normMc(mc), dot: normDot(dot) }, checkedAt: now });
-    remember(key, snap);
-    if (snap.found && snap.dot) remember(`dot:${snap.dot}`, snap);
-    if (snap.found && snap.mc) remember(`mc:${snap.mc}`, snap);
+    const ttl = row && licRows === null && !qc ? RETRY_TTL_MS : TTL_MS;
+    remember(key, snap, ttl);
+    if (snap.found && snap.dot) remember(`dot:${snap.dot}`, snap, ttl);
+    if (snap.found && snap.mc) remember(`mc:${snap.mc}`, snap, ttl);
     return snap;
   })().finally(() => inflight.delete(key));
   inflight.set(key, p);

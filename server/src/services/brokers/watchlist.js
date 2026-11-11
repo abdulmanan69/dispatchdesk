@@ -108,7 +108,7 @@ async function snapshotsFor(items, { useQc, delayMs, now }) {
   // Authority and bond status from the licensing dataset, in the same chunk sizes (no key, works from any country).
   const licDots = [...new Set(rows.map((r) => normDot(r.dot_number)).filter(Boolean))];
   const lic = [];
-  for (let i = 0; i < licDots.length; i += CENSUS_CHUNK) lic.push(...await licensingRows({ dots: licDots.slice(i, i + CENSUS_CHUNK) }));
+  for (let i = 0; i < licDots.length; i += CENSUS_CHUNK) lic.push(...((await licensingRows({ dots: licDots.slice(i, i + CENSUS_CHUNK) })) || []));
   const out = new Map();
   const qcByDot = new Map();
   let qcCalls = 0;

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { snapshotFrom, bestCensusRow, pickLicensing } from '../src/services/brokers/fmcsa.js';
+import { describe, it, expect, afterAll, vi } from 'vitest';
+import { snapshotFrom, bestCensusRow, pickLicensing, lookupBroker, setFmcsaFetch } from '../src/services/brokers/fmcsa.js';
 import { computeFlags } from '../src/services/brokers/flags.js';
 
 const NOW = new Date('2026-11-11T08:00:00Z');
+afterAll(() => { setFmcsaFetch(null); vi.restoreAllMocks(); });
 const census = (o = {}) => ({ dot_number: '2226453', legal_name: 'C H ROBINSON COMPANY INC', status_code: 'A', carship: 'S;B', docket1prefix: 'MC', docket1: '384859', docket1_status_code: 'A', add_date: '20111119', ...o });
 const lic = (o = {}) => ({ docket_number: 'MC384859', dot_number: '02226453', broker_stat: 'A', broker_app_pend: 'N', broker_rev_pend: 'N', common_stat: 'I', common_app_pend: 'N', contract_stat: 'N', contract_app_pend: 'N', bond_req: 'Y', bond_file: 'Y', bipd_file: '00000', min_cov_amount: '00000', ...o });
 
@@ -35,6 +36,31 @@ describe('broker authority and bond from the FMCSA licensing dataset', () => {
     const current = census();
     expect(bestCensusRow([old, current]).dot_number).toBe('2226453');
     expect(bestCensusRow([current, old]).dot_number).toBe('2226453');
+  });
+
+  it('retries soon (no 6-hour cache) when the licensing dataset did not answer, then caches the good answer', async () => {
+    let licensingUp = false;
+    let licCalls = 0;
+    setFmcsaFetch(async (url) => {
+      const u = String(url);
+      if (u.includes('6eyk-hxee')) {
+        licCalls += 1;
+        if (!licensingUp) throw new Error('timeout');
+        return { ok: true, status: 200, json: async () => [lic()] };
+      }
+      return { ok: true, status: 200, json: async () => [census()] };
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = await lookupBroker({ mc: '384859' });
+    expect(first.licensing).toBe(false);
+    vi.useFakeTimers({ now: Date.now() + 3 * 60_000, toFake: ['Date'] }); // past the 2-minute retry window
+    licensingUp = true;
+    const second = await lookupBroker({ mc: '384859' });
+    expect(second).toMatchObject({ licensing: true, brokerAuthority: 'active', bondOnFile: true });
+    const third = await lookupBroker({ mc: '384859' }); // good answer is cached
+    expect(third.licensing).toBe(true);
+    expect(licCalls).toBe(2);
+    vi.useRealTimers();
   });
 
   it('picks the licensing row for the MC docket first, then one with active broker authority', () => {
