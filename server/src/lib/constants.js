@@ -21,7 +21,8 @@ export const EQUIPMENT = [
   'dry_van', 'reefer', 'flatbed', 'step_deck', 'power_only', 'hotshot', 'box_truck', 'tanker', 'car_hauler', 'conestoga', 'lowboy', 'other',
 ];
 
-export const AUTHORITY_STATUSES = ['active', 'inactive', 'pending', 'unknown'];
+// Operating authority (FMCSA licensing). 'none' = no MC number: cannot haul for-hire interstate loads.
+export const AUTHORITY_STATUSES = ['active', 'inactive', 'pending', 'unknown', 'none'];
 // lumper_receipt, scale_ticket and fuel_receipt arrive from the driver link (routes/track.js) and from uploads.
 export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'voided_check', 'noa', 'invoice', 'other'];
 export const LOAD_STATUSES = ['planned', 'booked', 'in_transit', 'delivered', 'invoiced', 'paid', 'canceled'];

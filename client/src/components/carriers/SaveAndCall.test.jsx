@@ -53,6 +53,28 @@ describe('SaveAndCall', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it('asks before saving a carrier without active authority, and does not dial when declined', async () => {
+    post.mockResolvedValue({ items: [{ dotNumber: '8100003', id: null, status: 'inactive_authority', companyName: 'Fresh Authority LLC', authority: { status: 'inactive', label: 'Authority inactive (FMCSA licensing)' } }] });
+    confirm.mockResolvedValue(false);
+    renderIt(lead);
+    fireEvent.click(screen.getByText('(614) 555-0103'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Not saved: this carrier’s operating authority is not active.'));
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Authority is not active', confirmLabel: 'Save anyway' }));
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(dial).not.toHaveBeenCalled();
+  });
+
+  it('saves anyway with allowInactive when confirmed, then dials', async () => {
+    post.mockResolvedValueOnce({ items: [{ dotNumber: '8100003', id: null, status: 'inactive_authority', authority: { status: 'pending', label: 'Authority pending' } }] })
+      .mockResolvedValueOnce({ created: 1, items: [{ dotNumber: '8100003', id: 'c-new', status: 'created' }] });
+    confirm.mockResolvedValue(true);
+    dial.mockResolvedValue({ mode: 'link', attempt: { id: 'a1', carrier: null } });
+    renderIt(lead);
+    fireEvent.click(screen.getByText('(614) 555-0103'));
+    await waitFor(() => expect(dial).toHaveBeenCalledWith({ carrierId: 'c-new', phone: '6145550103' }));
+    expect(post).toHaveBeenLastCalledWith('/api/discovery/save', { dotNumbers: ['8100003'], allowInactive: true });
+  });
+
   it('uses the normal call button for carriers already in the CRM', () => {
     renderIt({ ...lead, existsInCrm: true, existingId: 'c-1' });
     expect(screen.getByText('call c-1')).toBeInTheDocument();

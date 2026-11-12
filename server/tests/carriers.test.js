@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { registerUser, prisma } from './helpers.js';
 import { clearCensusCache } from '../src/services/carriers/fmcsaCensus.js';
+import { setFmcsaFetch } from '../src/services/brokers/fmcsa.js';
+import { clearAuthorityCache } from '../src/services/carriers/authority.js';
+import { licensingFake } from './licensingFake.js';
 
 const CENSUS_ROW = {
   dot_number: '1234567', legal_name: 'ACME HAULING LLC', dba_name: 'ACME', phone: '6145550101', email_address: 'OPS@ACME.TEST',
@@ -20,8 +23,10 @@ describe('carriers CRUD and isolation', () => {
   beforeAll(async () => {
     A = await registerUser();
     B = await registerUser();
+    setFmcsaFetch(licensingFake().fetch); // FMCSA licensing: active authority for every MC
   });
-  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); });
+  afterAll(() => setFmcsaFetch(null));
+  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); clearAuthorityCache(); });
 
   it('creates a carrier with normalised fields and time zone', async () => {
     const res = await A.agent.post('/api/carriers').send({

@@ -64,4 +64,30 @@ describe('Find carriers page', () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/discovery/save', { dotNumbers: ['1000003'], sequenceId: null }));
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ confirmLabel: 'Save anyway' }));
   });
+
+  it('shows the authority badge and how many carriers were hidden for inactive authority', async () => {
+    get.mockImplementation(async (url) => {
+      if (url === '/api/discovery/search') return { ...RESULTS, hiddenInactive: 3, items: [rec('1000001', { authority: { status: 'active', label: 'Authority active · insurance on file' } }), rec('1000004', { authorityStatus: 'pending' })] };
+      return { items: [] };
+    });
+    renderIt();
+    fireEvent.click(screen.getByRole('button', { name: /Find leads/ }));
+    expect(await screen.findByText(/3 carriers hidden: authority not active/)).toBeInTheDocument();
+    expect(screen.getAllByText('Authority pending').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Active')[0]).toHaveAttribute('title', 'Authority active · insurance on file');
+  });
+
+  it('asks "Authority is not active. Save anyway?" for a carrier the server refused, then saves it with allowInactive', async () => {
+    confirm.mockResolvedValue(true);
+    post.mockResolvedValueOnce({ created: 0, skipped: 0, limited: 0, notFound: 0, inactiveAuthority: 1, unverified: 0, ids: [], items: [{ dotNumber: '1000001', id: null, status: 'inactive_authority', companyName: 'CARRIER 1000001 LLC', authority: { status: 'inactive', label: 'No insurance on file' } }] })
+      .mockResolvedValueOnce({ created: 1, skipped: 0, limited: 0, notFound: 0, inactiveAuthority: 0, unverified: 0, ids: ['c1'], items: [{ dotNumber: '1000001', id: 'c1', status: 'created' }] });
+    renderIt();
+    fireEvent.click(screen.getByRole('button', { name: /Find leads/ }));
+    fireEvent.click(await screen.findByLabelText('Select CARRIER 1000001 LLC'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save 1 to my list' }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Authority is not active', confirmLabel: 'Save anyway', message: expect.stringContaining('CARRIER 1000001 LLC: No insurance on file') }));
+    expect(post).toHaveBeenLastCalledWith('/api/discovery/save', { dotNumbers: ['1000001'], sequenceId: null, allowInactive: true });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved 1 carrier'));
+  });
 });

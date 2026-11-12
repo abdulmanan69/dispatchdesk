@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { registerUser, prisma } from './helpers.js';
 import { clearCensusCache } from '../src/services/carriers/fmcsaCensus.js';
+import { setFmcsaFetch } from '../src/services/brokers/fmcsa.js';
+import { clearAuthorityCache } from '../src/services/carriers/authority.js';
 import { scoreLead, runDueGenerators } from '../src/services/leadgen.js';
+import { licensingFake } from './licensingFake.js';
 
 const row = (dot, extra = {}) => ({
   dot_number: String(dot), legal_name: `CARRIER ${dot} LLC`, phone: `61455${String(dot).padStart(5, '0').slice(-5)}`, email_address: `ops${dot}@carrier.test`,
@@ -30,8 +33,11 @@ describe('lead generator', () => {
   beforeAll(async () => {
     A = await registerUser();
     B = await registerUser();
+    // Every MC answers with active authority and insurance on file (authority rules: carrier-authority.test.js).
+    setFmcsaFetch(licensingFake().fetch);
   });
-  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); });
+  afterAll(() => setFmcsaFetch(null));
+  afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); clearAuthorityCache(); });
 
   it('scores leads from real fields with reasons', () => {
     const s = scoreLead({ phone: '1', email: 'a@b.c', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date(), fleetSize: 3 });

@@ -19,7 +19,8 @@ export async function status() {
   };
 }
 
-async function get(path, fetchImpl = globalThis.fetch) {
+/** One QCMobile GET (null on 404). Throws an HttpError when no webKey is set or the service fails. Used by the profile too. */
+export async function get(path, fetchImpl = globalThis.fetch) {
   const key = await getSetting('fmcsa.webKey');
   if (!key) throw new HttpError(503, 'FMCSA QCMobile is not configured (missing webKey).');
   let res;

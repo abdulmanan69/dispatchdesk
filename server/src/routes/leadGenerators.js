@@ -6,7 +6,7 @@ import { requirePermission } from '../middleware/auth.js';
 import { assertLimit, effectivePlan, usage } from '../lib/plans.js';
 import { STAGE_KEYS } from '../lib/constants.js';
 import { CARGO_LABELS } from '../services/carriers/fmcsaCensus.js';
-import { parseCriteria, previewLeads, runGenerator, nextRunFrom } from '../services/leadgen.js';
+import { parseCriteria, previewLeads, runGenerator, nextRunFrom, inactiveAuthorityFrom } from '../services/leadgen.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -94,6 +94,8 @@ const shape = (g) => ({
 const runShape = (x) => ({
   id: x.id, generatorId: x.generatorId, trigger: x.trigger, status: x.status, scanned: x.scanned, created: x.created,
   skipped: x.skipped, belowScore: x.belowScore, message: x.message, createdAt: x.createdAt, carrierIds: JSON.parse(x.carrierIds || '[]'),
+  // Candidates dropped because FMCSA licensing does not show active authority (stored in the message, no column).
+  inactiveAuthority: x.inactiveAuthority ?? inactiveAuthorityFrom(x.message),
 });
 
 async function withLists(userId, gens) {
@@ -185,7 +187,7 @@ r.post('/:id/run', ah(async (req, res) => {
   const shaped = runShape(run);
   const carriers = shaped.carrierIds.length ? await prisma.carrier.findMany({
     where: { id: { in: shaped.carrierIds }, ownerId: req.user.id },
-    select: { id: true, companyName: true, dotNumber: true, mcNumber: true, state: true, city: true, phone: true, email: true, fleetSize: true, priority: true },
+    select: { id: true, companyName: true, dotNumber: true, mcNumber: true, state: true, city: true, phone: true, email: true, fleetSize: true, priority: true, authorityStatus: true, operatingStatus: true },
   }) : [];
   res.json({ run: shaped, carriers, entitlements: await entitlements(req.user) });
 }));

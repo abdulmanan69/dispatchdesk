@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Crosshair, Eye, ListOrdered, Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Crosshair, Eye, ListOrdered, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../../components/Toast.jsx';
 import { US_STATES, dateTime, label, relative, phoneFmt } from '../../lib/format.js';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
+import { AuthorityBadge } from '../../components/carriers/shared.jsx';
 import {
   Badge, Button, Card, Checkbox, DataTable, EmptyState, Field, Input, PageHeader, QueryState, Select, Switch, cx,
 } from '../../components/ui.jsx';
@@ -16,6 +17,8 @@ const FLEET = ['', '1', '2', '3', '5', '10', '15', '25', '50', '100'];
 const AGE = [['', 'Any'], ['1', '1 month'], ['3', '3 months'], ['6', '6 months'], ['12', '1 year'], ['24', '2 years'], ['36', '3 years'], ['60', '5 years']];
 const BATCH = [10, 25, 50, 100, 200];
 const SCORES = [[0, 'Any score'], [40, '40+'], [60, '60+ (contactable)'], [80, '80+ (best fit)']];
+/** "12 skipped: authority not active" (carriers FMCSA licensing does not show with active authority). */
+const inactiveText = (n) => `${n} skipped: authority not active`;
 const STATUS = { ok: ['green', 'Completed'], limited: ['amber', 'Plan limit'], exhausted: ['gray', 'No more matches'], error: ['red', 'Failed'] };
 
 const BLANK = {
@@ -144,12 +147,12 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
           <Checkbox label="Has a phone number" checked={f.requirePhone} onChange={set('requirePhone')} />
           <Checkbox label="Has an email" checked={f.requireEmail} onChange={set('requireEmail')} />
           <Checkbox label="Has MC authority" checked={f.requireMc} onChange={set('requireMc')} />
-          <Checkbox label="USDOT active" checked={f.activeOnly} onChange={set('activeOnly')} />
+          <Checkbox label="Active authority only (FMCSA licensing)" checked={f.activeOnly} onChange={set('activeOnly')} />
         </div>
 
         <div className="grid gap-4 border-t border-line pt-5 sm:grid-cols-4">
           <Field label="Leads per run"><Select value={f.batchSize} onChange={set('batchSize')}>{BATCH.map((v) => <option key={v} value={v}>{v}</option>)}</Select></Field>
-          <Field label="Minimum lead score" hint="Phone, email, MC, new authority, small fleet"><Select value={f.minScore} onChange={set('minScore')}>{SCORES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
+          <Field label="Minimum lead score" hint="Phone, email, MC, active authority, new authority, small fleet"><Select value={f.minScore} onChange={set('minScore')}>{SCORES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
           <Field label="Pipeline stage"><Select value={f.stageKey} onChange={set('stageKey')}><option value="lead">Lead</option><option value="prospecting">Prospecting</option></Select></Field>
           <Field label="Add to prospect list">
             <Select value={f.listId} onChange={set('listId')}>
@@ -181,17 +184,22 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
         <div ref={previewRef} className="mt-6 scroll-mt-4 border-t border-line pt-5">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-sm font-medium">Preview · {preview.items.length} new match{preview.items.length === 1 ? '' : 'es'} on the first page</h3>
-            <span className="text-xs text-muted">{preview.scanned} scanned · {preview.skipped} already in CRM · {preview.belowScore} below score · {preview.source}</span>
+            <span className="text-xs text-muted">{preview.scanned} scanned · {preview.skipped} already in CRM · {preview.belowScore} below score{preview.inactiveAuthority ? ` · ${inactiveText(preview.inactiveAuthority)}` : ''} · {preview.source}</span>
           </div>
           {preview.note && <p className="mb-2 text-xs text-muted">{preview.note}</p>}
-          <DataTable dense rows={preview.items.map((r) => ({ ...r, id: r.dotNumber }))} empty={<p className="py-6 text-center text-sm text-muted">No new carriers match. Add states or loosen the filters.</p>}
-            columns={[
-              { key: 'score', header: 'Score', render: (r) => <span title={r.scoreReasons.join(', ')}><ScoreBadge score={r.score} /></span> },
-              { key: 'companyName', header: 'Carrier', render: (r) => <div className="min-w-40"><div className="font-medium">{r.companyName}</div><div className="font-mono text-xs text-muted">USDOT {r.dotNumber}{r.mcNumber ? ` · MC ${r.mcNumber}` : ''}</div></div> },
-              { key: 'state', header: 'Location', render: (r) => [r.city, r.state].filter(Boolean).join(', ') },
-              { key: 'fleetSize', header: 'Trucks', render: (r) => <span className="tabular">{r.fleetSize ?? '—'}</span> },
-              { key: 'phone', header: 'Phone', render: (r) => (r.phone ? phoneFmt(r.phone) : '—') },
-            ]} />
+          {preview.authorityError ? (
+            <p role="alert" className="flex items-start gap-2 rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-sm"><AlertTriangle className="mt-0.5 size-4 shrink-0 text-c-amber" aria-hidden />{preview.authorityError}</p>
+          ) : (
+            <DataTable dense rows={preview.items.map((r) => ({ ...r, id: r.dotNumber }))} empty={<p className="py-6 text-center text-sm text-muted">No new carriers match. Add states or loosen the filters.</p>}
+              columns={[
+                { key: 'score', header: 'Score', render: (r) => <span title={r.scoreReasons.join(', ')}><ScoreBadge score={r.score} /></span> },
+                { key: 'companyName', header: 'Carrier', render: (r) => <div className="min-w-40"><div className="font-medium">{r.companyName}</div><div className="font-mono text-xs text-muted">USDOT {r.dotNumber}{r.mcNumber ? ` · MC ${r.mcNumber}` : ''}</div></div> },
+                { key: 'state', header: 'Location', render: (r) => [r.city, r.state].filter(Boolean).join(', ') },
+                { key: 'fleetSize', header: 'Trucks', render: (r) => <span className="tabular">{r.fleetSize ?? '—'}</span> },
+                { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /> },
+                { key: 'phone', header: 'Phone', render: (r) => (r.phone ? phoneFmt(r.phone) : '—') },
+              ]} />
+          )}
         </div>
       )}
     </Modal>
@@ -214,7 +222,7 @@ function RunResult({ result, onClose }) {
       <EnrollModal open={enrolling} carrierIds={ids} onClose={() => setEnrolling(false)} />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Badge color={color}>{text}</Badge>
-        <span className="text-muted">{result.run.scanned} census records scanned · {result.run.skipped} already in CRM · {result.run.belowScore} below score</span>
+        <span className="text-muted">{result.run.scanned} census records scanned · {result.run.skipped} already in CRM · {result.run.belowScore} below score{result.run.inactiveAuthority ? ` · ${inactiveText(result.run.inactiveAuthority)}` : ''}</span>
       </div>
       {result.run.message && <p className="mb-4 text-sm text-fg-2">{result.run.message}</p>}
       {result.carriers.length > 0 && (
@@ -223,6 +231,7 @@ function RunResult({ result, onClose }) {
           { key: 'dotNumber', header: 'USDOT', render: (c) => <span className="font-mono text-xs">{c.dotNumber}</span> },
           { key: 'state', header: 'Location', render: (c) => [c.city, c.state].filter(Boolean).join(', ') },
           { key: 'fleetSize', header: 'Trucks', render: (c) => <span className="tabular">{c.fleetSize ?? '—'}</span> },
+          { key: 'authorityStatus', header: 'Authority', render: (c) => <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /> },
           { key: 'priority', header: 'Priority', render: (c) => (c.priority >= 2 ? <Badge color="brand">Hot</Badge> : c.priority === 1 ? <Badge color="green">High</Badge> : <span className="text-muted">Normal</span>) },
         ]} />
       )}
@@ -256,7 +265,7 @@ function GeneratorCard({ g, cargoLabels, entitlements, onEdit, onRun, running })
         <dt className="text-muted">Fleet</dt><dd>{fleetText(c)}</dd>
         <dt className="text-muted">Authority</dt><dd>{ageText(c)}</dd>
         <dt className="text-muted">Cargo</dt><dd className="truncate" title={(c.cargo || []).map((k) => cargoLabels[k]).join(', ')}>{c.cargo?.length ? c.cargo.map((k) => cargoLabels[k] || k).join(', ') : 'Any'}</dd>
-        <dt className="text-muted">Requires</dt><dd>{[c.requirePhone && 'phone', c.requireEmail && 'email', c.requireMc && 'MC'].filter(Boolean).join(', ') || 'Nothing'}</dd>
+        <dt className="text-muted">Requires</dt><dd>{[c.requirePhone && 'phone', c.requireEmail && 'email', c.requireMc && 'MC', c.activeOnly !== false && 'active authority'].filter(Boolean).join(', ') || 'Nothing'}</dd>
         <dt className="text-muted">Each run</dt><dd>{g.batchSize} leads · score {g.minScore}+ · {label(g.stageKey)}</dd>
         <dt className="text-muted">List</dt><dd className="truncate">{g.list?.name || 'None'}</dd>
         <dt className="text-muted">Sequence</dt><dd className="truncate">{g.sequence ? <Link to={`/app/sequences/${g.sequence.id}`} className="hover:underline">{g.sequence.name}</Link> : 'None'}</dd>
@@ -317,7 +326,7 @@ export default function LeadGenerator() {
               <Card>
                 <EmptyState icon={Crosshair} title="No generators yet"
                   action={<Button icon={Plus} disabled={atLimit} onClick={() => setEditing('new')}>Create your first generator</Button>}>
-                  Pick states, fleet size, authority age and cargo. Each run pulls carriers from the public FMCSA Census, skips anyone already in your CRM, scores them, and adds the best to your pipeline.
+                  Pick states, fleet size, authority age and cargo. Each run pulls carriers from the public FMCSA Census, skips anyone already in your CRM or without active operating authority (FMCSA licensing), scores them, and adds the best to your pipeline.
                 </EmptyState>
               </Card>
             ) : (

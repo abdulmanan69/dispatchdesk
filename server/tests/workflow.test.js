@@ -1,5 +1,5 @@
 // Find leads -> add to sequence -> Start (dialer session) -> call -> email -> skip text.
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 
 const mail = vi.hoisted(() => ({
   verify: vi.fn(async () => true),
@@ -11,6 +11,8 @@ vi.mock('nodemailer', () => {
 });
 
 const { registerUser, prisma } = await import('./helpers.js');
+const { setFmcsaFetch } = await import('../src/services/brokers/fmcsa.js');
+const { licensingFake } = await import('./licensingFake.js');
 
 const CENSUS_ROW = {
   dot_number: '3456789', legal_name: 'RIVERBEND FREIGHT LLC', phone: '6145550199', email_address: 'ops@riverbend.test',
@@ -23,7 +25,9 @@ describe('find leads to dialer workflow', () => {
   beforeAll(async () => {
     A = await registerUser({ name: 'Dana Ruiz' });
     B = await registerUser();
+    setFmcsaFetch(licensingFake().fetch); // saving re-checks operating authority with FMCSA licensing
   });
+  afterAll(() => setFmcsaFetch(null));
   afterEach(() => vi.unstubAllGlobals());
 
   it('text steps need a message', async () => {

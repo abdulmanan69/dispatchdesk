@@ -530,6 +530,8 @@ r.post('/:id/enrich', ah(async (req, res) => {
   for (const f of FIELDS) {
     const to = record[f];
     if (to == null || to === '') continue;
+    // 'unknown' means FMCSA licensing did not answer: keep the authority on file instead of erasing it.
+    if (f === 'authorityStatus' && to === 'unknown') continue;
     const from = carrier[f];
     const same = from instanceof Date ? to instanceof Date && from.getTime() === to.getTime() : from === to;
     if (!same) { changes[f] = { from: from ?? null, to }; data[f] = to; }

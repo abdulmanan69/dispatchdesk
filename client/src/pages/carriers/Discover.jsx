@@ -9,6 +9,7 @@ import { Badge, Button, Card, Checkbox, DataTable, EmptyState, ErrorState, Field
 import { useConfirm } from '../../components/Modal.jsx';
 import { AuthorityBadge, equipmentLabel } from '../../components/carriers/shared.jsx';
 import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
+import { saveCensusLeads } from '../../components/carriers/saveLeads.js';
 
 const INITIAL = { state: '', city: '', name: '', dot: '', mc: '', minPowerUnits: '', maxPowerUnits: '', authorityAgeMinMonths: '', authorityAgeMaxMonths: '', activeOnly: true, hasMc: true, hasEmail: false, order: 'newest' };
 const LIMIT = 50;
@@ -43,8 +44,9 @@ export default function Discover() {
     retry: false,
   });
 
-  const save = useApiMutation((dots) => api.post('/api/discovery/save', { dotNumbers: dots, sequenceId: sequenceId || null }), {
-    success: (d) => `Saved ${d.created} carrier${d.created === 1 ? '' : 's'}${d.sequence ? ` · ${d.enrolled} added to ${d.sequence.name}` : ''}${d.skipped ? ` · ${d.skipped} already in your list` : ''}${d.limited ? ` · ${d.limited} over plan limit` : ''}${d.notFound ? ` · ${d.notFound} not found` : ''}`,
+  // The server re-checks operating authority; carriers without active authority need "Save anyway".
+  const save = useApiMutation((dots) => saveCensusLeads({ dots, sequenceId, confirm }), {
+    success: (d) => `Saved ${d.created} carrier${d.created === 1 ? '' : 's'}${d.sequence ? ` · ${d.enrolled} added to ${d.sequence.name}` : ''}${d.skipped ? ` · ${d.skipped} already in your list` : ''}${d.limited ? ` · ${d.limited} over plan limit` : ''}${d.notFound ? ` · ${d.notFound} not found` : ''}${d.inactiveAuthority ? ` · ${d.inactiveAuthority} not saved: authority not active` : ''}${d.unverified ? ` · ${d.unverified} not saved: authority not verified` : ''}`,
     invalidate: [['discovery', 'search'], ['discovery', 'lookup'], ['carriers'], ['pipeline'], ['sequences'], ['queue'], ['billing']],
     onSuccess: (d) => { setSelected(new Set()); if (d.sequence && d.enrolled) setEnrolled({ ...d.sequence, count: d.enrolled }); },
   });
@@ -86,7 +88,7 @@ export default function Discover() {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <span className="min-w-0 break-words font-medium">{r.companyName}</span>
-          <span className="shrink-0"><AuthorityBadge status={r.authorityStatus} /></span>
+          <span className="shrink-0"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /></span>
         </div>
         <div className="mt-0.5 text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
         <div className="text-xs text-muted">
@@ -115,7 +117,8 @@ export default function Discover() {
     { key: 'loc', header: 'Location', render: (r) => <span className="whitespace-nowrap">{[r.city, r.state].filter(Boolean).join(', ')}</span> },
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'equipment', header: 'Equipment*', render: (r) => <span className="text-[13px]">{equipmentLabel(r.equipment)}</span> },
-    { key: 'authorityStatus', header: 'USDOT status', render: (r) => <AuthorityBadge status={r.authorityStatus} /> },
+    // Operating authority from FMCSA licensing (not the census USDOT status).
+    { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
     { key: 'authorityDate', header: 'Registered', render: (r) => <span className="whitespace-nowrap text-[13px]">{date(r.authorityDate)}</span> },
     { key: 'crm', header: '', render: crmStatus },
   ];
@@ -153,7 +156,7 @@ export default function Discover() {
               </div>
               <Field label="Order"><Select value={form.order} onChange={set('order')}><option value="newest">Newest registrations first</option><option value="dot">USDOT number</option></Select></Field>
               <div className="space-y-1.5">
-                <Checkbox label="Active USDOT only" checked={form.activeOnly} onChange={set('activeOnly')} />
+                <Checkbox label="Active authority only" checked={form.activeOnly} onChange={set('activeOnly')} />
                 <Checkbox label="Has MC number (for-hire)" checked={form.hasMc} onChange={set('hasMc')} />
                 <Checkbox label="Has email on file" checked={form.hasEmail} onChange={set('hasEmail')} />
               </div>
@@ -175,7 +178,8 @@ export default function Discover() {
                 <p className="text-xs text-muted tabular">DOT {look.data.record.dotNumber}{look.data.record.mcNumber && ` · MC ${look.data.record.mcNumber}`}</p>
                 <p><SaveAndCall record={look.data.record} /> · {[look.data.record.city, look.data.record.state].filter(Boolean).join(', ')}</p>
                 {look.data.record.teamClaims?.length > 0 && <p className="text-xs text-c-amber">{claimText(look.data.record.teamClaims)}</p>}
-                <p className="flex items-center gap-2"><AuthorityBadge status={look.data.record.authorityStatus} /> {look.data.record.fleetSize ?? '?'} trucks</p>
+                <p className="flex flex-wrap items-center gap-2"><AuthorityBadge status={look.data.record.authorityStatus} detail={look.data.record.authority?.label} /> {look.data.record.fleetSize ?? '?'} trucks</p>
+                {look.data.record.operatingStatus && <p className="text-xs text-muted">{look.data.record.operatingStatus}</p>}
                 <p className="text-xs text-muted">Source: {look.data.sources.join(' + ')} · retrieved {dateTime(look.data.retrievedAt)}</p>
                 {look.data.record.existsInCrm
                   ? <Button size="sm" variant="secondary" to={`/app/carriers/${look.data.record.existingId}`}>Open in CRM</Button>
@@ -217,11 +221,16 @@ export default function Discover() {
           ) : (
             <>
               {results.data.note && <p className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-amber-700"><AlertTriangle className="size-3.5" />{results.data.note}</p>}
+              {results.data.authorityError && <p role="status" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-c-amber"><AlertTriangle className="size-3.5 shrink-0" aria-hidden />{results.data.authorityError}</p>}
+              {results.data.hiddenInactive > 0 && (
+                <p role="status" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-muted"><Info className="size-3.5 shrink-0" aria-hidden />
+                  {results.data.hiddenInactive} carrier{results.data.hiddenInactive === 1 ? '' : 's'} hidden: authority not active. Untick “Active authority only” to see {results.data.hiddenInactive === 1 ? 'it' : 'them'}.</p>
+              )}
               <DataTable dense columns={columns} rows={rows} selected={selected} mobileRow={mobileRow}
                 onSelect={(s) => setSelected(new Set([...s].filter((id) => selectable.has(id))))}
                 empty={<EmptyState title="No carriers match">Widen the filters — e.g. remove the city or fleet-size limits.</EmptyState>} />
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-2.5 text-xs text-muted">
-                <span className="flex items-center gap-1.5"><Info className="size-3.5" />*Equipment is inferred from FMCSA cargo classes only where unambiguous (e.g. refrigerated food → reefer); otherwise blank. USDOT status is registration status, not MC operating authority — enable FMCSA QCMobile for live authority.</span>
+                <span className="flex items-center gap-1.5"><Info className="size-3.5 shrink-0" />*Equipment is inferred from FMCSA cargo classes only where unambiguous (e.g. refrigerated food → reefer); otherwise blank. Authority comes from FMCSA licensing (L&amp;I and Motus): active means active operating authority with liability insurance on file.</span>
                 <span className="flex items-center gap-2">
                   <Button size="sm" variant="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIMIT))}>Previous</Button>
                   <span className="tabular">{offset + 1}–{offset + items.length}</span>

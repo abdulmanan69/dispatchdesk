@@ -10,7 +10,7 @@ import { useConfirm } from '../../components/Modal.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
 import ReadinessReport from '../../components/carriers/ReadinessReport.jsx';
-import { useSequences } from '../../components/carriers/shared.jsx';
+import { AuthorityBadge, useSequences } from '../../components/carriers/shared.jsx';
 import { EQUIPMENT_FROM_CARGO, WINDOWS, ageLabel, claimSummary, rowStatus } from './newAuthority.js';
 
 const LIMIT = 50;
@@ -100,7 +100,10 @@ export default function NewAuthority() {
       </div>
     ) },
     { key: 'authorityDate', header: 'Registered', render: (r) => <span className="whitespace-nowrap text-[13px]"><span className="tabular">{date(r.authorityDate)}</span><span className="block text-xs text-muted">{ageLabel(r.ageDays)}</span></span> },
-    { key: 'phone', header: 'Phone', render: (r) => <SaveAndCall record={r} /> },
+    // Pending authority is expected here (new carriers), so calling a pending carrier saves it without asking.
+    { key: 'phone', header: 'Phone', render: (r) => <SaveAndCall record={r} allowInactive={r.authorityStatus === 'pending'} /> },
+    // Operating authority from FMCSA licensing. Shown, never filtered: new carriers are often still pending.
+    { key: 'authority', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
     { key: 'loc', header: 'Location', render: (r) => <span className="text-[13px]">{[r.city, r.state].filter(Boolean).join(', ')}</span> },
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'crm', header: 'Status', render: status },
@@ -180,10 +183,11 @@ export default function NewAuthority() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-2"><span className="truncate font-medium">{r.companyName}</span>{status(r)}</div>
                       <div className="text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`} · {ageLabel(r.ageDays)}</div>
+                      <div className="mt-1"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /></div>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 pl-7 text-[13px]">
-                    <SaveAndCall record={r} />
+                    <SaveAndCall record={r} allowInactive={r.authorityStatus === 'pending'} />
                     <Button size="sm" variant="ghost" icon={ClipboardCheck} onClick={() => setReadiness(r.dotNumber)}>Readiness</Button>
                     {!r.existsInCrm && <Button size="sm" variant="secondary" icon={UserPlus} disabled={adding} onClick={() => claim([r.dotNumber])}>Add</Button>}
                   </div>
@@ -191,7 +195,7 @@ export default function NewAuthority() {
               )}
               empty={<EmptyState title="No carriers in this window">The census may not have records this recent yet{q.data.newestRecord ? ` (newest in ${state}: ${date(q.data.newestRecord)})` : ''}. Try a wider window or another state.</EmptyState>} />
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-2.5 text-xs text-muted">
-              <span className="flex min-w-0 items-start gap-1.5"><Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />Registered is the USDOT add date in the FMCSA census; the MC grant can come later. Equipment is inferred from the census cargo classes. Calling an unsaved carrier saves it first so the call is logged.</span>
+              <span className="flex min-w-0 items-start gap-1.5"><Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />Registered is the USDOT add date in the FMCSA census; the MC grant can come later. Authority is from FMCSA licensing: active means active authority with insurance on file. Equipment is inferred from the census cargo classes. Calling an unsaved carrier saves it first so the call is logged.</span>
               <span className="flex items-center gap-2">
                 <Button size="sm" variant="secondary" disabled={offset === 0} onClick={() => set({ offset: Math.max(0, offset - LIMIT) })}>Previous</Button>
                 <span className="tabular">{items.length ? `${offset + 1}–${offset + items.length}` : '0'}</span>

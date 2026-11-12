@@ -24,6 +24,7 @@ const MAX_ENTRIES = 2000;
 const TIMEOUT_MS = 12_000;
 const QC_BASE = 'https://mobile.fmcsa.dot.gov/qc/services';
 export const LICENSING_URL = 'https://data.transportation.gov/resource/6eyk-hxee.json';
+export const MOTUS_URL = 'https://data.transportation.gov/resource/inys-ebih.json';
 const cache = new Map(); // key -> { at, value }
 const inflight = new Map(); // key -> Promise
 let fetchOverride = null;
@@ -157,8 +158,38 @@ export function snapshotFromLicensingOnly(lic, { query = {}, checkedAt = new Dat
 const padDot = (d) => String(d).padStart(8, '0'); // the licensing dataset stores USDOT numbers as 8 digits
 
 /**
+ * One SODA request to a data.transportation.gov dataset, through the per-process limiter, with the Socrata app token
+ * when one is set. Rows, or null when the dataset did not answer. An answer that fills the whole $limit may be cut
+ * off, so it counts as no answer too (a missing row must never read as "no authority").
+ */
+async function sodaRows(base, where, limit, name) {
+  const url = new URL(base);
+  url.searchParams.set('$where', where);
+  url.searchParams.set('$limit', String(limit));
+  try {
+    const token = await getSetting('fmcsa.socrataAppToken');
+    const res = await limited(() => timedFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) } }));
+    if (!res.ok) {
+      console.warn(`[fmcsa] ${name} answered ${res.status}`);
+      return null;
+    }
+    const rows = await res.json().catch(() => null);
+    if (!Array.isArray(rows)) return null;
+    if (rows.length >= limit) {
+      console.warn(`[fmcsa] ${name} answer may be cut off at ${limit} rows`);
+      return null;
+    }
+    return rows;
+  } catch (err) {
+    console.warn(`[fmcsa] ${name} unreachable: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Licensing (L&I) rows for up to 200 USDOT and 200 MC numbers in one request. Best effort: null when the dataset did
  * not answer (the census facts still stand; callers retry sooner), [] when it answered with no rows.
+ * The legacy L&I dataset does not hold carriers registered in FMCSA's newer Motus system: see motusRows().
  */
 export async function licensingRows({ dots = [], mcs = [] } = {}) {
   const d = [...new Set(dots.map(normDot).filter(Boolean))].slice(0, 200);
@@ -167,22 +198,24 @@ export async function licensingRows({ dots = [], mcs = [] } = {}) {
   const parts = [];
   if (d.length) parts.push(`dot_number in(${d.map((x) => `'${padDot(x)}'`).join(',')})`);
   if (m.length) parts.push(`docket_number in(${m.map((x) => `'MC${x}'`).join(',')})`);
-  const url = new URL(LICENSING_URL);
-  url.searchParams.set('$where', parts.join(' OR '));
-  url.searchParams.set('$limit', String(Math.min(2000, (d.length + m.length) * 5)));
-  try {
-    const token = await getSetting('fmcsa.socrataAppToken');
-    const res = await limited(() => timedFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) } }));
-    if (!res.ok) {
-      console.warn(`[fmcsa] licensing dataset answered ${res.status}`);
-      return null;
-    }
-    const rows = await res.json().catch(() => null);
-    return Array.isArray(rows) ? rows : null;
-  } catch (err) {
-    console.warn(`[fmcsa] licensing dataset unreachable: ${err.message}`);
-    return null;
-  }
+  return sodaRows(LICENSING_URL, parts.join(' OR '), Math.min(5000, (d.length + m.length) * 5), 'licensing dataset');
+}
+
+/**
+ * FMCSA Motus "Carrier" authority rows (data.transportation.gov inys-ebih, updated daily, no key) for up to 200 USDOT
+ * and 200 MC numbers in one request: authorities registered in the newer Motus system, which the legacy L&I dataset
+ * (licensingRows) does not contain. One row per docket and authority type (op_auth_type, op_auth_status 'Active' |
+ * 'Pending' | 'Inactive' | 'Withdrawn', bipd_file in dollars). usdot_number is not zero-padded here.
+ * null when the dataset did not answer, [] when it answered with no rows.
+ */
+export async function motusRows({ dots = [], mcs = [] } = {}) {
+  const d = [...new Set(dots.map(normDot).filter(Boolean))].slice(0, 200);
+  const m = [...new Set(mcs.map(normMc).filter(Boolean))].slice(0, 200);
+  if (!d.length && !m.length) return [];
+  const parts = [];
+  if (d.length) parts.push(`usdot_number in(${d.map((x) => `'${x}'`).join(',')})`);
+  if (m.length) parts.push(`docket_number in(${m.map((x) => `'MC${x}'`).join(',')})`);
+  return sodaRows(MOTUS_URL, parts.join(' OR '), Math.min(5000, (d.length + m.length) * 8), 'Motus carrier dataset');
 }
 
 /** The licensing row that describes this company: its MC docket first, then a docket with active broker authority. */

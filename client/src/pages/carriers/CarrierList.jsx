@@ -13,7 +13,7 @@ import CarrierForm from '../../components/carriers/CarrierForm.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
 import BulkEmailModal from '../../components/carriers/BulkEmailModal.jsx';
 import { SELECT_ALL_CAP, bulkFilter, bulkTarget, selectAllState } from '../../components/carriers/bulkSelection.js';
-import { AuthorityBadge, PhoneLink, ResourceLinks, STAGES, StageBadge, TagList, equipmentLabel, rememberCarrierNav, useAssignees, useProspectLists, useTags } from '../../components/carriers/shared.jsx';
+import { AUTHORITY_FILTERS, AuthorityBadge, PhoneLink, ResourceLinks, STAGES, StageBadge, TagList, authorityProblem, equipmentLabel, rememberCarrierNav, useAssignees, useProspectLists, useTags } from '../../components/carriers/shared.jsx';
 
 const FILTER_KEYS = ['q', 'state', 'equipment', 'fleetMin', 'fleetMax', 'authorityStatus', 'authorityAgeMinMonths', 'authorityAgeMaxMonths', 'stage', 'tagId', 'assignedTo', 'source', 'scope', 'noActivity', 'activityDays'];
 const PAGE_SIZE = 25;
@@ -113,7 +113,7 @@ export default function CarrierList() {
     { key: 'state', header: 'Location', sortable: true, render: (c) => <span className="whitespace-nowrap">{[c.city, c.state].filter(Boolean).join(', ') || '—'}</span> },
     { key: 'equipment', header: 'Equipment', render: (c) => <span className="text-[13px]">{equipmentLabel(c.equipment)}</span> },
     { key: 'fleetSize', header: 'Trucks', sortable: true, className: 'text-right tabular', render: (c) => c.fleetSize ?? '—' },
-    { key: 'authorityStatus', header: 'Authority', render: (c) => <AuthorityBadge status={c.authorityStatus} /> },
+    { key: 'authorityStatus', header: 'Authority', render: (c) => <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /> },
     { key: 'stage', header: 'Stage', render: (c) => <StageBadge stage={c.stage} /> },
     { key: 'lastCallAt', header: 'Last call', render: (c) => <span className="whitespace-nowrap text-[13px] text-muted">{c.lastCallAt ? relative(c.lastCallAt) : 'Never called'}</span> },
     { key: 'lastContactedAt', header: 'Last activity', sortable: true, render: (c) => <span className="whitespace-nowrap text-[13px] text-muted">{c.lastActivityAt ? relative(c.lastActivityAt) : 'No activity'}</span> },
@@ -146,6 +146,10 @@ export default function CarrierList() {
             <option value="no_email">No email</option>
             <option value="none">No call, email or text</option>
           </Select>
+          {/* Operating authority (FMCSA licensing): pick "Authority inactive", select all, then delete or archive. */}
+          <Select aria-label="Authority" value={filters.authorityStatus} onChange={(e) => update({ authorityStatus: e.target.value })} className="w-44">
+            <option value="">Any authority</option>{AUTHORITY_FILTERS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+          </Select>
           {filters.noActivity && (
             <Input aria-label="In the last N days" type="number" min="1" max="3650" placeholder="Days" defaultValue={filters.activityDays} key={`d${filters.activityDays}`}
               title="Only count activity in the last N days (empty = ever)"
@@ -166,7 +170,6 @@ export default function CarrierList() {
           <div className="grid gap-3 border-b border-line bg-surface-2/40 p-3 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="State"><Select value={filters.state} onChange={(e) => update({ state: e.target.value })}><option value="">Any</option>{US_STATES.map((s) => <option key={s}>{s}</option>)}</Select></Field>
             <Field label="Equipment"><Select value={filters.equipment} onChange={(e) => update({ equipment: e.target.value })}><option value="">Any</option>{EQUIPMENT.map((e) => <option key={e} value={e}>{label(e)}</option>)}</Select></Field>
-            <Field label="Authority status"><Select value={filters.authorityStatus} onChange={(e) => update({ authorityStatus: e.target.value })}><option value="">Any</option>{['active', 'inactive', 'pending', 'unknown'].map((s) => <option key={s} value={s}>{label(s)}</option>)}</Select></Field>
             <Field label="Tag"><Select value={filters.tagId} onChange={(e) => update({ tagId: e.target.value })}><option value="">Any</option>{tags.data?.items.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select></Field>
             <div className="grid grid-cols-2 gap-2">
               <Field label="Trucks min"><Input type="number" min="0" defaultValue={filters.fleetMin} onBlur={(e) => update({ fleetMin: e.target.value })} /></Field>
@@ -244,6 +247,7 @@ export default function CarrierList() {
                       <span className="truncate font-medium">{c.companyName}</span>
                       <StageBadge stage={c.stage} />
                     </div>
+                    {authorityProblem(c.authorityStatus) && <div className="mt-1"><AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /></div>}
                     <div className="mt-0.5 text-xs text-muted">{[c.city, c.state].filter(Boolean).join(', ') || 'No location'}{c.dotNumber ? ` · DOT ${c.dotNumber}` : ''}</div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[13px]" onClick={(e) => e.stopPropagation()}>
                       {c.doNotCall ? <span className="text-xs text-red-600">Do not call</span> : <PhoneLink phone={c.phone} carrierId={c.id} />}

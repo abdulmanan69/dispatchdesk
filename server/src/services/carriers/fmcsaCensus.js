@@ -66,10 +66,13 @@ export function mapRecord(r) {
     timezone: timezoneForState(state),
     fleetSize: intOrNull(r.power_units),
     drivers: intOrNull(r.total_drivers ?? r.driver_inter_total),
-    // Census status_code is USDOT registration status (A=active, I=inactive), not operating-authority status.
-    authorityStatus: statusCode === 'A' ? 'active' : statusCode === 'I' ? 'inactive' : 'unknown',
+    // Census status_code is USDOT registration status (A=active, I=inactive), not operating authority. It stays in
+    // usdotStatus (display only, not a CRM column). Operating authority comes from the FMCSA licensing dataset
+    // (services/carriers/authority.js): 'unknown' until that check confirms it.
+    usdotStatus: statusCode === 'A' ? 'active' : statusCode === 'I' ? 'inactive' : 'unknown',
+    authorityStatus: 'unknown',
     authorityDate: dateOrNull(r.add_date),
-    operatingStatus: statusCode === 'A' ? 'USDOT active' : statusCode === 'I' ? 'USDOT inactive' : null,
+    operatingStatus: null,
     classification: trimOrNull(r.classdef, 200),
     carrierOperation: OPERATION[r.carrier_operation] || trimOrNull(r.carrier_operation, 40),
     equipment: equipment.length ? equipment.join(',') : null,
@@ -86,6 +89,14 @@ export function mapRecord(r) {
 }
 const DOCKET_STATUS = { A: 'active', I: 'inactive', P: 'pending' };
 
+/** Carrier columns a mapped record can fill. Everything else on it (_extra, usdotStatus, authority) is display only. */
+export const CARRIER_COLUMNS = Object.freeze([
+  'companyName', 'dbaName', 'dotNumber', 'mcNumber', 'phone', 'email', 'address', 'city', 'state', 'zip', 'timezone',
+  'fleetSize', 'drivers', 'authorityStatus', 'authorityDate', 'operatingStatus', 'classification', 'carrierOperation', 'equipment',
+]);
+/** The CRM columns of a mapped record, ready for prisma.carrier.create. */
+export const carrierColumns = (rec) => Object.fromEntries(CARRIER_COLUMNS.filter((k) => rec[k] !== undefined).map((k) => [k, rec[k]]));
+
 const esc = (s) => String(s).replace(/'/g, "''");
 const ymd = (d) => new Date(d).toISOString().slice(0, 10).replace(/-/g, '');
 
@@ -96,6 +107,7 @@ function buildWhere(f, { numeric = true } = {}) {
   if (f.state) w.push(`phy_state='${esc(String(f.state).toUpperCase())}'`);
   if (f.city) w.push(`upper(phy_city)='${esc(String(f.city).toUpperCase())}'`);
   if (f.name) w.push(`upper(legal_name) like '%${esc(String(f.name).toUpperCase().replace(/[%_]/g, ''))}%'`);
+  // USDOT registration active. Only a pre-filter: callers that promise active authority also check FMCSA licensing.
   if (f.activeOnly) w.push(`status_code='A'`);
   if (f.hasMc) w.push(`docket1prefix='MC'`);
   if (f.hasEmail) w.push('email_address IS NOT NULL');

@@ -5,7 +5,7 @@ import { Button, Field, Input, Select, Textarea, Checkbox } from '../ui.jsx';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { EQUIPMENT, US_STATES, label, toDateInput } from '../../lib/format.js';
-import { STAGES } from './shared.jsx';
+import { AUTHORITY_FILTERS, STAGES } from './shared.jsx';
 
 const EMPTY = { companyName: '', dbaName: '', dotNumber: '', mcNumber: '', phone: '', email: '', address: '', city: '', state: '', zip: '', fleetSize: '', drivers: '', authorityStatus: '', authorityDate: '', priority: 0 };
 
@@ -79,7 +79,7 @@ export default function CarrierForm({ open, onClose, carrier, onSaved }) {
         <Field label="Drivers"><Input type="number" min="0" value={form.drivers} onChange={set('drivers')} /></Field>
         <Field label="Authority status">
           <Select value={form.authorityStatus} onChange={set('authorityStatus')}>
-            <option value="">—</option>{['active', 'inactive', 'pending', 'unknown'].map((s) => <option key={s} value={s}>{label(s)}</option>)}
+            <option value="">—</option>{AUTHORITY_FILTERS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
           </Select>
         </Field>
         <Field label="Authority date"><Input type="date" value={form.authorityDate} onChange={set('authorityDate')} /></Field>

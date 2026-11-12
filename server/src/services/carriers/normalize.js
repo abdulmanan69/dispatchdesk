@@ -64,6 +64,7 @@ export function normAuthority(v) {
   if (['a', 'active', 'authorized', 'yes', 'y'].includes(s)) return 'active';
   if (['i', 'inactive', 'revoked', 'not authorized', 'no', 'n'].includes(s)) return 'inactive';
   if (['p', 'pending'].includes(s)) return 'pending';
+  if (['none', 'no mc', 'no mc authority'].includes(s)) return 'none';
   return 'unknown';
 }
 

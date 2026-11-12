@@ -60,9 +60,10 @@ const money = (n) => (n == null ? null : `$${Math.round(n).toLocaleString('en-US
 
 /**
  * Readiness report for one census record, with optional QCMobile details (null when no webKey is set or the lookup
- * failed). Each check is pass | warn | fail | unknown with the source it came from.
+ * failed) and the operating authority from FMCSA licensing (services/carriers/authority.js; null when the dataset did
+ * not answer). QCMobile wins where both answer. Each check is pass | warn | fail | unknown with the source it came from.
  */
-export function buildReadiness(record, qc, { now = new Date(), qcConfigured = false, qcError = null, censusRetrievedAt = now, qcRetrievedAt = null } = {}) {
+export function buildReadiness(record, qc, { now = new Date(), qcConfigured = false, qcError = null, censusRetrievedAt = now, qcRetrievedAt = null, licensing = null } = {}) {
   const extra = record._extra || {};
   const registeredAt = record.authorityDate || null;
   const acceptance = brokerAcceptance(registeredAt, now);
@@ -70,10 +71,13 @@ export function buildReadiness(record, qc, { now = new Date(), qcConfigured = fa
   const add = (key, label, status, detail, source) => checks.push({ key, label, status, detail, source });
   const CENSUS = 'FMCSA census';
   const QC = 'FMCSA QCMobile';
+  const LIC = 'FMCSA licensing';
   const qcUnknown = qcConfigured ? (qcError ? `QCMobile lookup failed: ${qcError}` : 'Not found in QCMobile') : 'Add an FMCSA QCMobile webKey (Admin, Integrations) to check this';
 
-  add('usdot', 'USDOT registration active', record.authorityStatus === 'active' ? 'pass' : record.authorityStatus === 'inactive' ? 'fail' : 'unknown',
-    record.authorityStatus === 'active' ? 'Active in the census' : record.authorityStatus === 'inactive' ? 'Inactive in the census' : 'Status not reported', CENSUS);
+  // Census status_code is the USDOT registration (mapRecord usdotStatus), not operating authority.
+  const usdot = record.usdotStatus;
+  add('usdot', 'USDOT registration active', usdot === 'active' ? 'pass' : usdot === 'inactive' ? 'fail' : 'unknown',
+    usdot === 'active' ? 'Active in the census' : usdot === 'inactive' ? 'Inactive in the census' : 'Status not reported', CENSUS);
 
   if (!record.mcNumber) add('docket', 'MC number', 'fail', 'No MC docket in the census (for-hire interstate carriers need one)', CENSUS);
   else {
@@ -82,15 +86,24 @@ export function buildReadiness(record, qc, { now = new Date(), qcConfigured = fa
       ds ? `MC ${record.mcNumber}: ${ds} in the census` : `MC ${record.mcNumber}: status not reported`, CENSUS);
   }
 
+  const lic = licensing && licensing.status !== 'unknown' ? licensing : null;
+  const level = (st) => (st === 'active' ? 'pass' : st === 'pending' ? 'warn' : st === 'inactive' ? 'fail' : 'unknown');
   if (qc?.authorityStatus) {
-    add('authority', 'Operating authority (live)', qc.authorityStatus === 'active' ? 'pass' : qc.authorityStatus === 'pending' ? 'warn' : qc.authorityStatus === 'inactive' ? 'fail' : 'unknown',
+    add('authority', 'Operating authority (live)', level(qc.authorityStatus),
       `Authority ${qc.authorityStatus}${qc.allowedToOperate === false ? ', not allowed to operate' : ''}`, QC);
-  } else add('authority', 'Operating authority (live)', 'unknown', qcUnknown, QC);
+  } else if (lic) {
+    add('authority', 'Operating authority', level(lic.status), lic.label, LIC);
+  } else if (!record.mcNumber) {
+    add('authority', 'Operating authority', 'fail', 'No MC number, so no operating authority', LIC);
+  } else add('authority', 'Operating authority', 'unknown', 'FMCSA licensing did not answer; check again in a few minutes', LIC);
 
   if (qc && qc.bipdOnFile != null) {
     const ok = qc.bipdOnFile > 0 && (qc.bipdRequired == null || qc.bipdOnFile >= qc.bipdRequired);
     add('bipd', 'Liability insurance (BIPD) on file', ok ? 'pass' : 'fail',
       `${money(qc.bipdOnFile)} on file${qc.bipdRequired ? `, ${money(qc.bipdRequired)} required` : ''}`, QC);
+  } else if (lic && lic.insuranceOnFile != null) {
+    add('bipd', 'Liability insurance (BIPD) on file', lic.insuranceOnFile ? 'pass' : 'fail',
+      lic.insuranceOnFile ? `${money(lic.insuranceAmount)} on file` : 'None on file with FMCSA', LIC);
   } else add('bipd', 'Liability insurance (BIPD) on file', 'unknown', qc ? 'Not reported' : qcUnknown, QC);
 
   if (qc && qc.cargoOnFile != null) {
@@ -115,9 +128,12 @@ export function buildReadiness(record, qc, { now = new Date(), qcConfigured = fa
     missing.length ? `Missing: ${missing.join(', ')}` : 'Phone, email and address on file', CENSUS);
 
   const sources = [{ label: 'FMCSA Company Census (public)', retrievedAt: censusRetrievedAt, note: 'Registration date is the USDOT add date; the MC grant can be later.' }];
+  sources.push(lic
+    ? { label: 'FMCSA Licensing and Insurance (public)', retrievedAt: censusRetrievedAt, note: 'Operating authority and liability insurance on file.' }
+    : { label: 'FMCSA Licensing and Insurance (public)', retrievedAt: null, note: record.mcNumber ? 'Did not answer: operating authority is unknown.' : 'No MC number to check.' });
   sources.push(qcConfigured
     ? { label: 'FMCSA QCMobile', retrievedAt: qcRetrievedAt, note: qcError ? `Lookup failed: ${qcError}` : null }
-    : { label: 'FMCSA QCMobile', retrievedAt: null, note: 'Not configured: insurance and live authority are unknown.' });
+    : { label: 'FMCSA QCMobile', retrievedAt: null, note: 'Not configured: cargo insurance and out-of-service status are unknown.' });
 
   return {
     carrier: {
@@ -126,11 +142,13 @@ export function buildReadiness(record, qc, { now = new Date(), qcConfigured = fa
       fleetSize: record.fleetSize, drivers: record.drivers, cargo: extra.cargo || [], hazmat: !!extra.hazmat,
     },
     authority: {
-      registeredAt, ageDays: age, usdotStatus: record.authorityStatus || 'unknown', docketStatus: extra.docketStatus || null,
-      live: qc?.authorityStatus || null, allowedToOperate: qc?.allowedToOperate ?? null,
+      registeredAt, ageDays: age, usdotStatus: record.usdotStatus || 'unknown', docketStatus: extra.docketStatus || null,
+      live: qc?.authorityStatus || lic?.status || null, allowedToOperate: qc?.allowedToOperate ?? null,
+      licensing: lic ? { status: lic.status, label: lic.label } : null,
     },
     insurance: qc ? { bipdOnFile: qc.bipdOnFile, bipdRequired: qc.bipdRequired, cargoOnFile: qc.cargoOnFile, bondOnFile: qc.bondOnFile } : null,
-    insuranceStatus: !qc || qc.bipdOnFile == null ? 'unknown' : qc.bipdOnFile > 0 ? 'on_file' : 'missing',
+    insuranceStatus: qc && qc.bipdOnFile != null ? (qc.bipdOnFile > 0 ? 'on_file' : 'missing')
+      : lic && lic.insuranceOnFile != null ? (lic.insuranceOnFile ? 'on_file' : 'missing') : 'unknown',
     brokerAcceptance: acceptance,
     contact: { ...contact, missing, complete: missing.length === 0 },
     checks,

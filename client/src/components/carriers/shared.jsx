@@ -40,11 +40,27 @@ export function TagList({ tags = [], className }) {
   );
 }
 
-export function AuthorityBadge({ status }) {
+/**
+ * Operating authority (FMCSA licensing). `detail` is the licensing label (Carrier.operatingStatus or record.authority.label),
+ * shown on hover. 'none' = no MC number (cannot haul for-hire interstate loads); 'unknown' = not checked yet.
+ */
+export const AUTHORITY_BADGES = {
+  active: ['green', 'Active'],
+  inactive: ['red', 'Authority inactive'],
+  pending: ['amber', 'Authority pending'],
+  none: ['gray', 'No MC authority'],
+  unknown: ['gray', 'Not verified'],
+};
+export const AUTHORITY_FILTERS = [['active', 'Active'], ['inactive', 'Authority inactive'], ['pending', 'Authority pending'], ['none', 'No MC authority'], ['unknown', 'Not verified']];
+
+export function AuthorityBadge({ status, detail, className }) {
   if (!status) return <span className="text-muted">—</span>;
-  const color = { active: 'green', inactive: 'red', pending: 'amber', unknown: 'gray' }[status] || 'gray';
-  return <Badge color={color}>{label(status)}</Badge>;
+  const [color, text] = AUTHORITY_BADGES[status] || ['gray', label(status)];
+  return <Badge color={color} title={detail || undefined} className={className}>{text}</Badge>;
 }
+
+/** True when a carrier cannot be dispatched for hire on its authority (worth a badge next to its name). */
+export const authorityProblem = (status) => status === 'inactive' || status === 'pending' || status === 'none';
 
 export const equipmentLabel = (eq) => (eq ? eq.split(',').map(label).join(', ') : '—');
 

@@ -7,6 +7,7 @@ import * as census from '../services/carriers/fmcsaCensus.js';
 import { providerStatuses, enrichLookup } from '../services/carriers/providers.js';
 import { annotateRecords } from '../services/carriers/collisions.js';
 import { saveCensusCarriers, activeSequence } from '../services/carriers/saveCensus.js';
+import { AUTHORITY_UNAVAILABLE, annotateAuthority } from '../services/carriers/authority.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -41,20 +42,42 @@ const searchSchema = z.object({
 // The census filter uses whole dates (YYYYMMDD), so repeated searches on one day share a cache entry.
 const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
 
+/**
+ * Census search, one page at a time. Every row is annotated with its operating authority from FMCSA licensing (one
+ * batched check per page). activeOnly (default): rows without active authority are hidden (`hiddenInactive`), and so
+ * are rows the licensing dataset could not verify (`hiddenUnverified`, with `authorityError`); a row without an MC
+ * number stays only when the search does not require one. Paging (`hasMore`) follows the census page, so hidden rows
+ * never stop "Next".
+ */
 r.get('/search', ah(async (req, res) => {
   const f = parse(searchSchema, req.query);
   if (!f.state && !f.name && !f.dot && !f.mc && !f.city) throw badRequest('Pick at least a state, city, name, USDOT or MC to search');
+  const activeOnly = f.activeOnly === 'true';
+  const hasMc = f.hasMc === 'true';
   const result = await census.search({
     ...f,
-    activeOnly: f.activeOnly === 'true',
-    hasMc: f.hasMc === 'true',
+    activeOnly,
+    hasMc,
     hasEmail: f.hasEmail === 'true',
     // Authority age N months = record added at least N months ago.
     addedBefore: f.authorityAgeMinMonths != null ? monthsAgo(f.authorityAgeMinMonths) : undefined,
     addedAfter: f.authorityAgeMaxMonths != null ? monthsAgo(f.authorityAgeMaxMonths) : undefined,
   }, undefined, { cacheMs: SEARCH_CACHE_MS });
-  const items = await annotateRecords(req.user, result.items);
-  res.json({ ...result, items, offset: f.offset, limit: f.limit, hasMore: result.items.length === f.limit });
+  const { items: checked, answered } = await annotateAuthority(result.items, { cacheMs: SEARCH_CACHE_MS });
+  let hiddenInactive = 0;
+  let hiddenUnverified = 0;
+  const visible = activeOnly ? checked.filter((x) => {
+    if (x.authorityStatus === 'active' || (x.authorityStatus === 'none' && !hasMc)) return true;
+    if (x.authorityStatus === 'unknown') hiddenUnverified++;
+    else hiddenInactive++;
+    return false;
+  }) : checked;
+  const items = await annotateRecords(req.user, visible);
+  res.json({
+    ...result, items, offset: f.offset, limit: f.limit, hasMore: result.items.length === f.limit,
+    hiddenInactive, hiddenUnverified,
+    authorityError: answered ? null : `${AUTHORITY_UNAVAILABLE} ${activeOnly ? 'Carriers that could not be checked are hidden; search again in a few minutes.' : 'Their authority shows as not verified.'}`,
+  });
 }));
 
 r.get('/lookup', ah(async (req, res) => {
@@ -70,11 +93,15 @@ const saveSchema = z.object({
   dotNumbers: z.array(z.string().max(12)).max(200).optional(),
   stage: z.enum(STAGE_KEYS).default('lead'),
   sequenceId: z.string().max(40).nullable().optional(),
+  // The user saw "Authority is not active. Save anyway?" and confirmed.
+  allowInactive: z.boolean().optional(),
 });
 
 /**
  * Save discovered carriers. Records are always re-fetched from FMCSA by USDOT number on the
  * server — client-supplied carrier data is never trusted as "verified".
+ * Operating authority is re-checked with FMCSA licensing: carriers whose authority is not active (or could not be
+ * verified) come back as `inactive_authority` / `unverified` items and are not saved unless `allowInactive` is true.
  * The response lists every requested USDOT with its carrier id (created or already in the CRM), so the client can
  * call a lead right after saving it and log the call against the record ("Save and call").
  */
@@ -82,7 +109,7 @@ r.post('/save', ah(async (req, res) => {
   const body = parse(saveSchema, req.body);
   if (!(body.dotNumbers || []).length) throw badRequest('Select at least one carrier');
   const sequence = await activeSequence(req.user, body.sequenceId);
-  res.json(await saveCensusCarriers(req.user, body.dotNumbers, { stage: body.stage, sequence }));
+  res.json(await saveCensusCarriers(req.user, body.dotNumbers, { stage: body.stage, sequence, allowInactive: !!body.allowInactive }));
 }));
 
 export default r;

@@ -20,7 +20,8 @@ export const CHECK_STYLE = {
 
 /**
  * Carrier readiness report for a USDOT number (new-authority kit), from public FMCSA data only.
- * Insurance and live authority need the free QCMobile webKey; without it they show as unknown.
+ * Operating authority and liability insurance come from the FMCSA licensing datasets (L&I and Motus); cargo insurance
+ * and out-of-service status need the free QCMobile webKey and show as unknown without it.
  * "Copy summary" puts a plain-text version on the clipboard; "Email summary" opens the composer for a carrier
  * that is in the CRM. Nothing is sent automatically.
  */

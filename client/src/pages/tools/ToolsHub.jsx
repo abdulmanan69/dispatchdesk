@@ -8,6 +8,9 @@ import { useApiMutation } from '../../lib/hooks.js';
 import { dollars, num, label, PRESETS, US_STATES, date } from '../../lib/format.js';
 import { calculateLoad } from '../../components/dispatch/calc.js';
 import { Button, Card, ComboInput, ErrorState, Field, Input, LocalClock, PageHeader, Select, cx } from '../../components/ui.jsx';
+import { useConfirm } from '../../components/Modal.jsx';
+import { AuthorityBadge } from '../../components/carriers/shared.jsx';
+import { saveCensusLeads } from '../../components/carriers/saveLeads.js';
 
 // ----------------------------------------------------------------- shared bits
 
@@ -374,6 +377,7 @@ function LookupTool() {
   const [kind, setKind] = useState('dot');
   const [value, setValue] = useState('');
   const [state, setState] = useState({ status: 'idle' });
+  const confirm = useConfirm();
   const run = async (e) => {
     e.preventDefault();
     const v = value.replace(/\D/g, '');
@@ -382,8 +386,9 @@ function LookupTool() {
     try { setState({ status: 'done', data: await api.get('/api/discovery/lookup', { [kind]: v }) }); }
     catch (err) { setState({ status: 'error', error: err }); }
   };
-  const save = useApiMutation((dot) => api.post('/api/discovery/save', { dotNumbers: [dot] }), {
-    success: (d) => (d.created ? 'Carrier added to your list' : 'Already in your list'), invalidate: [['carriers']],
+  // Saving re-checks operating authority; a carrier without active authority needs "Save anyway".
+  const save = useApiMutation((dot) => saveCensusLeads({ dots: [dot], confirm }), {
+    success: (d) => (d.created ? 'Carrier added to your list' : d.inactiveAuthority ? 'Not saved: authority not active' : d.unverified ? 'Not saved: authority not verified' : 'Already in your list'), invalidate: [['carriers']],
     onSuccess: (d) => setState((s) => ({ ...s, savedId: d.ids?.[0] })),
   });
   const r = state.data?.record;
@@ -419,7 +424,8 @@ function LookupTool() {
             </div>
             <dl className="grid gap-x-8 gap-y-3 px-5 py-4 text-sm sm:grid-cols-2">
               {[
-                ['USDOT status', r.operatingStatus || label(r.authorityStatus)],
+                ['Operating authority', <span key="a" className="inline-flex flex-wrap items-center gap-2"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} />{r.operatingStatus && <span className="text-xs text-muted">{r.operatingStatus}</span>}</span>],
+                ['USDOT status', label(r.usdotStatus)],
                 ['Added to USDOT', r.authorityDate ? date(r.authorityDate) : '—'],
                 ['Power units', r.fleetSize ?? '—'],
                 ['Drivers', r.drivers ?? '—'],
@@ -434,7 +440,7 @@ function LookupTool() {
             </dl>
             <p className="border-t border-line px-5 py-3 text-xs text-muted">
               Source: FMCSA Company Census (data.transportation.gov){Array.isArray(sources) && sources.length ? ` · ${sources.map((s) => (typeof s === 'string' ? s : s.label || s.name || s.key)).join(', ')}` : ''} · retrieved {new Date(state.data.retrievedAt).toLocaleString()}.
-              USDOT status is registration status, not operating authority. Verify authority and insurance on SAFER before booking.
+              USDOT status is registration status. Operating authority comes from FMCSA licensing (L&amp;I and Motus): active means active authority with liability insurance on file.
             </p>
           </div>
         )}

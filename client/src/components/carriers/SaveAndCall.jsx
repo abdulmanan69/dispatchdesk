@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Phone } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { api } from '../../lib/api.js';
 import { relative } from '../../lib/format.js';
 import { Button, cx } from '../ui.jsx';
 import { useConfirm } from '../Modal.jsx';
@@ -10,6 +9,7 @@ import { errorToast } from '../../lib/hooks.js';
 import { useDialer } from '../calling/useDialer.js';
 import LogCallModal from './LogCallModal.jsx';
 import CallButton from '../calling/CallButton.jsx';
+import { saveCensusLeads } from './saveLeads.js';
 
 const pretty = (phone) => {
   const d = String(phone || '').replace(/\D/g, '');
@@ -33,11 +33,13 @@ export function claimText(claims = []) {
  * - Not saved yet: the click saves it first (re-verified with FMCSA on the server, plan limits apply), then dials with the
  *   new carrier id, so the log form opens and the call is recorded on the lead.
  * - A teammate has it: asks first (team collision guard).
+ * - Authority not active (FMCSA licensing re-checked on save): asks "Authority is not active. Save anyway?" first;
+ *   `allowInactive` skips that question (pending carriers in the new-authority kit).
  * Nothing dials without the click.
  *
  * record: { dotNumber, phone, companyName, existsInCrm, existingId, teamClaims }
  */
-export default function SaveAndCall({ record, variant = 'link', label, onSaved, className }) {
+export default function SaveAndCall({ record, variant = 'link', label, onSaved, className, allowInactive = false }) {
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
@@ -64,10 +66,13 @@ export default function SaveAndCall({ record, variant = 'link', label, onSaved, 
     }
     setBusy(true);
     try {
-      const saved = await api.post('/api/discovery/save', { dotNumbers: [record.dotNumber] });
+      const saved = await saveCensusLeads({ dots: [record.dotNumber], confirm, allowInactive });
       const item = saved.items?.find((i) => i.dotNumber === String(record.dotNumber).replace(/^0+/, '')) || saved.items?.[0];
       if (!item?.id) {
-        toast.error(item?.status === 'limited' ? 'Your plan’s limit for saved leads is reached, so this lead was not saved. Upgrade, or try again tomorrow.' : 'This carrier was not found in the FMCSA census, so it was not saved.');
+        toast.error(item?.status === 'limited' ? 'Your plan’s limit for saved leads is reached, so this lead was not saved. Upgrade, or try again tomorrow.'
+          : item?.status === 'inactive_authority' ? 'Not saved: this carrier’s operating authority is not active.'
+            : item?.status === 'unverified' ? 'Not saved: operating authority could not be verified with FMCSA right now.'
+              : 'This carrier was not found in the FMCSA census, so it was not saved.');
         return;
       }
       if (item.status === 'created') toast.success(`Saved ${record.companyName || 'carrier'} to your list`);

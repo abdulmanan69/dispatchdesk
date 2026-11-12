@@ -7,11 +7,15 @@ import { runAutomations } from './automation.js';
 import { enrollCarriers } from './sequenceEngine.js';
 import { normMc } from './carriers/normalize.js';
 import * as census from './carriers/fmcsaCensus.js';
+import { AUTHORITY_UNAVAILABLE, annotateAuthority } from './carriers/authority.js';
 import { withLock, LockBusyError } from '../lib/locks.js';
 
 /**
  * Lead generator: turns saved FMCSA Census criteria into fresh, de-duplicated, scored carrier leads.
  * Every lead comes from the live public census at run time; nothing is invented.
+ * With "active only" (the default) every candidate's operating authority is checked against the FMCSA licensing
+ * dataset before it is picked: only active authority (with insurance on file) is saved, and when the dataset does not
+ * answer the run saves nothing (fail closed).
  * Usage counts against the plan's monthlyLeadGenLimit (and maxCarriers).
  */
 
@@ -22,6 +26,25 @@ const STATE_CONCURRENCY = 3;
 // Wall-clock budget per crawl: a run stops starting new census requests after this and saves what it found.
 const RUN_BUDGET_MS = 2 * 60_000;
 const PREVIEW_BUDGET_MS = 25_000;
+// Candidates per licensing check (one request each); checks run one after another, only until enough are picked.
+const VERIFY_BATCH = 200;
+
+/** Thrown when the licensing dataset did not answer for candidates that must be verified. Nothing is saved. */
+export class AuthorityUnavailableError extends HttpError {
+  constructor(stats = null) {
+    super(503, AUTHORITY_UNAVAILABLE);
+    this.code = 'AUTHORITY_UNAVAILABLE';
+    this.stats = stats;
+  }
+}
+
+/** The "N skipped: authority not active" sentence a run message carries (LeadGenRun has no column for the count). */
+export const inactiveAuthorityText = (n) => `${n} skipped: authority not active.`;
+/** Count of candidates skipped for inactive authority, read back from a stored run message. */
+export function inactiveAuthorityFrom(message) {
+  const m = /(\d+) skipped: authority not active/.exec(message || '');
+  return m ? Number(m[1]) : 0;
+}
 
 const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
 
@@ -37,7 +60,10 @@ export function scoreLead(rec, now = new Date()) {
   if (rec.phone) add(25, 'Phone on file');
   if (rec.email) add(20, 'Email on file');
   if (rec.mcNumber) add(15, 'MC authority');
-  if (rec.authorityStatus === 'active') add(10, 'USDOT active');
+  // Census registration only: says nothing about operating authority.
+  if (rec.usdotStatus === 'active') add(10, 'USDOT registration active (census)');
+  // Set only after the FMCSA licensing check (mapRecord leaves authorityStatus 'unknown').
+  if (rec.authorityStatus === 'active') add(10, 'Authority active, insurance on file (FMCSA licensing)');
   if (rec.authorityDate) {
     const months = (now - new Date(rec.authorityDate)) / (30.44 * 86400000);
     if (months >= 0 && months <= 24) add(15, months <= 6 ? 'New authority (under 6 months)' : 'Authority under 2 years');
@@ -77,16 +103,46 @@ async function existingKeys(userId, recs) {
 }
 
 /**
- * Walk census pages round-robin across states and yield fresh candidates (not in the user's CRM, at or above minScore).
+ * Check the operating authority of one batch of candidates (one licensing request) and keep the ones that may be
+ * picked, with authorityStatus/operatingStatus from FMCSA licensing.
+ * activeOnly (the default): only active authority is kept; inactive and pending count in stats.inactiveAuthority.
+ * A candidate without an MC number is kept only when the criteria do not require one (authorityStatus 'none').
+ * When the dataset did not answer for a candidate that must be verified, throws AuthorityUnavailableError (fail
+ * closed: no unverified carrier is ever saved). Without activeOnly, unanswered checks leave the authority 'unknown'.
+ */
+async function verifyBatch(batch, criteria, stats, { cacheMs = 0 } = {}) {
+  const activeOnly = criteria.activeOnly !== false;
+  const { items } = await annotateAuthority(batch, { cacheMs });
+  const kept = [];
+  for (const rec of items) {
+    const status = rec.authorityStatus;
+    if (status === 'none') {
+      if (criteria.requireMc) { stats.inactiveAuthority++; continue; }
+    } else if (status === 'unknown') {
+      if (activeOnly) throw new AuthorityUnavailableError(stats);
+    } else if (status !== 'active' && activeOnly) {
+      stats.inactiveAuthority++;
+      continue;
+    }
+    kept.push(rec);
+  }
+  return kept;
+}
+
+/**
+ * Walk census pages round-robin across states and yield fresh candidates (not in the user's CRM, operating authority
+ * checked, at or above minScore).
  * Stops when `want` candidates are found, every state is exhausted, or the wall-clock budget is spent (timedOut).
  * At most STATE_CONCURRENCY census requests run at once. The first failed request (a 429, a timeout) stops the crawl:
  * no new request starts, the ones already in flight are awaited, and then the error is thrown, so nothing from this
  * crawl keeps calling FMCSA after collect() has returned and the generator lock is released.
+ * Authority checks (FMCSA licensing) run after de-duplication, in batches of VERIFY_BATCH, one at a time and only until
+ * enough candidates are picked. A batch the licensing dataset did not answer throws AuthorityUnavailableError.
  */
 async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STATE, cacheMs = 0, budgetMs = RUN_BUDGET_MS } = {}) {
   const states = criteria.states || [];
   const open = new Set(states);
-  const stats = { scanned: 0, skipped: 0, belowScore: 0 };
+  const stats = { scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0 };
   const picked = [];
   const seen = new Set();
   const deadline = Date.now() + budgetMs;
@@ -119,13 +175,21 @@ async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STA
     const lists = perState.filter(Boolean);
     const page = [];
     for (let i = 0; lists.some((l) => i < l.length); i++) for (const l of lists) if (i < l.length) page.push(l[i]);
-    {
-      const have = await existingKeys(userId, page);
-      for (const rec of page) {
+    const have = await existingKeys(userId, page);
+    const fresh = [];
+    for (const rec of page) {
+      if (!rec.dotNumber || seen.has(rec.dotNumber)) continue;
+      seen.add(rec.dotNumber);
+      if (have.dots.has(rec.dotNumber) || (rec.mcNumber && have.mcs.has(normMc(rec.mcNumber)))) { stats.skipped++; continue; }
+      // The best score this record can reach (authority confirmed active): below the minimum it is not worth a check.
+      if (scoreLead({ ...rec, authorityStatus: rec.mcNumber ? 'active' : 'none' }).score < minScore) { stats.belowScore++; continue; }
+      fresh.push(rec);
+    }
+    for (let i = 0; i < fresh.length && picked.length < want; i += VERIFY_BATCH) {
+      if (i > 0 && Date.now() >= deadline) { timedOut = true; break; }
+      const verified = await verifyBatch(fresh.slice(i, i + VERIFY_BATCH), criteria, stats, { cacheMs });
+      for (const rec of verified) {
         if (picked.length >= want) break;
-        if (!rec.dotNumber || seen.has(rec.dotNumber)) continue;
-        seen.add(rec.dotNumber);
-        if (have.dots.has(rec.dotNumber) || (rec.mcNumber && have.mcs.has(normMc(rec.mcNumber)))) { stats.skipped++; continue; }
         const s = scoreLead(rec);
         if (s.score < minScore) { stats.belowScore++; continue; }
         picked.push({ ...rec, score: s.score, scoreReasons: s.reasons });
@@ -138,17 +202,33 @@ async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STA
 /** Census pages a preview may reuse (runs always read fresh data). */
 const PREVIEW_CACHE_MS = 10 * 60_000;
 
-/** Preview matches without creating anything or using quota. */
+/**
+ * Preview matches without creating anything or using quota. When the licensing dataset does not answer, the preview
+ * shows no rows (never unverified carriers) and says why in `authorityError`.
+ */
 export async function previewLeads(user, criteria, minScore = 0, size = 25) {
-  const { picked, stats, exhausted, note } = await collect(user.id, criteria, minScore, size, { pages: 1, cacheMs: PREVIEW_CACHE_MS, budgetMs: PREVIEW_BUDGET_MS });
-  return {
-    items: picked.map(({ _extra, ...r }) => ({ ...r, cargo: _extra?.cargo || [] })),
-    ...stats,
-    exhausted,
-    note,
-    source: census.label,
-    retrievedAt: new Date().toISOString(),
-  };
+  const base = { source: census.label, retrievedAt: new Date().toISOString() };
+  try {
+    const { picked, stats, exhausted, note } = await collect(user.id, criteria, minScore, size, { pages: 1, cacheMs: PREVIEW_CACHE_MS, budgetMs: PREVIEW_BUDGET_MS });
+    return {
+      items: picked.map(({ _extra, ...r }) => ({ ...r, cargo: _extra?.cargo || [] })),
+      ...stats,
+      exhausted,
+      note,
+      authorityError: null,
+      ...base,
+    };
+  } catch (err) {
+    if (!(err instanceof AuthorityUnavailableError)) throw err;
+    return {
+      items: [],
+      scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, ...(err.stats || {}),
+      exhausted: false,
+      note: null,
+      authorityError: `${AUTHORITY_UNAVAILABLE} No carriers are shown until it can be checked; try the preview again in a few minutes.`,
+      ...base,
+    };
+  }
 }
 
 export function nextRunFrom(frequency, from = new Date()) {
@@ -172,6 +252,7 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
     const left = await remainingMany(user, ['leadGenMonth', 'carriers']);
     const budget = Math.min(gen.batchSize, left.leadGenMonth, left.carriers);
     const run = { trigger, status: 'ok', scanned: 0, created: 0, skipped: 0, belowScore: 0, message: null };
+    let inactiveAuthority = 0; // no LeadGenRun column: kept in the message (inactiveAuthorityText)
     const ids = [];
     const createdCarriers = [];
     const now = new Date();
@@ -183,15 +264,17 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
     } else {
       try {
         const { picked, stats, timedOut, note } = await collect(user.id, criteria, gen.minScore, budget);
-        Object.assign(run, stats);
+        ({ inactiveAuthority } = stats);
+        Object.assign(run, { scanned: stats.scanned, skipped: stats.skipped, belowScore: stats.belowScore });
         const stage = await stageByKey(gen.stageKey || 'lead');
         const list = gen.listId ? await prisma.prospectList.findFirst({ where: { id: gen.listId, ownerId: user.id } }) : null;
         for (const rec of picked) {
-          const { _extra, score, scoreReasons, ...fields } = rec;
+          const { score, scoreReasons } = rec;
           try {
             const c = await prisma.carrier.create({
               data: {
-                ...fields, ownerId: user.id, stageId: stage.id, source: 'lead_generator', sourceRef: `USDOT ${rec.dotNumber} · ${gen.name}`.slice(0, 190),
+                // authorityStatus/operatingStatus come from the FMCSA licensing check in collect().
+                ...census.carrierColumns(rec), ownerId: user.id, stageId: stage.id, source: 'lead_generator', sourceRef: `USDOT ${rec.dotNumber} · ${gen.name}`.slice(0, 190),
                 verifiedAt: now, priority: score >= 80 ? 2 : score >= 60 ? 1 : 0,
               },
             });
@@ -226,15 +309,19 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
             run.message = [run.message, 'The linked sequence is missing or paused, so leads were not enrolled.'].filter(Boolean).join(' ');
           }
         }
+        if (inactiveAuthority) run.message = [run.message, inactiveAuthorityText(inactiveAuthority)].filter(Boolean).join(' ');
       } catch (err) {
         run.status = 'error';
-        run.message = err instanceof HttpError ? err.message : `Lead generation failed: ${err.message}`;
+        run.message = err instanceof AuthorityUnavailableError
+          ? `${AUTHORITY_UNAVAILABLE} No leads were added; ${trigger === 'scheduled' ? 'the run will try again later' : 'try again in a few minutes'}.`
+          : err instanceof HttpError ? err.message : `Lead generation failed: ${err.message}`;
       }
     }
 
-    const saved = await prisma.leadGenRun.create({
+    const row = await prisma.leadGenRun.create({
       data: { ...run, generatorId: gen.id, ownerId: user.id, carrierIds: JSON.stringify(ids) },
     });
+    const saved = { ...row, inactiveAuthority };
     await prisma.leadGenerator.update({
       where: { id: gen.id },
       data: { lastRunAt: now, ...(gen.autoRun ? { nextRunAt: nextRunFrom(gen.frequency, now) } : {}) },

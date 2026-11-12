@@ -12,7 +12,7 @@ import CarrierForm from '../../components/carriers/CarrierForm.jsx';
 import LogCallModal from '../../components/carriers/LogCallModal.jsx';
 import FollowUpModal from '../../components/carriers/FollowUpModal.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
-import { AuthorityBadge, OUTCOME_COLORS, PhoneLink, ResourceLinks, STAGES, equipmentLabel, readCarrierNav, useAssignees, useTags } from '../../components/carriers/shared.jsx';
+import { AuthorityBadge, OUTCOME_COLORS, PhoneLink, ResourceLinks, STAGES, authorityProblem, equipmentLabel, readCarrierNav, useAssignees, useTags } from '../../components/carriers/shared.jsx';
 import CopyField, { copyText } from '../../components/carriers/CopyField.jsx';
 import EnrichModal from '../../components/carriers/EnrichModal.jsx';
 import TextLogModal from '../../components/carriers/TextLogModal.jsx';
@@ -100,7 +100,7 @@ export default function CarrierDetail() {
             <Card title="Company" actions={canWrite && (c.dotNumber || c.mcNumber) && <Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => setModal('enrich')}>Enrich from FMCSA</Button>}>
               <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
                 <Item k="Equipment">{equipmentLabel(c.equipment)}</Item>
-                <Item k="Authority"><AuthorityBadge status={c.authorityStatus} /> {c.authorityDate && <span className="ml-1 text-muted">since {date(c.authorityDate)}</span>}</Item>
+                <Item k="Authority"><AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /> {c.authorityDate && <span className="ml-1 text-muted">since {date(c.authorityDate)}</span>}</Item>
                 <Item k="Operating status">{c.operatingStatus || '—'}</Item>
                 <Item k="Classification">{c.classification || '—'}</Item>
                 <Item k="Carrier operation">{c.carrierOperation || '—'}</Item>
@@ -248,6 +248,7 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
                 <span className="truncate">Factors with {c.customer.factoringCompany.name}</span>
               </span>
             )}
+            {authorityProblem(c.authorityStatus) && <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} />}
             {c.priority > 0 && <Badge color="amber">{c.priority === 2 ? 'Hot' : 'High priority'}</Badge>}
             {c.doNotCall && <Badge color="red">Do not call</Badge>}
             {c.doNotEmail && <Badge color="red">Do not email</Badge>}
