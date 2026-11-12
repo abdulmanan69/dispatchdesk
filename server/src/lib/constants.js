@@ -23,7 +23,7 @@ export const EQUIPMENT = [
 
 export const AUTHORITY_STATUSES = ['active', 'inactive', 'pending', 'unknown'];
 // lumper_receipt, scale_ticket and fuel_receipt arrive from the driver link (routes/track.js) and from uploads.
-export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'voided_check', 'noa', 'other'];
+export const DOCUMENT_TYPES = ['agreement', 'mc_authority', 'w9', 'coi', 'permit', 'rate_confirmation', 'bol', 'pod', 'lumper_receipt', 'scale_ticket', 'fuel_receipt', 'voided_check', 'noa', 'invoice', 'other'];
 export const LOAD_STATUSES = ['planned', 'booked', 'in_transit', 'delivered', 'invoiced', 'paid', 'canceled'];
 export const OPPORTUNITY_STATUSES = ['open', 'negotiating', 'trial', 'won', 'lost'];
 export const CUSTOMER_STATUSES = ['active', 'paused', 'churned'];

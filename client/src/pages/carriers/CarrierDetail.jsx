@@ -243,6 +243,11 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
             <Select aria-label="Stage" value={c.stage.key} disabled={!canWrite || stagePending} onChange={(e) => onStage(e.target.value)} className="h-7! w-40 text-xs">
               {STAGES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
             </Select>
+            {c.customer?.factoringCompany && (
+              <span className="inline-flex max-w-[16rem] items-center rounded-md border border-line bg-surface px-2 py-1 text-xs text-muted" title="Factoring company, from the customer profile">
+                <span className="truncate">Factors with {c.customer.factoringCompany.name}</span>
+              </span>
+            )}
             {c.priority > 0 && <Badge color="amber">{c.priority === 2 ? 'Hot' : 'High priority'}</Badge>}
             {c.doNotCall && <Badge color="red">Do not call</Badge>}
             {c.doNotEmail && <Badge color="red">Do not email</Badge>}

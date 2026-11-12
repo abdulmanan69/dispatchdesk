@@ -60,7 +60,11 @@ export async function runCollectionReminders(now = new Date(), { batch = 500, ma
         link: '/app/invoices?status=overdue',
       });
       notified += 1;
-      const auto = list.filter(({ inv }) => inv.billToEmail && invoiceView(inv).meta.autoRemind);
+      // Invoices submitted to a factoring company are collected by the factor: no reminder emails to the broker.
+      const auto = list.filter(({ inv }) => {
+        const meta = invoiceView(inv).meta;
+        return inv.billToEmail && meta.autoRemind && !meta.factoring?.submittedAt;
+      });
       if (!auto.length) continue;
       const user = await prisma.user.findUnique({ where: { id: ownerId }, include: { teamMembership: { include: { team: { select: { name: true } } } } } });
       if (!user || user.status !== 'active') continue;

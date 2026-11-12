@@ -24,8 +24,9 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 export const IMAP_LIMITS = {
-  mailboxesPerRun: 80,
-  concurrency: 8,
+  // 250 per 3-minute run with 16 connections (about 2 s each) keeps 500+ active mailboxes near the 5-minute minimum.
+  mailboxesPerRun: 250,
+  concurrency: 16,
   messagesPerMailbox: 150,
   firstRunLookback: 50, // the newest messages checked the first time a mailbox is polled
   minIntervalMs: 5 * MIN, // the job runs every 3 minutes; each mailbox is checked at most this often

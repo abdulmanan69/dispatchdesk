@@ -23,7 +23,7 @@ export const MAX_ATTACHMENTS = 5;
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const DOC_LABEL = {
   agreement: 'Agreement', mc_authority: 'MC authority', w9: 'W-9', coi: 'COI', permit: 'Permit', rate_confirmation: 'Rate confirmation', bol: 'BOL', pod: 'POD',
-  lumper_receipt: 'Lumper receipt', scale_ticket: 'Scale ticket', fuel_receipt: 'Fuel receipt', other: 'Other',
+  lumper_receipt: 'Lumper receipt', scale_ticket: 'Scale ticket', fuel_receipt: 'Fuel receipt', voided_check: 'Voided check', noa: 'Notice of assignment', invoice: 'Invoice', other: 'Other',
 };
 const hasTokens = (s) => /\{\{\s*[a-zA-Z_]+\s*\}\}/.test(s || '');
 

@@ -10,6 +10,7 @@ import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { ComposeForm } from '../../components/email/ComposeModal.jsx';
 import { ConnectMailboxModal, ReconnectSmtpModal, ProviderMark, startOAuth, useConnectOptions } from '../../components/email/ConnectMailbox.jsx';
 import { ImapSettingsModal, imapSummary } from '../../components/email/ImapSettings.jsx';
+import MailingAddressField from '../../components/email/MailingAddressField.jsx';
 import ReviewQueue, { AiBadge, useReviewCount } from '../../components/email/ReviewQueue.jsx';
 import { TEMPLATE_CATEGORIES, categoryMeta, usesLabel } from '../../components/templates/templateApi.js';
 import {
@@ -431,11 +432,13 @@ function Suppressions() {
 function Signature() {
   const { user, setUser } = useAuth();
   const [sig, setSig] = useState(user?.emailSignature || '');
+  const [address, setAddress] = useState(user?.mailingAddress || '');
   const save = useApiMutation((v) => api.patch('/api/profile', v), { success: 'Signature saved', onSuccess: (d) => setUser(d.user) });
   return (
-    <Card title="Email signature" footer={<div className="flex justify-end"><Button loading={save.isPending} onClick={() => save.mutate({ emailSignature: sig })}>Save signature</Button></div>}>
+    <Card title="Email signature" footer={<div className="flex justify-end"><Button loading={save.isPending} onClick={() => save.mutate({ emailSignature: sig, mailingAddress: address })}>Save signature</Button></div>}>
       <p className="mb-2 text-sm text-muted">Appended to every email you send (or placed where you write {'{{signature}}'}).</p>
       <Textarea rows={6} value={sig} onChange={(e) => setSig(e.target.value)} placeholder={'Jane Doe\nDispatcher · Example Dispatch LLC\n(555) 555-0100'} aria-label="Email signature" />
+      <MailingAddressField value={address} onChange={setAddress} className="mt-4" />
     </Card>
   );
 }

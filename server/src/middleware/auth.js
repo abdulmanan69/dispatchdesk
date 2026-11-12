@@ -68,7 +68,7 @@ const TOKEN_BLOCKED = [/^\/api\/admin/, /^\/api\/tokens/, /^\/api\/settings/, /^
   // data. The handlers refuse tokens as well, so a router change cannot silently drop the guard.
   /^\/api\/customers\/[^/]+\/(portal|statements\/[^/]+\/send)(\/|$)/,
   /^\/api\/fleet\/(trips\/[^/]+\/tracking-links|carriers\/[^/]+\/share)(\/|$)/,
-  /^\/api\/invoices\/(export\.csv|[^/]+\/send)(\/|$)/,
+  /^\/api\/invoices\/(export\.csv|[^/]+\/send|[^/]+\/send-to-factoring)(\/|$)/,
   /^\/api\/carriers\/export\.csv(\/|$)/,
   /^\/api\/reports\/profit\.csv(\/|$)/,
   /^\/api\/ai-settings/];
@@ -218,6 +218,7 @@ export function publicUser(user, permissions) {
     theme: user.theme,
     timezone: user.timezone,
     emailSignature: user.emailSignature,
+    mailingAddress: user.mailingAddress ?? null,
     notifyEmail: user.notifyEmail,
     notifyInApp: user.notifyInApp,
     notifyFollowUps: user.notifyFollowUps,

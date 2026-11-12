@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { prisma } from '../../db.js';
 import { config } from '../../config.js';
+import { PAYMENT_LABEL } from './index.js';
 
 /** Upload subdirectory of invoice logos (written by routes/settings.js). */
 export const LOGO_DIR = 'logos';
@@ -132,7 +133,7 @@ const STATUS_LABEL = { draft: 'Draft', sent: 'Sent', partial: 'Partly paid', pai
 export function invoiceHtml(inv, { from, preparedBy, tz, logo } = {}) {
   const m = inv.meta || {};
   const rows = (inv.items || []).map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${esc(qty(l.quantity))}</td><td class="num">${usd(l.unitCents)}</td><td class="num">${usd(l.amountCents)}</td></tr>`).join('');
-  const payments = (m.payments || []).map((p) => `<div><span>Payment ${esc(day(p.at, tz))}${p.method ? ` · ${esc(p.method)}` : ''}${p.reference ? ` · ${esc(p.reference)}` : ''}</span><span>−${usd(p.amountCents)}</span></div>`).join('');
+  const payments = (m.payments || []).map((p) => `<div><span>${esc(PAYMENT_LABEL[p.kind] || 'Payment')} ${esc(day(p.at, tz))}${p.method ? ` · ${esc(p.method)}` : ''}${p.reference ? ` · ${esc(p.reference)}` : ''}</span><span>−${usd(p.amountCents)}</span></div>`).join('');
   const load = [m.reference && `Reference ${esc(m.reference)}`, m.lane && esc(m.lane), m.pickupDate && `Picked up ${esc(day(m.pickupDate))}`, m.deliveryDate && `Delivered ${esc(day(m.deliveryDate))}`].filter(Boolean).join('<br>');
   const body = `
 <header>
@@ -187,6 +188,34 @@ export function invoiceText(inv, { from, tz } = {}) {
   if (m.remitTo) lines.push('', 'Remit to:', m.remitTo);
   if (inv.notes) lines.push('', inv.notes);
   return lines.join('\n');
+}
+
+/**
+ * Subject and plain-text body for submitting a freight invoice to the carrier's factoring company: carrier and MC,
+ * the carrier's client number there, invoice number, amount, debtor (broker), load reference and lane.
+ * `carrier` is { companyName, mcNumber } (falls back to the invoice's carrier snapshot).
+ */
+export function factoringEmail(inv, { carrier, clientNo } = {}) {
+  const m = inv.meta || {};
+  const name = carrier?.companyName || m.carrier?.name || 'the carrier';
+  const mc = carrier?.mcNumber || m.carrier?.mc || null;
+  const subject = [`Invoice #${inv.number}`, name, clientNo && `client ${clientNo}`, m.reference && `load ${m.reference}`].filter(Boolean).join(' · ');
+  const load = [m.reference && `ref ${m.reference}`, m.lane].filter(Boolean).join(' · ');
+  const body = [
+    'Hello,',
+    '',
+    `Please find attached the invoice packet for ${name}${mc ? ` (MC ${mc})` : ''}.`,
+    '',
+    clientNo ? `Client number: ${clientNo}` : null,
+    `Invoice: #${inv.number}`,
+    `Amount: ${usd(inv.amountCents)}`,
+    inv.billToName ? `Debtor: ${inv.billToName}` : null,
+    load ? `Load: ${load}` : null,
+    m.deliveryDate ? `Delivered: ${day(m.deliveryDate)}` : null,
+    '',
+    'Thank you.',
+  ].filter((x) => x !== null).join('\n');
+  return { subject, body };
 }
 
 /** Weekly statement page (also used by the carrier portal). */

@@ -289,17 +289,24 @@ export function unsubscribeUrl(ownerId, email) {
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Final wire format: text + simple HTML, unsubscribe footer and List-Unsubscribe headers. */
-export function toWire({ ownerId, to, subject, body }) {
+/** The sender's postal address on one line ("123 Main St, Dallas, TX 75201"), or null. */
+export const footerAddress = (address) => String(address || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(', ').slice(0, 300) || null;
+
+/**
+ * Final wire format: text + simple HTML, footer and List-Unsubscribe headers. The footer carries the sender's postal
+ * address (CAN-SPAM requires a valid physical address in commercial email) and the unsubscribe link.
+ */
+export function toWire({ ownerId, to, subject, body, mailingAddress = null }) {
   const unsub = unsubscribeUrl(ownerId, to);
   // RFC 8058 one-click endpoint (POST) lives on the API; the body link opens the confirmation page.
   const oneClick = unsub.replace('/unsubscribe?', '/api/public/unsubscribe?');
-  const text = `${body}\n\n--\nDon't want these emails? Unsubscribe: ${unsub}`;
+  const address = footerAddress(mailingAddress);
+  const text = `${body}\n\n--\n${address ? `${address}\n` : ''}Don't want these emails? Unsubscribe: ${unsub}`;
   const htmlBody = esc(body)
     .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
     .replace(/\r?\n/g, '<br>');
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2937">${htmlBody}`
-    + `<p style="margin-top:24px;font-size:12px;color:#6b7280">Don't want these emails? <a href="${esc(unsub)}">Unsubscribe</a></p></div>`;
+    + `<p style="margin-top:24px;font-size:12px;color:#6b7280">${address ? `${esc(address)}<br>` : ''}Don't want these emails? <a href="${esc(unsub)}">Unsubscribe</a></p></div>`;
   return {
     to, subject, text, html,
     headers: { 'List-Unsubscribe': `<${oneClick}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click', 'X-DispatchDesk': '1' },

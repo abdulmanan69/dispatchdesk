@@ -21,6 +21,13 @@ export const LINE_KINDS = ['linehaul', 'detention', 'tonu', 'lumper', 'layover',
 export const FIRST_NUMBER = 1001;
 export const DISPATCH_FEE_DUE_DAYS = 7;
 export const DEFAULT_DUE_DAYS = 30;
+/**
+ * Kinds of money recorded against an invoice (meta.payments[].kind; a missing kind is a plain payment). Factored
+ * invoices settle in parts: the factoring company's advance, the reserve it releases later, and its fee, which it
+ * keeps (the fee settles that part of the invoice but is not money received). All of them count toward paidCents.
+ */
+export const PAYMENT_KINDS = ['payment', 'advance', 'reserve', 'fee'];
+export const PAYMENT_LABEL = { payment: 'Payment', advance: 'Advance from factoring', reserve: 'Reserve released', fee: 'Factoring fee' };
 const DAY = 86_400_000;
 
 const money = (cents) => `$${(Math.round(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -140,7 +147,41 @@ export async function createWithNumber(data, { attempts = 8 } = {}) {
   throw conflict('Could not number the invoice. Try again.');
 }
 
-/** API view: items, meta, balance and age. */
+/**
+ * Factoring summary of an invoice, or null when it was never submitted to a factoring company and has no factoring
+ * payments. reservePendingCents is the open balance once an advance is recorded (the reserve the factoring company
+ * still holds, before any fee not yet recorded), else 0.
+ */
+export function factoringSummary(inv, meta) {
+  const payments = Array.isArray(meta?.payments) ? meta.payments : [];
+  const factored = payments.some((p) => p?.kind && p.kind !== 'payment');
+  if (!meta?.factoring && !factored) return null;
+  const sum = (kind) => payments.filter((p) => p?.kind === kind).reduce((s, p) => s + (Number(p.amountCents) || 0), 0);
+  const advancedCents = sum('advance');
+  const balance = Math.max(0, (inv.amountCents || 0) - (inv.paidCents || 0));
+  return {
+    companyName: meta.factoring?.name ?? null,
+    submittedAt: meta.factoring?.submittedAt ?? null,
+    advancedCents,
+    feeCents: sum('fee'),
+    reserveReleasedCents: sum('reserve'),
+    reservePendingCents: advancedCents > 0 && inv.status !== 'void' ? balance : 0,
+  };
+}
+
+/**
+ * Amounts a factored invoice usually settles in, from the carrier's terms: advance = amount x advance %, fee = amount x
+ * fee %, reserve = amount - advance - fee (cents, rounded). Each is null when the terms it needs are missing.
+ */
+export function suggestedFactoring(amountCents, advancePct, feePct) {
+  const amount = Number(amountCents) || 0;
+  const advanceCents = advancePct != null ? Math.round((amount * advancePct) / 100) : null;
+  const feeCents = feePct != null ? Math.round((amount * feePct) / 100) : null;
+  const reserveCents = advanceCents != null && feeCents != null ? Math.max(0, amount - advanceCents - feeCents) : null;
+  return { advanceCents, feeCents, reserveCents };
+}
+
+/** API view: items, meta, balance and age, and the factoring summary (null when not factored). */
 export function invoiceView(inv, now = new Date()) {
   const { items, meta } = parseInvoiceData(inv.lines);
   const balanceCents = Math.max(0, (inv.amountCents || 0) - (inv.paidCents || 0));
@@ -155,6 +196,7 @@ export function invoiceView(inv, now = new Date()) {
     overdue: due.overdue,
     daysOverdue: due.days,
     ageDays: open && inv.issuedAt ? Math.max(0, Math.floor((now.getTime() - new Date(inv.issuedAt).getTime()) / DAY)) : null,
+    factoring: factoringSummary(inv, meta),
   };
 }
 

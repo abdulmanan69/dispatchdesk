@@ -4,35 +4,41 @@ import { prisma } from '../db.js';
 import { ah, badRequest, conflict } from '../lib/errors.js';
 import { parse, z, optStr, optDate, pageQuery, paginate, pageResult } from '../lib/validate.js';
 import { requirePermission, refuseApiToken } from '../middleware/auth.js';
-import { loadCarrier, loadOwned, ownerWhere, readableOwnerIds } from '../lib/access.js';
+import { loadCarrier, loadOwned, ownerWhere, readableOwnerIds, userCanReadCarrier } from '../lib/access.js';
 import { logActivity } from '../lib/activity.js';
 import { withLock, LockBusyError } from '../lib/locks.js';
 import { localDayKey } from '../lib/timezones.js';
 import { queueUserEmail } from '../services/email/compose.js';
+import { MAX_ATTACHMENTS } from '../services/email/attachments.js';
 import { assertTransition, afterStatusChange } from '../services/loads/status.js';
 import { invalidateToday } from '../services/fleet/today.js';
 import {
-  INVOICE_KINDS, OPEN_STATUSES, LINE_KINDS, DEFAULT_DUE_DAYS, DISPATCH_FEE_DUE_DAYS,
+  INVOICE_KINDS, OPEN_STATUSES, LINE_KINDS, DEFAULT_DUE_DAYS, DISPATCH_FEE_DUE_DAYS, PAYMENT_KINDS, PAYMENT_LABEL,
   parseInvoiceData, serializeInvoiceData, normalizeLines, totalOf, termsDays, linesForLoad, metaForLoad,
-  createWithNumber, invoiceView, agingSummary, csvRows, QB_COLUMNS, effectiveDueAt,
+  createWithNumber, invoiceView, agingSummary, csvRows, QB_COLUMNS, effectiveDueAt, suggestedFactoring,
 } from '../services/invoices/index.js';
 import { stageFor } from '../services/invoices/reminders.js';
-import { invoiceHtml, invoiceText, brandLogo } from '../services/invoices/print.js';
+import { invoiceHtml, invoiceText, brandLogo, factoringEmail } from '../services/invoices/print.js';
+import { invoicePdf, storeInvoicePdf, storedInvoicePdf } from '../services/invoices/pdf.js';
 
 /**
  * Invoices and receivables.
  *   GET    /                 list (status: all|draft|open|overdue|paid|void, kind, q) + aging and totals
  *   GET    /export.csv       QuickBooks Online import layout (one row per line item)
  *   GET    /loads            delivered loads that can be invoiced (for the create dialog)
- *   POST   /                 { loadId, kind } -> draft prefilled from the load (409 when one already exists)
- *   GET    /:id              one invoice
+ *   POST   /                 { loadId, kind, remitTo? } -> draft prefilled from the load (409 when one already exists);
+ *                            a freight invoice for a factored carrier gets the factoring company's remit-to
+ *   GET    /:id              one invoice, the load's documents and the carrier's factoring terms (factoringTerms)
  *   PATCH  /:id              edit (line items only while draft)
  *   POST   /:id/send         email from the user's mailbox (queueUserEmail, with POD/BOL attachments) and mark sent
  *   POST   /:id/mark-sent    mark sent without emailing (e.g. sent through the factoring company)
- *   POST   /:id/payments     record a payment (partial or full)
+ *   POST   /:id/payments     record a payment (partial or full); kind: payment | advance | reserve | fee (factoring)
  *   POST   /:id/void         void an unpaid invoice
  *   DELETE /:id              delete a draft
  *   GET    /:id/print        printable HTML page
+ *   GET    /:id/pdf          PDF download
+ *   GET    /:id/factoring-packet    what "Send to factoring" would send: to, attachments, missing paperwork, subject, body
+ *   POST   /:id/send-to-factoring   email the invoice PDF and the load's paperwork to the carrier's factoring company
  * Freight invoices move their load forward: sent -> load invoiced (from delivered), paid in full -> load paid.
  */
 const r = Router();
@@ -79,6 +85,86 @@ async function advanceLoad(user, inv, to) {
   assertTransition(load.status, to);
   const updated = await prisma.load.update({ where: { id: load.id }, data: { status: to } });
   await afterStatusChange(user, load, updated, { source: 'system' });
+}
+
+/**
+ * The carrier's customer record with its factoring company and terms, or null (not a customer, or a carrier the user
+ * may not read).
+ */
+async function carrierFactoring(user, carrierId) {
+  if (!carrierId) return null;
+  const customer = await prisma.customer.findUnique({
+    where: { carrierId },
+    select: {
+      id: true, ownerId: true, factoringClientNo: true, factoringAdvancePct: true, factoringFeePct: true, factoringRecourse: true,
+      factoringCompany: { select: { id: true, name: true, submitEmail: true, remitTo: true, phone: true } },
+      carrier: { select: { id: true, ownerId: true, assignedToId: true, companyName: true, mcNumber: true, dotNumber: true } },
+    },
+  });
+  if (!customer || !(await userCanReadCarrier(user, customer.carrier))) return null;
+  return customer;
+}
+
+/** The carrier's factoring terms for an invoice, with the amounts they suggest; null when the carrier does not factor. */
+function factoringTermsView(customer, amountCents) {
+  if (!customer) return null;
+  const c = customer;
+  if (!c.factoringCompany && c.factoringAdvancePct == null && c.factoringFeePct == null) return null;
+  return {
+    customerId: c.id,
+    companyId: c.factoringCompany?.id ?? null,
+    companyName: c.factoringCompany?.name ?? null,
+    submitEmail: c.factoringCompany?.submitEmail ?? null,
+    remitTo: c.factoringCompany?.remitTo ?? null,
+    clientNo: c.factoringClientNo ?? null,
+    advancePct: c.factoringAdvancePct ?? null,
+    feePct: c.factoringFeePct ?? null,
+    recourse: c.factoringRecourse ?? null,
+    suggested: suggestedFactoring(amountCents, c.factoringAdvancePct, c.factoringFeePct),
+  };
+}
+
+/** Why an invoice cannot go to a factoring company yet (a user-facing sentence), or null when it can. */
+function factoringProblem(inv, customer) {
+  if (inv.kind !== 'freight') return 'Only freight invoices go to a factoring company';
+  if (!inv.carrierId) return 'Assign the carrier to the load first';
+  if (!customer) return 'Make the carrier a customer and pick its factoring company on the customer profile first';
+  if (!customer.factoringCompany) return 'Pick the carrier’s factoring company on its customer profile first';
+  if (!customer.factoringCompany.submitEmail) return 'Add the factoring company’s submission email on the carrier’s profile';
+  return null;
+}
+
+// What a factoring company needs with the invoice. Most reject a packet without the rate confirmation and the POD.
+const PACKET_TYPES = ['rate_confirmation', 'bol', 'pod'];
+
+/** The load's documents (generated invoice PDFs left out), the latest rate con, BOL and POD, and which are missing. */
+async function packetDocuments(inv) {
+  const docs = inv.loadId
+    ? await prisma.document.findMany({ where: { loadId: inv.loadId, type: { not: 'invoice' } }, orderBy: { createdAt: 'desc' }, take: 200, select: { id: true, type: true, originalName: true, sizeBytes: true, createdAt: true } })
+    : [];
+  const picks = PACKET_TYPES.map((t) => docs.find((d) => d.type === t)).filter(Boolean);
+  return { docs, picks, missing: PACKET_TYPES.filter((t) => !picks.some((d) => d.type === t)) };
+}
+
+/**
+ * Change an invoice's meta without losing a change made at the same moment (a payment): compare-and-set on
+ * updatedAt, retried with a fresh read.
+ */
+async function updateMeta(id, change) {
+  for (let i = 0; i < 5; i += 1) {
+    const cur = await prisma.invoice.findUnique({ where: { id } });
+    const { items, meta } = parseInvoiceData(cur.lines);
+    try {
+      return await prisma.invoice.update({
+        where: { id, updatedAt: cur.updatedAt },
+        data: { lines: serializeInvoiceData({ items, meta: change(meta) }) },
+        include: includeRefs,
+      });
+    } catch (err) {
+      if (err?.code !== 'P2025') throw err;
+    }
+  }
+  throw conflict('This invoice changed while it was being updated. Reload it and try again.');
 }
 
 const listQuery = z.object({
@@ -170,7 +256,7 @@ r.get('/loads', ah(async (req, res) => {
 }));
 
 r.post('/', ah(async (req, res) => {
-  const body = parse(z.object({ loadId: z.string().min(1).max(40), kind: z.enum(INVOICE_KINDS).default('freight'), autoRemind: z.boolean().optional() }), req.body);
+  const body = parse(z.object({ loadId: z.string().min(1).max(40), kind: z.enum(INVOICE_KINDS).default('freight'), autoRemind: z.boolean().optional(), remitTo: optStr(500) }), req.body);
   const load = await loadOwned('load', req.user, body.loadId, { write: true, include: { broker: true, carrier: true } });
   const tonu = load.status === 'canceled' && load.tonuCents > 0;
   if (!INVOICEABLE.includes(load.status) && !tonu) throw badRequest('Invoice a load once it is delivered (or record a TONU first)');
@@ -219,6 +305,12 @@ async function createDraft(user, load, body) {
   // spell out), so the due date set when the invoice is sent is the one the broker sees in the email.
   meta.dueDays = dueDays;
   if (body.kind === 'dispatch_fee') meta.remitTo = null;
+  if (body.remitTo) meta.remitTo = body.remitTo;
+  else if (body.kind === 'freight') {
+    // A factored carrier's freight is paid to its factoring company: under a notice of assignment the invoice must say so.
+    const company = (await carrierFactoring(user, load.carrierId))?.factoringCompany;
+    if (company?.remitTo) meta.remitTo = `${company.name}\n${company.remitTo}`;
+  }
   const inv = await createWithNumber({
     ownerId: load.ownerId, kind: body.kind, status: 'draft', loadId: load.id, carrierId: load.carrierId, ...billTo,
     lines: serializeInvoiceData({ items, meta }), amountCents: totalOf(items),
@@ -229,10 +321,13 @@ async function createDraft(user, load, body) {
 
 r.get('/:id', ah(async (req, res) => {
   const inv = await loadInvoice(req.user, req.params.id);
-  const docs = inv.loadId
-    ? await prisma.document.findMany({ where: { loadId: inv.loadId }, orderBy: { createdAt: 'desc' }, select: { id: true, type: true, originalName: true, sizeBytes: true } })
-    : [];
-  res.json({ invoice: invoiceView(inv), documents: docs });
+  const [docs, customer] = await Promise.all([
+    inv.loadId
+      ? prisma.document.findMany({ where: { loadId: inv.loadId }, orderBy: { createdAt: 'desc' }, select: { id: true, type: true, originalName: true, sizeBytes: true } })
+      : [],
+    inv.kind === 'freight' ? carrierFactoring(req.user, inv.carrierId) : null,
+  ]);
+  res.json({ invoice: invoiceView(inv), documents: docs, factoringTerms: factoringTermsView(customer, inv.amountCents) });
 }));
 
 const lineSchema = z.object({
@@ -372,18 +467,23 @@ r.post('/:id/payments', ah(async (req, res) => {
     paidAt: optDate,
     method: optStr(40),
     reference: optStr(80),
+    // payment: money received (default). Factored invoices: advance (from the factoring company), reserve (released
+    // later), fee (kept by the factoring company: it settles that part of the invoice but is not money received).
+    kind: z.enum(PAYMENT_KINDS).default('payment'),
   }), req.body);
+  if (body.kind !== 'payment' && inv.kind !== 'freight') throw badRequest('Factoring amounts apply to freight invoices only');
   const amount = body.full ? balance : body.amountCents;
-  if (!amount) throw badRequest('Enter the amount received');
+  if (!amount) throw badRequest(body.kind === 'fee' ? 'Enter the fee amount' : 'Enter the amount received');
   if (amount > balance) throw badRequest(`That is more than the open balance of $${(balance / 100).toFixed(2)}`);
   const at = body.paidAt || new Date();
   const { items, meta } = parseInvoiceData(inv.lines);
-  const payments = [...(meta.payments || []), { amountCents: amount, at: at.toISOString(), method: body.method || null, reference: body.reference || null, by: req.user.name }].slice(-50);
+  const payments = [...(meta.payments || []), { amountCents: amount, at: at.toISOString(), method: body.method || null, reference: body.reference || null, by: req.user.name, kind: body.kind }].slice(-50);
   const paidCents = inv.paidCents + amount;
   const paid = paidCents >= inv.amountCents;
-  // Optimistic guard: a payment recorded at the same moment (another tab or worker) must not be overwritten.
+  // Optimistic guard: a payment recorded at the same moment (another tab or worker) must not be overwritten, nor a
+  // change to the invoice's other details (a factoring submission) made since it was read.
   const updated = await prisma.invoice.update({
-    where: { id: inv.id, paidCents: inv.paidCents, status: inv.status },
+    where: { id: inv.id, paidCents: inv.paidCents, status: inv.status, updatedAt: inv.updatedAt },
     data: { paidCents, status: paid ? 'paid' : 'partial', paidAt: paid ? at : null, lines: serializeInvoiceData({ items, meta: { ...meta, payments } }) },
     include: includeRefs,
   }).catch((err) => {
@@ -391,7 +491,8 @@ r.post('/:id/payments', ah(async (req, res) => {
     throw err;
   });
   if (paid) await advanceLoad(req.user, updated, 'paid');
-  await logActivity(req.user, { type: 'load', carrierId: inv.carrierId, summary: `Recorded $${(amount / 100).toFixed(2)} paid on invoice #${inv.number}${paid ? ' (paid in full)' : ''}` });
+  const what = body.kind === 'payment' ? 'paid' : PAYMENT_LABEL[body.kind].toLowerCase();
+  await logActivity(req.user, { type: 'load', carrierId: inv.carrierId, summary: `Recorded $${(amount / 100).toFixed(2)} ${what} on invoice #${inv.number}${paid ? ' (paid in full)' : ''}` });
   res.json({ invoice: invoiceView(updated) });
 }));
 
@@ -422,5 +523,121 @@ r.get('/:id/print', ah(async (req, res) => {
   // The dispatcher's logo goes on their own dispatch-fee invoices only: freight invoices are issued in the carrier's name.
   res.type('html').send(invoiceHtml(view, { ...who, tz: req.user.timezone, logo: inv.kind === 'dispatch_fee' ? await brandLogo(inv.ownerId) : null }));
 }));
+
+r.get('/:id/pdf', ah(async (req, res) => {
+  const inv = await loadInvoice(req.user, req.params.id);
+  const view = invoiceView(inv);
+  const who = await issuer(req.user, view);
+  // Same rule as the printable page: the dispatcher's logo only on their own dispatch-fee invoices.
+  const pdf = await invoicePdf(view, { ...who, tz: req.user.timezone, logo: inv.kind === 'dispatch_fee' ? await brandLogo(inv.ownerId) : null });
+  res.set('Content-Type', 'application/pdf');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Cache-Control', 'private, no-store');
+  res.set('Content-Disposition', `attachment; filename="invoice-${inv.number}.pdf"`);
+  res.send(Buffer.from(pdf));
+}));
+
+/**
+ * What "Send to factoring" sends, for the confirmation dialog: the factoring company's submission address, the default
+ * attachments (the invoice PDF, made at send time, and the load's latest rate con, BOL and POD), the other load
+ * documents to choose from, the paperwork that is missing, and the default subject and body. `problem` says why it
+ * cannot be sent yet (no factoring company or no submission email), else null.
+ */
+r.get('/:id/factoring-packet', ah(async (req, res) => {
+  const inv = await loadInvoice(req.user, req.params.id);
+  if (inv.kind !== 'freight') throw badRequest('Only freight invoices go to a factoring company');
+  const [customer, packet] = await Promise.all([carrierFactoring(req.user, inv.carrierId), packetDocuments(inv)]);
+  const view = invoiceView(inv);
+  const company = customer?.factoringCompany || null;
+  const email = factoringEmail(view, { carrier: customer?.carrier, clientNo: customer?.factoringClientNo });
+  const doc = (d) => ({ id: d.id, type: d.type, name: d.originalName, sizeBytes: d.sizeBytes });
+  res.json({
+    to: company?.submitEmail || null,
+    company: company ? { id: company.id, name: company.name, submitEmail: company.submitEmail } : null,
+    customerId: customer?.id ?? null,
+    clientNo: customer?.factoringClientNo ?? null,
+    problem: factoringProblem(inv, customer),
+    attachments: [{ id: null, type: 'invoice', name: `invoice-${inv.number}.pdf`, generated: true }, ...packet.picks.map(doc)],
+    documents: packet.docs.map(doc),
+    missing: packet.missing,
+    maxAttachments: MAX_ATTACHMENTS,
+    subject: email.subject,
+    body: email.body,
+    submitted: view.meta.factoring || null,
+  });
+}));
+
+/**
+ * Email the invoice to the carrier's factoring company from the user's mailbox: the invoice PDF (generated now and
+ * stored as the invoice's document) plus documentIds (default: the load's latest rate con, BOL and POD), at most 5
+ * files in all. On success a draft is marked sent (load -> invoiced) and meta.factoring records the submission.
+ */
+r.post('/:id/send-to-factoring', ah(async (req, res) => {
+  refuseApiToken(req, 'send invoices');
+  const first = await loadInvoice(req.user, req.params.id, true);
+  // Same lock as /send: one email about this invoice at a time, so a double click never submits it twice.
+  try {
+    await withLock(`invoice.send.${first.id}`, 120_000, () => sendToFactoring(req, res, first));
+  } catch (err) {
+    if (err instanceof LockBusyError) throw conflict('This invoice is being sent already.');
+    throw err;
+  }
+}));
+
+async function sendToFactoring(req, res, first) {
+  const inv = await loadInvoice(req.user, first.id, true);
+  const before = parseInvoiceData(first.lines).meta.factoring?.submittedAt || null;
+  const last = parseInvoiceData(inv.lines).meta.factoring?.submittedAt || null;
+  if (last && (last !== before || Date.now() - new Date(last).getTime() < RESEND_GAP_MS)) {
+    throw conflict('This invoice was just sent to the factoring company. Try again in a minute to send it again.', { invoiceId: inv.id });
+  }
+  if (inv.kind !== 'freight') throw badRequest('Only freight invoices go to a factoring company');
+  if (['void', 'paid'].includes(inv.status)) throw badRequest(`This invoice is ${inv.status}`);
+  if (!inv.amountCents) throw badRequest('Add at least one line with an amount before sending');
+  const body = parse(z.object({
+    documentIds: z.array(z.string().max(40)).max(MAX_ATTACHMENTS).optional(),
+    subject: z.string().trim().max(300).optional(),
+    body: z.string().max(20000).optional(),
+    accountId: z.string().max(40).optional(),
+  }), req.body);
+  const customer = await carrierFactoring(req.user, inv.carrierId);
+  const problem = factoringProblem(inv, customer);
+  if (problem) throw badRequest(problem);
+  const company = customer.factoringCompany;
+
+  // The invoice PDF always goes first; it is made now, so an earlier stored copy is not attached twice.
+  const stored = await storedInvoicePdf(inv);
+  const extra = body.documentIds
+    ? [...new Set(body.documentIds.filter((id) => id && id !== stored?.id))]
+    : (await packetDocuments(inv)).picks.map((d) => d.id);
+  if (extra.length > MAX_ATTACHMENTS - 1) throw badRequest(`Attach at most ${MAX_ATTACHMENTS - 1} files besides the invoice PDF`);
+
+  const view = invoiceView(inv);
+  // Issue and due dates as markSent will store them, so the PDF and the record agree.
+  const issuedAt = inv.issuedAt || new Date();
+  const preview = { ...view, issuedAt, dueAt: inv.status === 'draft' ? effectiveDueAt(inv, issuedAt) : inv.dueAt };
+  const who = await issuer(req.user, view);
+  const pdf = await invoicePdf(preview, { ...who, tz: req.user.timezone });
+  const doc = await storeInvoicePdf(req.user, inv, pdf);
+  const email = factoringEmail(view, { carrier: customer.carrier, clientNo: customer.factoringClientNo });
+  const result = await queueUserEmail({
+    // Addressed to the factoring company, not the carrier: the carrier's do-not-email flag and last-contacted date stay
+    // out of it. The invoice keeps the link (meta.factoring.emailId).
+    user: req.user, toEmail: company.submitEmail, carrierId: null,
+    subject: body.subject || email.subject,
+    body: body.body?.trim() ? body.body : email.body,
+    documentIds: [doc.id, ...extra],
+    accountId: body.accountId,
+    aiGenerated: false,
+  });
+  if (result.outcome === 'failed') return res.status(502).json({ error: result.message || 'The email could not be sent', outcome: result.outcome, invoice: view });
+
+  // A draft is issued now (load -> invoiced); an invoice already sent to the broker only records the submission.
+  if (inv.status === 'draft') await markSent(req.user, { ...inv, issuedAt });
+  const factoring = { companyId: company.id, name: company.name, submittedAt: new Date().toISOString(), toEmail: company.submitEmail, emailId: result.email?.id ?? null };
+  const updated = await updateMeta(inv.id, (meta) => ({ ...meta, factoring }));
+  await logActivity(req.user, { type: 'load', carrierId: inv.carrierId, summary: `Sent invoice #${inv.number} to ${company.name} (${company.submitEmail}) for factoring` });
+  return res.json({ invoice: invoiceView(updated), outcome: result.outcome, message: result.message, documentId: doc.id });
+}
 
 export default r;

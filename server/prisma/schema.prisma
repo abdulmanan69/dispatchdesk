@@ -53,6 +53,7 @@ model User {
   theme             String    @default("system") // light | dark | system
   timezone          String    @default("America/Chicago")
   emailSignature    String?
+  mailingAddress    String? // physical postal address printed in the email footer (CAN-SPAM)
   notifyEmail       Boolean   @default(true)
   notifyInApp       Boolean   @default(true)
   notifyFollowUps   Boolean   @default(true)
@@ -118,6 +119,7 @@ model User {
   aiUsage            AiUsageEvent[]
   contactConsents    ContactConsent[]
   negotiations       Negotiation[]
+  factoringCompanies FactoringCompany[]
   uploadedDocuments  Document[]            @relation("DocumentUploader")
   trainingCourses    TrainingCourse[]
   trainingProgress   TrainingProgress[]
@@ -530,13 +532,39 @@ model Customer {
   portalTokenHash    String?        @unique // carrier statement/portal link (sha256)
   portalExpiresAt    DateTime?
   notes              String?
+  // Factoring: who buys this carrier's invoices and on what terms (null company = the carrier does not factor).
+  factoringCompanyId  String?
+  factoringClientNo   String? // the carrier's account / client number at the factoring company
+  factoringAdvancePct Float? // percent of the invoice advanced up front, e.g. 90
+  factoringFeePct     Float? // factoring fee in percent of the invoice, e.g. 3
+  factoringRecourse   Boolean? // true = recourse, false = non-recourse, null = not recorded
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   carrier            Carrier        @relation(fields: [carrierId], references: [id], onDelete: Cascade)
   owner              User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   lanes              CustomerLane[]
+  factoringCompany   FactoringCompany? @relation(fields: [factoringCompanyId], references: [id], onDelete: SetNull)
 
   @@index([ownerId, status])
+  @@index([factoringCompanyId])
+}
+
+/// A factoring company the dispatcher's carriers use. Kept per owner and shared by that owner's carriers.
+model FactoringCompany {
+  id          String     @id @default(cuid())
+  ownerId     String
+  name        String
+  submitEmail String? // where invoice packets (invoice, rate confirmation, BOL, POD) are emailed
+  remitTo     String? // remit-to block printed on freight invoices under a notice of assignment
+  phone       String?
+  website     String?
+  notes       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  owner       User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  customers   Customer[]
+
+  @@index([ownerId])
 }
 
 model CustomerLane {

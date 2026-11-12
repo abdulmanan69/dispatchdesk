@@ -23,6 +23,8 @@ r.patch('/', requireAuth, ah(async (req, res) => {
     timezone: z.string().refine(validTz, 'Unknown time zone').optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
     emailSignature: optStr(2000),
+    // Postal address printed in the footer of every email (CAN-SPAM). Blank clears it.
+    mailingAddress: optStr(300),
     // Fills {{my_company}} for users without a team. Trimmed; blank clears it.
     companyName: z.preprocess((v) => (typeof v === 'string' ? v.trim() || null : v), z.string().max(120, 'Company name: at most 120 characters').nullable().optional()),
     notifyEmail: z.boolean().optional(),

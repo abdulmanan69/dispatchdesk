@@ -52,7 +52,7 @@ export async function canReadOwner(user, ownerId) {
   return (await teamMemberIds(user)).includes(ownerId);
 }
 
-async function canWriteOwner(user, ownerId, assignedToId) {
+export async function canWriteOwner(user, ownerId, assignedToId = null) {
   if (ownerId === user.id || assignedToId === user.id) return true;
   if (!isTeamLead(user)) return false;
   return (await teamMemberIds(user)).includes(ownerId);

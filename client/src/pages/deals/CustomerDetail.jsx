@@ -11,6 +11,7 @@ import DocumentsPanel, { documentRequestBody } from '../../components/documents/
 import LoadFormModal from '../../components/dispatch/LoadForm.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
 import StatementsPanel from '../../components/deals/StatementsPanel.jsx';
+import FactoringCard from '../../components/deals/FactoringCard.jsx';
 import OnboardingPanel from '../../components/onboarding/OnboardingPanel.jsx';
 import { recordUrl } from '../../components/onboarding/onboardingLinks.js';
 import { rulesSummary } from '../../components/dispatch/fit.js';
@@ -203,6 +204,7 @@ export default function CustomerDetail() {
                     {rules.length > 0 && <div className="mb-4 flex flex-wrap gap-1">{rules.map((r) => <Badge key={r} color="gray">{r}</Badge>)}</div>}
                     <TermsForm customer={customer} />
                   </Card>
+                  <FactoringCard customer={customer} onDocuments={() => setTab('documents')} />
                   <Lanes customer={customer} />
                 </div>
                 <div className="space-y-4">

@@ -10,6 +10,7 @@ import { useToast } from '../../components/Toast.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { applyTheme } from '../../context/theme.js';
 import { Card, PageHeader, Tabs, Field, Input, Textarea, Select, Button, Switch, Checkbox, Avatar, Badge, QueryState, IconButton, Spinner, cx } from '../../components/ui.jsx';
+import MailingAddressField from '../../components/email/MailingAddressField.jsx';
 import { pushSupport, enablePush, disablePush, currentSubscription, thisDeviceId, deviceLabel } from '../../context/push.js';
 import SecurityPanel from '../../components/settings/SecurityPanel.jsx';
 import CallingSettings from '../../components/calling/CallingSettings.jsx';
@@ -507,6 +508,7 @@ function StatusRow({ icon: Icon, name, ok, detail, action }) {
 function Integrations() {
   const { user } = useAuth();
   const [sig, setSig] = useState(user.emailSignature || '');
+  const [address, setAddress] = useState(user.mailingAddress || '');
   const save = useSaveProfile('Signature saved');
   const ai = useQuery({ queryKey: ['ai', 'status'], queryFn: () => api.get('/api/ai/status') });
   const providers = useQuery({ queryKey: ['discovery', 'providers'], queryFn: () => api.get('/api/discovery/providers') });
@@ -514,8 +516,9 @@ function Integrations() {
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       <Card title="Email signature" actions={<Button variant="secondary" size="sm" icon={Mail} to="/app/email?tab=mailboxes">Manage mailboxes</Button>}>
-        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate({ emailSignature: sig }); }}>
+        <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate({ emailSignature: sig, mailingAddress: address }); }}>
           <Field label="Signature" hint="Appended to emails you send from the app"><Textarea rows={5} maxLength={2000} value={sig} onChange={(e) => setSig(e.target.value)} placeholder={`${user.name}\nDispatcher · ${user.phone || 'phone'}`} /></Field>
+          <MailingAddressField value={address} onChange={setAddress} />
           <Button type="submit" loading={save.isPending}>Save signature</Button>
         </form>
       </Card>

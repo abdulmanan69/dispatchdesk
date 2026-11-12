@@ -36,5 +36,5 @@ export const LOAD_DOC_TYPES = ['rate_confirmation', 'bol', 'pod', 'lumper_receip
 export const DOC_LABEL = {
   agreement: 'Dispatch agreement', mc_authority: 'MC authority', w9: 'W-9', coi: 'Certificate of insurance', permit: 'Permit',
   rate_confirmation: 'Rate confirmation', bol: 'BOL', pod: 'POD', lumper_receipt: 'Lumper receipt', scale_ticket: 'Scale ticket',
-  fuel_receipt: 'Fuel receipt', voided_check: 'Voided check', noa: 'Notice of assignment', other: 'Other',
+  fuel_receipt: 'Fuel receipt', voided_check: 'Voided check', noa: 'Notice of assignment', invoice: 'Invoice', other: 'Other',
 };

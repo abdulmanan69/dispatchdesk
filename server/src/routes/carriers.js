@@ -445,7 +445,8 @@ const DETAIL_INCLUDE = {
   contacts: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }], take: DETAIL_LIMITS.contacts },
   notes: { orderBy: [{ pinned: 'desc' }, { createdAt: 'desc' }], take: DETAIL_LIMITS.notes, include: { author: { select: { id: true, name: true } } } },
   opportunity: true,
-  customer: true,
+  // The factoring company's name shows in the profile header ("Factors with ...").
+  customer: { omit: { portalTokenHash: true }, include: { factoringCompany: { select: { id: true, name: true } } } },
   calls: { orderBy: { calledAt: 'desc' }, take: DETAIL_LIMITS.calls, include: { user: { select: { id: true, name: true } } } },
   // Only what the profile shows: step types and timing, never the step bodies.
   enrollments: {

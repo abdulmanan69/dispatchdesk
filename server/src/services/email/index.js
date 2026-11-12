@@ -250,7 +250,7 @@ export async function deliverEmail(emailId, { retry = true, ctx = null } = {}) {
 
   let result;
   try {
-    const wire = toWire({ ownerId: email.userId, to: email.toEmail, subject: email.subject, body: email.body });
+    const wire = toWire({ ownerId: email.userId, to: email.toEmail, subject: email.subject, body: email.body, mailingAddress: user.mailingAddress });
     result = await sendWithAccount(account, { ...wire, messageId, attachments }, ctx);
   } catch (err) {
     const attempts = email.attempts + 1;

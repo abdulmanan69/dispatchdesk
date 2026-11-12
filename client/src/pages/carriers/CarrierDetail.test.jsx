@@ -76,6 +76,16 @@ describe('Carrier profile', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Reply logged and 1 sequence stopped'));
   });
 
+  it('shows who a customer factors with in the header, and nothing for a carrier that does not factor', async () => {
+    renderIt();
+    expect(await screen.findByRole('heading', { name: 'Lone Star Haulers' })).toBeInTheDocument();
+    expect(screen.queryByText(/^Factors with/)).toBeNull();
+    const customer = { id: 'cu1', status: 'active', signedAt: '2026-11-01T12:00:00Z', dispatchFeePercent: 8, factoringCompanyId: 'f1', factoringCompany: { id: 'f1', name: 'Apex Capital' } };
+    get.mockImplementation(async (url) => (url === '/api/carriers/c2' ? { ...DETAIL, carrier: { ...CARRIER, id: 'c2', customer } } : { items: [] }));
+    renderIt('/app/carriers/c2');
+    expect(await screen.findByText('Factors with Apex Capital')).toBeInTheDocument();
+  });
+
   it('keeps the profile on screen when a refresh fails', async () => {
     const qc = renderIt();
     expect(await screen.findByRole('heading', { name: 'Lone Star Haulers' })).toBeInTheDocument();

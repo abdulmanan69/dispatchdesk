@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Trash2, Printer, Send, CircleDollarSign, Ban, CheckCheck } from 'lucide-react';
+import { Plus, Trash2, Printer, Send, CircleDollarSign, Ban, CheckCheck, Download, Landmark } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
+import { errorToast, useApiMutation } from '../../lib/hooks.js';
 import { date, money, toDateInput } from '../../lib/format.js';
-import { Button, ErrorState, Field, IconButton, Input, Loading, Select, Switch, Textarea } from '../ui.jsx';
+import { Badge, Button, ErrorState, Field, IconButton, Input, Loading, Select, Switch, Textarea } from '../ui.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
 import { useToast } from '../Toast.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { openPrintable } from './print.js';
-import { PaymentModal, SendInvoiceModal, StatusBadge } from './InvoiceModals.jsx';
+import { FactoringSummary, PAYMENT_KIND_LABEL, PaymentModal, SendInvoiceModal, SendToFactoringModal, StatusBadge } from './InvoiceModals.jsx';
 
 const LINE_KINDS = [
   ['linehaul', 'Line haul'], ['detention', 'Detention'], ['lumper', 'Lumper reimbursement'], ['layover', 'Layover'], ['tonu', 'TONU'], ['fee', 'Dispatch fee'], ['other', 'Other'],
@@ -55,6 +55,10 @@ export default function InvoiceEditor({ id, onClose }) {
   const [f, setF] = useState({});
   const [sending, setSending] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [factoring, setFactoring] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  // The carrier's factoring company and terms (freight invoices of factored carriers), for "Send to factoring" and payments.
+  const terms = q.data?.factoringTerms || null;
   useEffect(() => {
     if (!inv) return;
     setRows(inv.items.map(toRow));
@@ -77,6 +81,17 @@ export default function InvoiceEditor({ id, onClose }) {
   });
   const setRow = (i, patch) => setRows((cur) => cur.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const print = () => { if (!openPrintable(`/api/invoices/${id}/print`)) toast.info('Allow pop-ups for this site to print the invoice.'); };
+  const downloadPdf = async () => {
+    setDownloading(true);
+    try {
+      await api.download(`/api/invoices/${id}/pdf`, `invoice-${inv.number}.pdf`);
+    } catch (err) {
+      errorToast(toast, err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+  const canFactor = inv?.kind === 'freight' && !!terms?.companyId && ['draft', 'sent', 'partial'].includes(inv.status);
   const saveThen = async (fn) => {
     try {
       await save.mutateAsync(body());
@@ -92,9 +107,11 @@ export default function InvoiceEditor({ id, onClose }) {
         {draft && <Button variant="ghost" icon={Trash2} className="mr-auto text-c-red" onClick={async () => { if (await confirm({ title: 'Delete this draft?', message: `Draft #${inv.number} will be deleted.`, danger: true })) remove.mutate(); }}>Delete draft</Button>}
         {['sent', 'partial'].includes(inv.status) && inv.paidCents === 0 && <Button variant="ghost" icon={Ban} className="mr-auto" onClick={async () => { if (await confirm({ title: 'Void this invoice?', message: 'It stays on record as void and the load can be invoiced again.', confirmLabel: 'Void', danger: true })) voidIt.mutate(); }}>Void</Button>}
         <Button variant="secondary" icon={Printer} onClick={print}>Print</Button>
+        <Button variant="secondary" icon={Download} loading={downloading} onClick={downloadPdf}>Download PDF</Button>
         {inv.status !== 'void' && inv.status !== 'paid' && <Button variant="secondary" loading={save.isPending} onClick={() => save.mutate(body())}>Save</Button>}
         {draft && <Button variant="secondary" icon={CheckCheck} loading={markSent.isPending} onClick={() => saveThen(() => markSent.mutate())}>Mark sent</Button>}
         {['sent', 'partial'].includes(inv.status) && <Button variant="secondary" icon={CircleDollarSign} onClick={() => setPaying(true)}>Record payment</Button>}
+        {canFactor && <Button variant="secondary" icon={Landmark} onClick={() => (draft ? saveThen(() => setFactoring(true)) : setFactoring(true))}>Send to factoring</Button>}
         {['draft', 'sent', 'partial'].includes(inv.status) && <Button icon={Send} onClick={() => (draft ? saveThen(() => setSending(true)) : setSending(true))}>{draft ? 'Email invoice' : 'Email again'}</Button>}
       </>}>
       {!id ? null : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : !inv ? <Loading /> : (
@@ -103,6 +120,8 @@ export default function InvoiceEditor({ id, onClose }) {
             <StatusBadge invoice={inv} />
             <span className="text-muted">{inv.issuedAt ? `Issued ${date(inv.issuedAt)}` : 'Not issued yet'} · due {date(inv.dueAt)}</span>
             {inv.load && <Link to={`/app/loads?load=${inv.load.id}`} className="text-brand-700 hover:underline dark:text-brand-300">Load {inv.load.referenceNumber || `${inv.load.originCity} → ${inv.load.destCity}`}</Link>}
+            {inv.factoring?.submittedAt && <Badge color="teal" title={inv.meta?.factoring?.toEmail || undefined}>Submitted to {inv.factoring.companyName || 'factoring'} · {date(inv.factoring.submittedAt)}</Badge>}
+            {!inv.factoring?.submittedAt && inv.kind === 'freight' && terms?.companyName && <span className="text-xs text-muted">Factors with {terms.companyName}</span>}
             {own && logo.data && (
               <span className="ml-auto rounded bg-white px-2 py-1 ring-1 ring-line" title="Your logo, printed at the top of this invoice">
                 <img src={logo.data} alt="Your logo" className="block h-7 w-auto max-w-[140px] object-contain" />
@@ -147,7 +166,14 @@ export default function InvoiceEditor({ id, onClose }) {
             <Field label="Bill-to email"><Input type="email" value={f.billToEmail || ''} disabled={inv.status === 'void'} onChange={(e) => setF({ ...f, billToEmail: e.target.value })} /></Field>
             <Field label="Due date" hint={draft ? 'Counts from the day it is sent unless you change it' : undefined}><Input type="date" value={f.dueAt || ''} onChange={(e) => setF({ ...f, dueAt: e.target.value })} /></Field>
             <Field label="Terms"><Input value={f.terms || ''} onChange={(e) => setF({ ...f, terms: e.target.value })} maxLength={80} placeholder="Net 30" /></Field>
-            {inv.kind === 'freight' && <Field label="Remit to" hint="The carrier, or its factoring company when there is a notice of assignment" className="sm:col-span-2"><Textarea rows={3} value={f.remitTo || ''} onChange={(e) => setF({ ...f, remitTo: e.target.value })} maxLength={500} /></Field>}
+            {inv.kind === 'freight' && (
+              <div className="sm:col-span-2">
+                <Field label="Remit to" hint="The carrier, or its factoring company when there is a notice of assignment"><Textarea rows={3} value={f.remitTo || ''} onChange={(e) => setF({ ...f, remitTo: e.target.value })} maxLength={500} /></Field>
+                {terms?.remitTo && inv.status !== 'void' && f.remitTo !== `${terms.companyName}\n${terms.remitTo}` && (
+                  <Button size="sm" variant="link" onClick={() => setF({ ...f, remitTo: `${terms.companyName}\n${terms.remitTo}` })}>Use {terms.companyName}’s remit-to</Button>
+                )}
+              </div>
+            )}
             <Field label="Notes on the invoice" className="sm:col-span-2"><Textarea rows={2} value={f.notes || ''} onChange={(e) => setF({ ...f, notes: e.target.value })} maxLength={2000} /></Field>
             <div className="sm:col-span-2">
               <Switch checked={!!f.autoRemind} onChange={(v) => setF({ ...f, autoRemind: v })} label="Email reminders to the bill-to address when it is 0, 7, 15 and 30 days past due" />
@@ -155,13 +181,15 @@ export default function InvoiceEditor({ id, onClose }) {
             </div>
           </section>
 
+          <FactoringSummary summary={inv.factoring} />
+
           {inv.meta?.payments?.length > 0 && (
             <section>
               <h3 className="mb-1.5 text-sm font-medium">Payments</h3>
               <ul className="divide-y divide-line rounded-md border border-line text-sm">
                 {inv.meta.payments.map((p, i) => (
                   <li key={i} className="flex flex-wrap justify-between gap-2 px-3 py-2">
-                    <span>{date(p.at)}{p.method ? ` · ${p.method}` : ''}{p.reference ? ` · ${p.reference}` : ''}{p.by ? <span className="text-muted"> · {p.by}</span> : null}</span>
+                    <span>{p.kind && p.kind !== 'payment' ? <span className="font-medium">{PAYMENT_KIND_LABEL[p.kind] || p.kind} · </span> : null}{date(p.at)}{p.method ? ` · ${p.method}` : ''}{p.reference ? ` · ${p.reference}` : ''}{p.by ? <span className="text-muted"> · {p.by}</span> : null}</span>
                     <span className="tabular font-medium">{money(p.amountCents)}</span>
                   </li>
                 ))}
@@ -171,7 +199,8 @@ export default function InvoiceEditor({ id, onClose }) {
         </div>
       )}
       {sending && inv && <SendInvoiceModal invoice={inv} documents={q.data.documents} onClose={() => setSending(false)} />}
-      {paying && inv && <PaymentModal invoice={inv} onClose={() => setPaying(false)} />}
+      {paying && inv && <PaymentModal invoice={inv} terms={terms} onClose={() => setPaying(false)} />}
+      {factoring && inv && <SendToFactoringModal invoice={inv} onClose={() => setFactoring(false)} />}
     </Modal>
   );
 }

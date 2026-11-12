@@ -75,6 +75,7 @@ import negotiationRoutes from './routes/negotiations.js';
 import publicOnboardingRoutes from './routes/publicOnboarding.js';
 import planEtaRoutes from './routes/planEta.js';
 import onboardingRoutes from './routes/onboarding.js';
+import factoringCompanyRoutes from './routes/factoringCompanies.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = process.env.CLIENT_DIST || path.resolve(__dirname, '../../client/dist');
@@ -275,6 +276,7 @@ export function createApp() {
   app.use('/api/contact-consents', requireAuth, contactConsentRoutes);
   app.use('/api/negotiations', requireAuth, negotiationRoutes);
   app.use('/api/plan-eta', requireAuth, planEtaRoutes);
+  app.use('/api/factoring-companies', requireAuth, factoringCompanyRoutes);
 
   app.use('/api', notFoundApi);
 

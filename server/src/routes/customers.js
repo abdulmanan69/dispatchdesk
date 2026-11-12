@@ -52,6 +52,15 @@ export function docChecklist(documents, now = new Date(), signed = null) {
   });
 }
 
+/** The factoring company fields shown with a customer. */
+export const FACTORING_COMPANY_SELECT = { id: true, name: true, submitEmail: true, remitTo: true, phone: true };
+
+/** Notice of assignment status from a carrier's documents: the latest 'noa' document, if any. */
+export function noaStatus(documents) {
+  const latest = documents.filter((d) => d.type === 'noa').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+  return { onFile: !!latest, documentId: latest?.id ?? null, uploadedAt: latest?.createdAt ?? null };
+}
+
 const num = (v) => (v == null ? 0 : Number(v));
 
 /**
@@ -140,10 +149,11 @@ r.get('/', ah(async (req, res) => {
             id: true, companyName: true, mcNumber: true, dotNumber: true, phone: true, email: true, city: true, state: true, equipment: true, fleetSize: true,
             fmcsaSnapshot: true, fmcsaCheckedAt: true,
             assignedTo: { select: { id: true, name: true } },
-            documents: { where: { type: { in: REQUIRED_DOCS } }, select: { id: true, type: true, expiresAt: true, createdAt: true } },
+            documents: { where: { type: { in: [...REQUIRED_DOCS, 'noa'] } }, select: { id: true, type: true, expiresAt: true, createdAt: true } },
           },
         },
         owner: { select: { id: true, name: true } },
+        factoringCompany: { select: FACTORING_COMPANY_SELECT },
       },
     }),
     prisma.customer.count({ where }),
@@ -158,6 +168,7 @@ r.get('/', ah(async (req, res) => {
     const checklist = docChecklist(documents, new Date(), signedLinks.get(c.carrierId));
     return {
       ...c, carrier: carrierInfo,
+      noa: noaStatus(documents),
       compliance: { missing: checklist.filter((x) => x.status === 'missing').length, expiring: checklist.filter((x) => x.status === 'expiring' || x.status === 'expired').length },
       revenue: revenueView(revenue.get(c.carrierId)),
       fmcsa: fmcsaView(fmcsaSnapshot, fmcsaCheckedAt),
@@ -209,7 +220,7 @@ r.post('/', ah(async (req, res) => {
 
 r.get('/:id', ah(async (req, res) => {
   const { customer } = await loadCustomer(req.user, req.params.id);
-  const [carrier, lanes, documents, loads, activities, revenue] = await Promise.all([
+  const [carrier, lanes, documents, loads, activities, revenue, factoringCompany] = await Promise.all([
     prisma.carrier.findUnique({
       where: { id: customer.carrierId },
       include: { contacts: { orderBy: { isPrimary: 'desc' } }, tags: { include: { tag: true } }, assignedTo: { select: { id: true, name: true } }, stage: true },
@@ -219,6 +230,7 @@ r.get('/:id', ah(async (req, res) => {
     prisma.load.findMany({ where: { carrierId: customer.carrierId }, orderBy: [{ pickupDate: 'desc' }, { createdAt: 'desc' }], take: 100, include: { broker: { select: { id: true, companyName: true } } }, omit: { routeGeometry: true } }),
     prisma.activity.findMany({ where: { carrierId: customer.carrierId }, orderBy: { createdAt: 'desc' }, take: 20, include: { user: { select: { name: true } } } }),
     revenueFor([customer.carrierId]),
+    customer.factoringCompanyId ? prisma.factoringCompany.findUnique({ where: { id: customer.factoringCompanyId }, select: FACTORING_COMPANY_SELECT }) : null,
   ]);
   const loadsWithFee = loads.map((l) => withCalc({ ...l, dispatchFeePercent: l.dispatchFeePercent ?? customer.dispatchFeePercent }));
   // Brokers this carrier has hauled for, derived from load history.
@@ -227,7 +239,10 @@ r.get('/:id', ah(async (req, res) => {
   const { fmcsaSnapshot, fmcsaCheckedAt, ...carrierInfo } = carrier;
   const { portalTokenHash, ...cust } = customer;
   res.json({
-    customer: { ...cust, carrier: carrierInfo, lanes, rules: rulesOf(customer, carrier), portal: portalStatus(customer) },
+    customer: {
+      ...cust, carrier: carrierInfo, lanes, rules: rulesOf(customer, carrier), portal: portalStatus(customer),
+      factoringCompany: factoringCompany || null, noa: noaStatus(documents),
+    },
     documents,
     checklist: docChecklist(documents, new Date(), (await signedAgreements([customer.carrierId])).get(customer.carrierId)),
     loads: loadsWithFee,
@@ -269,13 +284,34 @@ r.patch('/:id', ah(async (req, res) => {
     costPerMileCents: optInt(0, 100000),
     minHaulMiles: optInt(0, 5000),
     maxHaulMiles: optInt(0, 5000),
+    // Factoring terms: null company = the carrier does not factor.
+    factoringCompanyId: z.preprocess((v) => (v === '' ? null : v), z.string().max(40).nullable().optional()),
+    factoringClientNo: optStr(60),
+    factoringAdvancePct: optNum(0, 100),
+    factoringFeePct: optNum(0, 100),
+    factoringRecourse: z.boolean().nullable().optional(),
   }), req.body);
   const minHaul = body.minHaulMiles !== undefined ? body.minHaulMiles : customer.minHaulMiles;
   const maxHaul = body.maxHaulMiles !== undefined ? body.maxHaulMiles : customer.maxHaulMiles;
   if (minHaul && maxHaul && minHaul > maxHaul) throw badRequest('Minimum length of haul is more than the maximum');
-  const updated = await prisma.customer.update({ where: { id: customer.id }, data: clean(body) });
+  const advance = body.factoringAdvancePct !== undefined ? body.factoringAdvancePct : customer.factoringAdvancePct;
+  const fee = body.factoringFeePct !== undefined ? body.factoringFeePct : customer.factoringFeePct;
+  if (advance != null && fee != null && advance + fee > 100) throw badRequest('The advance plus the factoring fee cannot be more than 100%');
+  let company = null;
+  if (body.factoringCompanyId) {
+    // Only a company of the customer's owner (the list the carrier's invoices are kept in); never another workspace's.
+    company = await prisma.factoringCompany.findUnique({ where: { id: body.factoringCompanyId }, select: { ...FACTORING_COMPANY_SELECT, ownerId: true } });
+    if (!company || company.ownerId !== customer.ownerId) throw badRequest('Pick one of your factoring companies');
+  }
+  const updated = await prisma.customer.update({
+    where: { id: customer.id }, data: clean(body),
+    include: { factoringCompany: { select: FACTORING_COMPANY_SELECT } },
+  });
   if (body.status && body.status !== customer.status) {
     await logActivity(req.user, { type: 'customer', carrierId: carrier.id, summary: `Customer ${carrier.companyName} status changed to ${body.status}` });
+  }
+  if (body.factoringCompanyId !== undefined && body.factoringCompanyId !== customer.factoringCompanyId) {
+    await logActivity(req.user, { type: 'customer', carrierId: carrier.id, summary: company ? `${carrier.companyName} factors with ${company.name}` : `${carrier.companyName} no longer factors` });
   }
   const { portalTokenHash, ...out } = updated;
   res.json({ customer: { ...out, rules: rulesOf(updated, carrier) } });

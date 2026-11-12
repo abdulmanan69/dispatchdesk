@@ -159,6 +159,7 @@ function exportSections(id) {
       include: { stage: { select: { key: true } }, contacts: true, notes: true, tags: { include: { tag: { select: { name: true } } } }, opportunity: true, customer: { include: { lanes: true } } },
     }, 200],
     ['brokers', 'broker', { where: { ownerId: id } }],
+    ['factoringCompanies', 'factoringCompany', { where: { ownerId: id } }],
     ['loads', 'load', { where: { ownerId: id } }],
     ['invoices', 'invoice', { where: { ownerId: id } }],
     ['emailTemplates', 'emailTemplate', { where: { ownerId: id } }],
