@@ -715,7 +715,9 @@ function flagsFor(p, { now }) {
   if (a.code === 'active') add('green', 'authority_active', 'Authority active, insurance on file');
   if (a.code === 'active' && a.ageYears != null && a.ageYears >= 2) add('green', 'authority_age', `Authority for ${Math.floor(a.ageYears)} years`);
   if (p.safety.rating === 'Satisfactory') add('green', 'rating_satisfactory', 'Satisfactory safety rating');
-  if (p.safety.allowedToOperate === true && !p.safety.oosDate) add('green', 'allowed', 'Allowed to operate');
+  // QCMobile's allowedToOperate only says the USDOT number is not out of service; it is green only alongside active
+  // for-hire authority, so it never reads as "good to haul" for a carrier whose MC authority is inactive.
+  if (p.safety.allowedToOperate === true && !p.safety.oosDate && p.authority?.status === 'active') add('green', 'allowed', 'Allowed to operate');
   const rank = { red: 0, amber: 1, green: 2 };
   return out.sort((x, y) => rank[x.level] - rank[y.level]);
 }

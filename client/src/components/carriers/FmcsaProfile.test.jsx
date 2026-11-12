@@ -144,6 +144,20 @@ describe('FmcsaProfile', () => {
     expect(screen.getAllByText('Authority active')[0]).toHaveClass('text-c-green');
     expect(screen.getAllByText('Allowed to operate')[0]).toHaveClass('text-c-green');
     expect(screen.getByText('Satisfactory rating')).toBeInTheDocument();
+  });
+
+  it('never shows a green "Allowed to operate" next to inactive authority', async () => {
+    get.mockResolvedValue({ profile: { ...PROFILE, safety: { ...PROFILE.safety, live: true, allowedToOperate: true } } });
+    renderIt(<FmcsaProfile dot="1775913" />);
+    await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' });
+    expect(screen.getByText('USDOT not out of service')).not.toHaveClass('text-c-green');
+    expect(screen.queryByText('Allowed to operate', { selector: '.text-c-green' })).toBeNull();
+  });
+
+  it('keeps the live safety section working', async () => {
+    get.mockResolvedValue({ profile: LIVE });
+    renderIt(<FmcsaProfile dot="3100001" />);
+    await screen.findByRole('heading', { name: 'PRAIRIE LINE TRANSPORT INC' });
     const safety = section('Safety');
     const vehicle = within(safety).getByText('Vehicle').closest('tr');
     expect(within(vehicle).getByText('30%')).toHaveClass('text-c-amber');

@@ -127,7 +127,9 @@ function Header({ p, onRefresh, refreshing, stale, staleError, refreshError }) {
           {p.mc && <p className="mt-1 text-sm" data-testid="mc-age"><span className="text-muted">MC age </span>{mcAgeText(p.authority)}</p>}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <AuthorityStatusBadge authority={p.authority} />
-            {s.allowedToOperate === true && <Badge color="green">Allowed to operate</Badge>}
+            {s.allowedToOperate === true && (p.authority?.status === 'active'
+              ? <Badge color="green">Allowed to operate</Badge>
+              : <Badge color="gray" title="The USDOT number is not out of service, but the MC authority is not active">USDOT not out of service</Badge>)}
             {s.allowedToOperate === false && <Badge color="red">Not allowed to operate</Badge>}
             {s.available !== false && <Badge color={RATING_TONE[s.rating] || 'gray'}>{s.rating ? `${s.rating} rating` : 'Not rated'}</Badge>}
           </div>
