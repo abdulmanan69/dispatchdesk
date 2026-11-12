@@ -476,6 +476,8 @@ r.get('/:id', ah(async (req, res) => {
   }));
   out.lists = carrier.listItems.map((li) => li.list);
   delete out.listItems;
+  // The stored FMCSA profile (10-25 KB) has its own endpoint (/api/carrier-profile/carrier/:id); keep it off this payload.
+  delete out.fmcsaSnapshot;
   // Pending follow-ups first (soonest due), then the most recent completed ones; counts are real totals.
   out.followUps = [...pending, ...done];
   out.followUpCounts = { pending: pendingTotal };

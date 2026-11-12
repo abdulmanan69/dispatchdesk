@@ -11,16 +11,16 @@
 export const ACTIVE_ROW = Object.freeze({
   common_stat: 'A', contract_stat: 'N', broker_stat: 'N', common_app_pend: 'N', contract_app_pend: 'N', broker_app_pend: 'N',
   common_rev_pend: 'N', contract_rev_pend: 'N', broker_rev_pend: 'N', bipd_req: 'Y', bipd_file: '00750', cargo_req: 'N', bond_req: 'N', bond_file: 'N',
-  undeliverable_mail: 'N',
+  undeliverable_mail: 'Y',
 });
-export const INACTIVE_ROW = Object.freeze({ ...ACTIVE_ROW, common_stat: 'N', contract_stat: 'I', bipd_file: '00000', undeliverable_mail: 'Y' });
+export const INACTIVE_ROW = Object.freeze({ ...ACTIVE_ROW, common_stat: 'N', contract_stat: 'I', bipd_file: '00000', undeliverable_mail: 'N' });
 export const PENDING_ROW = Object.freeze({ ...ACTIVE_ROW, common_stat: 'N', common_app_pend: 'Y', bipd_file: '00000' });
 
 export const MOTUS_PROPERTY = 'Motor Carrier of Property (Except Household Goods)';
 /** A Motus authority row (op_auth_status Active | Pending | Inactive | Withdrawn, bipd_file in dollars as decimal text). */
 export const motusRow = (status = 'Active', extra = {}) => ({
   op_auth_type: MOTUS_PROPERTY, op_auth_status: status, min_cov_amount: '750000.000000000000000000',
-  bipd_file: status === 'Active' ? '750000.000000000000000000' : '0.000000000000000000', bus_undeliverable_mail: 'N', mail_undeliverable_mail: 'N', ...extra,
+  bipd_file: status === 'Active' ? '750000.000000000000000000' : '0.000000000000000000', bus_undeliverable_mail: 'Y', mail_undeliverable_mail: 'Y', ...extra,
 });
 
 const list = (where, field) => {

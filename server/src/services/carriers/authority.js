@@ -2,25 +2,32 @@ import { licensingRows, motusRows } from '../brokers/fmcsa.js';
 import { normDot, normMc } from './normalize.js';
 
 /**
- * Operating authority of motor carriers from FMCSA's two public licensing datasets (data.transportation.gov, updated
- * daily, no key), read through services/brokers/fmcsa.js:
- *   - legacy Licensing & Insurance (6eyk-hxee, licensingRows): common/contract authority A/I/N, application and
- *     revocation pending flags, BIPD on file in thousands of dollars;
- *   - Motus (inys-ebih, motusRows): carriers registered in FMCSA's newer system, which the legacy dataset does not hold.
- *     One row per authority type, op_auth_status Active | Pending | Inactive | Withdrawn, BIPD on file in dollars.
+ * Operating authority of motor carriers from FMCSA's two public licensing datasets (data.transportation.gov, no key),
+ * read through services/brokers/fmcsa.js:
+ *   - Motus (inys-ebih, motusRows): FMCSA's current system, updated daily. One row per authority type,
+ *     op_auth_status Active | Pending | Inactive | Withdrawn, BIPD on file in dollars (it can still read 0 for a
+ *     freshly granted carrier whose policy is already filed).
+ *   - legacy Licensing & Insurance (6eyk-hxee, licensingRows): FROZEN since May 14, 2026 ("no longer updated"), but it
+ *     still holds many carriers Motus does not: common/contract authority A/I/N, application and revocation pending
+ *     flags, BIPD on file in thousands of dollars.
  * Both are looked up by MC docket and by USDOT number (the census docket can lag).
  *
  * The Company Census (az4n-8mr2) only says whether the USDOT registration is active; its docket status lags and
- * ignores insurance. So every "authority" shown or used to pick leads comes from here. Combined rule:
- *   active   = either dataset shows an active carrier authority with liability insurance (BIPD) on file, and the
- *              legacy dataset shows no revocation pending
- *   pending  = not active, and either dataset shows a pending application
- *   inactive = at least one dataset answered and neither shows active or pending (including "found in neither")
- *   unknown  = both datasets did not answer (callers that pick leads fail closed on this)
- *   none     = no MC number at all (set by callers; such a carrier cannot haul for-hire interstate loads)
- * `complete` is false when only one dataset answered: then only an "active" result is final (the other dataset might
- * have shown the authority), which is why the refresh job retries incomplete non-active results instead of acting on
- * them.
+ * ignores insurance. So every "authority" shown or used to pick leads comes from here. Rule:
+ *   1. Motus holds a motor-carrier authority row for the carrier -> Motus decides (it is the live record):
+ *        active   = any carrier authority Active (FMCSA only keeps authority active with liability insurance filed)
+ *        pending  = none active, one pending
+ *        inactive = all Inactive or Withdrawn
+ *   2. Otherwise the legacy record (as of May 14, 2026) decides:
+ *        active   = common or contract authority active, BIPD on file, no revocation pending
+ *        pending  = not active, an application pending
+ *        inactive = anything else, including "found in neither dataset"
+ *   unknown = neither dataset answered (callers that pick leads fail closed on this)
+ *   none    = no MC number at all (set by callers; such a carrier cannot haul for-hire interstate loads)
+ * `complete` is false when the answer could still change with the dataset that did not answer (Motus missing, or
+ * legacy missing without a Motus record): then only an "active" result is final, which is why the refresh job retries
+ * incomplete non-active results instead of acting on them.
+ * Address flags: in both datasets the undeliverable-mail columns hold Y = deliverable, N = undeliverable.
  */
 export const AUTHORITY_LABELS = Object.freeze({
   active: 'Authority active · insurance on file',
@@ -59,6 +66,8 @@ const CACHE_MAX = 5000;
 
 const up = (v) => String(v ?? '').trim().toUpperCase();
 const yes = (v) => up(v) === 'Y';
+// L&I / Motus mail flags: 'Y' = deliverable, 'N' = undeliverable (data dictionary; almost every row is 'Y').
+const undeliverableFlag = (v) => up(v) === 'N';
 const STAT = { A: 'active', I: 'inactive', N: 'none' };
 const num = (v) => {
   const s = String(v ?? '').trim();
@@ -83,7 +92,7 @@ function legacyFacts(rows) {
     if (active && !insured) f.activeUninsured = true;
     if (active && (yes(r.common_rev_pend) || yes(r.contract_rev_pend))) f.revocationPending = true;
     if (!active && (yes(r.common_app_pend) || yes(r.contract_app_pend))) f.pending = true;
-    if (r.undeliverable_mail != null && r.undeliverable_mail !== '') f.undeliverable = (f.undeliverable || false) || yes(r.undeliverable_mail);
+    if (r.undeliverable_mail != null && r.undeliverable_mail !== '') f.undeliverable = (f.undeliverable || false) || undeliverableFlag(r.undeliverable_mail);
     if (!best || (active && !(up(best.common_stat) === 'A' || up(best.contract_stat) === 'A'))) best = r;
   }
   if (best) { f.common = STAT[up(best.common_stat)] || null; f.contract = STAT[up(best.contract_stat)] || null; }
@@ -92,12 +101,14 @@ function legacyFacts(rows) {
 
 /** Facts from Motus rows (only motor-carrier authority types count). */
 function motusFacts(rows) {
-  const f = { found: rows.length > 0, activeInsured: false, activeUninsured: false, pending: false, amount: null, undeliverable: null };
+  const f = { found: rows.length > 0, carrierFound: false, active: false, activeInsured: false, activeUninsured: false, pending: false, amount: null, undeliverable: null };
   for (const r of rows) {
     const undeliverable = [r.bus_undeliverable_mail, r.mail_undeliverable_mail].filter((v) => v != null && v !== '');
-    if (undeliverable.length) f.undeliverable = (f.undeliverable || false) || undeliverable.some(yes);
+    if (undeliverable.length) f.undeliverable = (f.undeliverable || false) || undeliverable.some(undeliverableFlag);
     if (!isMotusCarrierRow(r)) continue;
+    f.carrierFound = true;
     const status = up(r.op_auth_status);
+    if (status === 'ACTIVE') f.active = true;
     const amount = num(r.bipd_file); // dollars, decimal text
     const insured = amount != null && amount > 0;
     if (amount != null) f.amount = Math.max(f.amount ?? 0, amount);
@@ -124,19 +135,24 @@ export function combineAuthority({ legacy = null, motus = null } = {}) {
       insuranceAmount: null, revocationPending: null, pending: null, undeliverableMail: null, datasets,
     };
   }
-  const revocationPending = !!L?.revocationPending;
-  const activeInsured = !!(L?.activeInsured || M?.activeInsured);
-  const activeUninsured = !!(L?.activeUninsured || M?.activeUninsured);
-  const pending = !!(L?.pending || M?.pending);
+  // Motus is the live record: when it holds a motor-carrier authority for this carrier, it decides alone (the legacy
+  // flags, revocation pending included, stopped updating on May 14, 2026).
+  const motusDecides = !!M?.carrierFound;
+  const revocationPending = motusDecides ? false : !!L?.revocationPending;
+  const pending = motusDecides ? M.pending && !M.active : !!L?.pending;
   const found = !!(L?.found || M?.found);
   let status;
   let label;
-  if (activeInsured && !revocationPending) { status = 'active'; label = AUTHORITY_LABELS.active; }
-  else if (pending && !activeInsured) { status = 'pending'; label = AUTHORITY_LABELS.pending; }
+  if (motusDecides) {
+    if (M.active) { status = 'active'; label = AUTHORITY_LABELS.active; }
+    else if (M.pending) { status = 'pending'; label = AUTHORITY_LABELS.pending; }
+    else { status = 'inactive'; label = AUTHORITY_LABELS.inactive; }
+  } else if (L?.activeInsured && !revocationPending) { status = 'active'; label = AUTHORITY_LABELS.active; }
+  else if (pending && !L?.activeInsured) { status = 'pending'; label = AUTHORITY_LABELS.pending; }
   else {
     status = 'inactive';
     label = revocationPending ? AUTHORITY_LABELS.revocationPending
-      : activeUninsured ? AUTHORITY_LABELS.noInsurance
+      : L?.activeUninsured ? AUTHORITY_LABELS.noInsurance
         : found ? AUTHORITY_LABELS.inactive
           : AUTHORITY_LABELS.noRecord;
   }
@@ -146,10 +162,12 @@ export function combineAuthority({ legacy = null, motus = null } = {}) {
     status,
     label,
     source: SOURCE,
-    complete: !!(L && M),
+    // Final when Motus decided, or when both datasets answered.
+    complete: motusDecides || !!(L && M),
     common: L?.common ?? null,
     contract: L?.contract ?? null,
-    insuranceOnFile: found && amounts.length ? Math.max(...amounts) > 0 : found ? false : null,
+    // An active Motus authority means FMCSA accepted the liability filing, even while its bipd_file still reads 0.
+    insuranceOnFile: motusDecides && M.active ? true : found && amounts.length ? Math.max(...amounts) > 0 : found ? false : null,
     insuranceAmount: amounts.length ? Math.max(...amounts) : null,
     revocationPending: L ? revocationPending : null,
     pending,

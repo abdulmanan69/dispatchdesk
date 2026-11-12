@@ -64,7 +64,9 @@ afterEach(() => {
 describe('authority rules (FMCSA licensing)', () => {
   it('MC 647991: census active, licensing says no authority and no insurance -> inactive', () => {
     const a = authorityFromLicensing(MC_647991);
-    expect(a).toMatchObject({ status: 'inactive', common: 'none', contract: 'inactive', insuranceOnFile: false, revocationPending: false, pending: false, undeliverableMail: true, label: AUTHORITY_LABELS.inactive });
+    // undeliverable_mail 'Y' means the address is deliverable (FMCSA data dictionary).
+    expect(a).toMatchObject({ status: 'inactive', common: 'none', contract: 'inactive', insuranceOnFile: false, revocationPending: false, pending: false, undeliverableMail: false, label: AUTHORITY_LABELS.inactive });
+    expect(authorityFromLicensing({ ...MC_647991, undeliverable_mail: 'N' }).undeliverableMail).toBe(true);
   });
 
   it('active common authority with BIPD on file -> active', () => {
@@ -123,8 +125,10 @@ describe('authority rules: legacy L&I and Motus combined', () => {
     expect(combineAuthority({ legacy: [], motus: [motusRow('Active')] })).toMatchObject({ status: 'active', insuranceOnFile: true, insuranceAmount: 750000, complete: true });
   });
 
-  it('Motus: BIPD compared as a number, broker rows ignored, withdrawn and inactive are not active', () => {
-    expect(combineAuthority({ legacy: [], motus: [motusRow('Active', { bipd_file: '0.000000000000000000' })] })).toMatchObject({ status: 'inactive', label: AUTHORITY_LABELS.noInsurance });
+  it('Motus: active even while bipd_file still reads 0, broker rows ignored, withdrawn and inactive are not active', () => {
+    // A freshly granted Motus carrier can show bipd_file 0 although its BIPD policy is filed; FMCSA only keeps authority
+    // active with liability insurance, so an Active Motus authority counts as insured.
+    expect(combineAuthority({ legacy: [], motus: [motusRow('Active', { bipd_file: '0.000000000000000000' })] })).toMatchObject({ status: 'active', insuranceOnFile: true });
     expect(combineAuthority({ legacy: [], motus: [motusRow('Active', { op_auth_type: 'Broker of Property (Except Household Goods)' })] })).toMatchObject({ status: 'inactive', label: AUTHORITY_LABELS.inactive });
     expect(combineAuthority({ legacy: [], motus: [motusRow('Active', { op_auth_type: 'Freight Forwarder of Property (Except Household Goods)' })] }).status).toBe('inactive');
     expect(combineAuthority({ legacy: [], motus: [motusRow('Withdrawn')] }).status).toBe('inactive');
@@ -133,19 +137,23 @@ describe('authority rules: legacy L&I and Motus combined', () => {
     expect(combineAuthority({ legacy: [], motus: [motusRow('Active', { op_auth_type: 'Motor Carrier of Household Goods' })] }).status).toBe('active');
   });
 
-  it('either dataset active wins over the other; pending only when neither is active', () => {
+  it('Motus (live) decides when it holds a carrier authority; the frozen legacy record decides only otherwise', () => {
     expect(combineAuthority({ legacy: [INACTIVE_ROW], motus: [motusRow('Active')] }).status).toBe('active');
-    expect(combineAuthority({ legacy: [ACTIVE_ROW], motus: [motusRow('Withdrawn')] }).status).toBe('active');
+    // Legacy stopped updating on May 14, 2026: a later Motus withdrawal wins over an old legacy "active".
+    expect(combineAuthority({ legacy: [ACTIVE_ROW], motus: [motusRow('Withdrawn')] })).toMatchObject({ status: 'inactive', complete: true });
     expect(combineAuthority({ legacy: [PENDING_ROW], motus: [motusRow('Active')] }).status).toBe('active');
     expect(combineAuthority({ legacy: [INACTIVE_ROW], motus: [motusRow('Pending')] }).status).toBe('pending');
+    expect(combineAuthority({ legacy: [ACTIVE_ROW], motus: [] }).status).toBe('active');
+    expect(combineAuthority({ legacy: [ACTIVE_ROW], motus: [motusRow('Active', { op_auth_type: 'Broker of Property (Except Household Goods)' })] }).status).toBe('active');
   });
 
-  it('a legacy revocation pending keeps the carrier from active', () => {
-    expect(combineAuthority({ legacy: [{ ...ACTIVE_ROW, common_rev_pend: 'Y' }], motus: [motusRow('Active')] })).toMatchObject({ status: 'inactive', label: AUTHORITY_LABELS.revocationPending });
+  it('a legacy revocation pending blocks active only when Motus has no record', () => {
+    expect(combineAuthority({ legacy: [{ ...ACTIVE_ROW, common_rev_pend: 'Y' }], motus: [] })).toMatchObject({ status: 'inactive', label: AUTHORITY_LABELS.revocationPending });
+    expect(combineAuthority({ legacy: [{ ...ACTIVE_ROW, common_rev_pend: 'Y' }], motus: [motusRow('Active')] })).toMatchObject({ status: 'active', revocationPending: false });
   });
 
-  it('one dataset down: decided by the other (incomplete); both down: unknown', () => {
-    expect(combineAuthority({ legacy: null, motus: [motusRow('Active')] })).toMatchObject({ status: 'active', complete: false });
+  it('one dataset down: a Motus record is final; legacy alone is incomplete; both down: unknown', () => {
+    expect(combineAuthority({ legacy: null, motus: [motusRow('Active')] })).toMatchObject({ status: 'active', complete: true });
     expect(combineAuthority({ legacy: [], motus: null })).toMatchObject({ status: 'inactive', complete: false });
     expect(combineAuthority({ legacy: null, motus: null })).toMatchObject({ status: 'unknown', complete: false });
   });
@@ -164,7 +172,7 @@ describe('authority rules: legacy L&I and Motus combined', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     fake.legacyDown = true;
     const res = await checkAuthority([{ mc: '7700001', dot: '9770001' }, { mc: '8200001', dot: '9820001' }]);
-    expect(res.get('7700001')).toMatchObject({ status: 'active', complete: false });
+    expect(res.get('7700001')).toMatchObject({ status: 'active', complete: true }); // Motus record: final
     expect(res.get('8200001')).toMatchObject({ status: 'inactive', complete: false }); // only in legacy, which did not answer
   });
 });

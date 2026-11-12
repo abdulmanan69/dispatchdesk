@@ -9,6 +9,7 @@ import { US_STATES, dateTime, label, relative, phoneFmt } from '../../lib/format
 import { Modal, useConfirm } from '../../components/Modal.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
 import { AuthorityBadge } from '../../components/carriers/shared.jsx';
+import { FmcsaProfileButton } from '../../components/carriers/FmcsaProfile.jsx';
 import {
   Badge, Button, Card, Checkbox, DataTable, EmptyState, Field, Input, PageHeader, QueryState, Select, Switch, cx,
 } from '../../components/ui.jsx';
@@ -196,7 +197,7 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
                 { key: 'companyName', header: 'Carrier', render: (r) => <div className="min-w-40"><div className="font-medium">{r.companyName}</div><div className="font-mono text-xs text-muted">USDOT {r.dotNumber}{r.mcNumber ? ` · MC ${r.mcNumber}` : ''}</div></div> },
                 { key: 'state', header: 'Location', render: (r) => [r.city, r.state].filter(Boolean).join(', ') },
                 { key: 'fleetSize', header: 'Trucks', render: (r) => <span className="tabular">{r.fleetSize ?? '—'}</span> },
-                { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /> },
+                { key: 'authorityStatus', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
                 { key: 'phone', header: 'Phone', render: (r) => (r.phone ? phoneFmt(r.phone) : '—') },
               ]} />
           )}
@@ -231,7 +232,7 @@ function RunResult({ result, onClose }) {
           { key: 'dotNumber', header: 'USDOT', render: (c) => <span className="font-mono text-xs">{c.dotNumber}</span> },
           { key: 'state', header: 'Location', render: (c) => [c.city, c.state].filter(Boolean).join(', ') },
           { key: 'fleetSize', header: 'Trucks', render: (c) => <span className="tabular">{c.fleetSize ?? '—'}</span> },
-          { key: 'authorityStatus', header: 'Authority', render: (c) => <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /> },
+          { key: 'authorityStatus', header: 'Authority', render: (c) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /><FmcsaProfileButton dot={c.dotNumber} label="Profile" variant="ghost" /></div> },
           { key: 'priority', header: 'Priority', render: (c) => (c.priority >= 2 ? <Badge color="brand">Hot</Badge> : c.priority === 1 ? <Badge color="green">High</Badge> : <span className="text-muted">Normal</span>) },
         ]} />
       )}

@@ -109,7 +109,8 @@ export function revenueView(row) {
 /** FMCSA watchlist status for the customer list (from the nightly snapshot on the carrier). */
 function fmcsaView(raw, checkedAt) {
   const s = parseJson(raw, null);
-  if (!s) return null;
+  // No watchlist check yet (the column may hold only the FMCSA profile, under `profile`): "Not checked", never a guess.
+  if (!s || !Object.hasOwn(s, 'found')) return null;
   return {
     found: s.found ?? null,
     usdotStatus: s.usdotStatus ?? null,

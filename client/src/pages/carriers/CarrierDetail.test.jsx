@@ -94,4 +94,28 @@ describe('Carrier profile', () => {
     expect(await screen.findByText(/Couldn't refresh/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Lone Star Haulers' })).toBeInTheDocument();
   });
+
+  it('has an FMCSA profile tab (?tab=fmcsa) that loads the carrier profile', async () => {
+    const profile = {
+      v: 1, dot: '123456', mc: '654321', fetchedAt: '2026-11-13T12:00:00Z', complete: true, saferUrl: 'https://safer.fmcsa.dot.gov/',
+      identity: { available: true, legalName: 'LONE STAR HAULERS LLC', dockets: [] }, contact: { available: false },
+      authority: { available: true, status: 'active', label: 'Authority active, insurance on file', types: [], history: [] },
+      insurance: { available: false }, operation: { available: false }, cargo: null, fleet: { available: false }, equipment: { available: false },
+      drivers: { available: false }, mileage: { available: false }, safety: { available: false }, compliance: { available: false },
+      flags: [{ level: 'green', code: 'authority_active', text: 'Authority active, insurance on file' }], sources: [],
+    };
+    get.mockImplementation(async (url) => (url === '/api/carriers/c1' ? DETAIL : url === '/api/carrier-profile/carrier/c1' ? { profile, stored: true } : { items: [] }));
+    renderIt('/app/carriers/c1?tab=fmcsa');
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'FMCSA profile' })).toHaveAttribute('aria-selected', 'true'));
+    expect(await screen.findByRole('heading', { name: 'LONE STAR HAULERS LLC' })).toBeInTheDocument();
+    expect(get).toHaveBeenCalledWith('/api/carrier-profile/carrier/c1', undefined, expect.objectContaining({ timeoutMs: 90000 }));
+  });
+
+  it('the FMCSA profile tab shows an empty state for a carrier without a USDOT number', async () => {
+    get.mockImplementation(async (url) => (url === '/api/carriers/c3' ? { ...DETAIL, carrier: { ...CARRIER, id: 'c3', dotNumber: null } } : { items: [] }));
+    renderIt('/app/carriers/c3');
+    fireEvent.click(await screen.findByRole('tab', { name: 'FMCSA profile' }));
+    expect(await screen.findByText('No USDOT number')).toBeInTheDocument();
+    expect(get).not.toHaveBeenCalledWith('/api/carrier-profile/carrier/c3', undefined, expect.anything());
+  });
 });

@@ -11,6 +11,7 @@ import { useToast } from '../../components/Toast.jsx';
 import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
 import ReadinessReport from '../../components/carriers/ReadinessReport.jsx';
 import { AuthorityBadge, useSequences } from '../../components/carriers/shared.jsx';
+import { FmcsaProfileButton } from '../../components/carriers/FmcsaProfile.jsx';
 import { EQUIPMENT_FROM_CARGO, WINDOWS, ageLabel, claimSummary, rowStatus } from './newAuthority.js';
 
 const LIMIT = 50;
@@ -103,7 +104,7 @@ export default function NewAuthority() {
     // Pending authority is expected here (new carriers), so calling a pending carrier saves it without asking.
     { key: 'phone', header: 'Phone', render: (r) => <SaveAndCall record={r} allowInactive={r.authorityStatus === 'pending'} /> },
     // Operating authority from FMCSA licensing. Shown, never filtered: new carriers are often still pending.
-    { key: 'authority', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
+    { key: 'authority', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
     { key: 'loc', header: 'Location', render: (r) => <span className="text-[13px]">{[r.city, r.state].filter(Boolean).join(', ')}</span> },
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'crm', header: 'Status', render: status },

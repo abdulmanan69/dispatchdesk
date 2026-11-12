@@ -153,6 +153,8 @@ async function checkCarriers({ cursor, batch, now, useQc, delayMs }) {
     const next2 = carryQc(prev, snaps.get(c.carrier.id));
     const changes = snapshotChanges(prev, next2);
     const stored = { ...next2, lastChange: changes.length ? { at: now.toISOString(), items: changes } : prev?.lastChange ?? null };
+    // The full FMCSA profile (routes/carrierProfile.js) shares this column under its own key: keep it.
+    if (prev?.profile) stored.profile = prev.profile;
     await prisma.carrier.update({ where: { id: c.carrier.id }, data: { fmcsaSnapshot: JSON.stringify(stored), fmcsaCheckedAt: now } });
     if (changes.length) {
       changed += 1;

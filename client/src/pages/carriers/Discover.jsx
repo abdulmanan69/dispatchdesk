@@ -8,6 +8,7 @@ import { US_STATES, date, dateTime } from '../../lib/format.js';
 import { Badge, Button, Card, Checkbox, DataTable, EmptyState, ErrorState, Field, Input, Loading, PageHeader, Select } from '../../components/ui.jsx';
 import { useConfirm } from '../../components/Modal.jsx';
 import { AuthorityBadge, equipmentLabel } from '../../components/carriers/shared.jsx';
+import { FmcsaProfileButton } from '../../components/carriers/FmcsaProfile.jsx';
 import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
 import { saveCensusLeads } from '../../components/carriers/saveLeads.js';
 
@@ -88,7 +89,7 @@ export default function Discover() {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <span className="min-w-0 break-words font-medium">{r.companyName}</span>
-          <span className="shrink-0"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /></span>
+          <span className="flex shrink-0 items-center gap-1"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></span>
         </div>
         <div className="mt-0.5 text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
         <div className="text-xs text-muted">
@@ -118,7 +119,7 @@ export default function Discover() {
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'equipment', header: 'Equipment*', render: (r) => <span className="text-[13px]">{equipmentLabel(r.equipment)}</span> },
     // Operating authority from FMCSA licensing (not the census USDOT status).
-    { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
+    { key: 'authorityStatus', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
     { key: 'authorityDate', header: 'Registered', render: (r) => <span className="whitespace-nowrap text-[13px]">{date(r.authorityDate)}</span> },
     { key: 'crm', header: '', render: crmStatus },
   ];

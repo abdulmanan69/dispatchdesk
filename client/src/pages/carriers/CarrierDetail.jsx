@@ -23,8 +23,9 @@ import { useToast } from '../../components/Toast.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
 import ContactConsentCard, { ConsentBadge } from '../../components/consent/ContactConsentCard.jsx';
+import { FmcsaProfileTab } from '../../components/carriers/FmcsaProfile.jsx';
 
-const CARRIER_TABS = ['overview', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
+const CARRIER_TABS = ['overview', 'fmcsa', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
 
 export default function CarrierDetail() {
   const { id } = useParams();
@@ -72,6 +73,7 @@ export default function CarrierDetail() {
   };
   const tabs = [
     { value: 'overview', label: 'Overview' },
+    { value: 'fmcsa', label: 'FMCSA profile' },
     { value: 'contacts', label: 'Contacts', count: totals.contacts },
     { value: 'notes', label: 'Notes', count: totals.notes },
     { value: 'calls', label: 'Calls', count: totals.calls },
@@ -180,6 +182,7 @@ export default function CarrierDetail() {
       {tab === 'documents' && <DocumentsPanel carrierId={c.id} />}
       {tab === 'sequences' && <SequencesTab carrier={c} canWrite={canWrite} onEnroll={() => setModal('enroll')} />}
       {tab === 'activity' && <RecentActivity carrierId={c.id} />}
+      {tab === 'fmcsa' && <FmcsaProfileTab carrier={c} />}
 
       {modal === 'edit' && <CarrierForm open carrier={c} onClose={() => setModal(null)} />}
       <LogCallModal open={modal === 'call'} carrier={c} onClose={() => setModal(null)} />
