@@ -122,7 +122,8 @@ describe('lead generator', () => {
     mockCensus([row(1), row(3), row(5)]);
     const res = await A.agent.post(`/api/lead-generators/${gen.id}/run`);
     expect(res.body.run).toMatchObject({ created: 0, status: 'exhausted' });
-    expect(res.body.run.message).toMatch(/Widen the criteria/);
+    expect(res.body.run.message).toMatch(/matching these filters were checked.*3 already in your CRM\. Widen the filters/);
+    expect(res.body.run.message).not.toMatch(/600/);
   });
 
   it('stops at the monthly plan limit', async () => {

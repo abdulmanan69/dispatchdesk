@@ -6,7 +6,7 @@ import { requirePermission } from '../middleware/auth.js';
 import { assertLimit, effectivePlan, usage } from '../lib/plans.js';
 import { STAGE_KEYS } from '../lib/constants.js';
 import { CARGO_LABELS } from '../services/carriers/fmcsaCensus.js';
-import { parseCriteria, previewLeads, runGenerator, nextRunFrom, inactiveAuthorityFrom } from '../services/leadgen.js';
+import { parseCriteria, previewLeads, runGenerator, nextRunFrom, inactiveAuthorityFrom, criteriaHash, runMessageText } from '../services/leadgen.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -93,7 +93,7 @@ const shape = (g) => ({
 });
 const runShape = (x) => ({
   id: x.id, generatorId: x.generatorId, trigger: x.trigger, status: x.status, scanned: x.scanned, created: x.created,
-  skipped: x.skipped, belowScore: x.belowScore, message: x.message, createdAt: x.createdAt, carrierIds: JSON.parse(x.carrierIds || '[]'),
+  skipped: x.skipped, belowScore: x.belowScore, message: runMessageText(x.message), createdAt: x.createdAt, carrierIds: JSON.parse(x.carrierIds || '[]'),
   // Candidates dropped because FMCSA licensing does not show active authority (stored in the message, no column).
   inactiveAuthority: x.inactiveAuthority ?? inactiveAuthorityFrom(x.message),
 });
@@ -169,6 +169,9 @@ r.patch('/:id', ah(async (req, res) => {
     criteria: body.criteria ? JSON.stringify(body.criteria) : undefined, listId, sequenceId,
   });
   if (body.autoRun !== undefined || body.frequency !== undefined) data.nextRunAt = autoRun ? nextRunFrom(frequency) : null;
+  // New filters or a new minimum score: the saved crawl position no longer applies, the next run starts from the top.
+  if ((body.criteria || body.minScore !== undefined)
+    && criteriaHash(body.criteria ?? g.criteria, body.minScore ?? g.minScore) !== criteriaHash(g.criteria, g.minScore)) data.cursor = null;
   const updated = await prisma.leadGenerator.update({ where: { id: g.id }, data });
   const [withList] = await withLists(req.user.id, [updated]);
   res.json({ generator: shape(withList) });

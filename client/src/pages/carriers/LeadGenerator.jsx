@@ -20,7 +20,8 @@ const BATCH = [10, 25, 50, 100, 200];
 const SCORES = [[0, 'Any score'], [40, '40+'], [60, '60+ (contactable)'], [80, '80+ (best fit)']];
 /** "12 skipped: authority not active" (carriers FMCSA licensing does not show with active authority). */
 const inactiveText = (n) => `${n} skipped: authority not active`;
-const STATUS = { ok: ['green', 'Completed'], limited: ['amber', 'Plan limit'], exhausted: ['gray', 'No more matches'], error: ['red', 'Failed'] };
+const STATUS = { ok: ['green', 'Completed'], limited: ['amber', 'Plan limit'], exhausted: ['gray', 'All matches checked'], error: ['red', 'Failed'] };
+const num = (v) => Number(v || 0).toLocaleString('en-US');
 
 const BLANK = {
   name: '', states: [], cargo: [], minPowerUnits: '1', maxPowerUnits: '10', authorityAgeMinMonths: '', authorityAgeMaxMonths: '24',
@@ -207,8 +208,25 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
   );
 }
 
+/**
+ * Status, counts and the server's message for one run. The message says what happened: every matching carrier checked
+ * (with the counts, so they are not repeated here), or how many carriers this run read and that the next run continues.
+ */
+export function RunSummary({ run }) {
+  const [color, text] = STATUS[run.status] || STATUS.ok;
+  const counts = run.status !== 'exhausted' && run.status !== 'error' && run.scanned > 0;
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+        <Badge color={color}>{text}</Badge>
+        {counts && <span className="text-muted">{num(run.scanned)} carriers read · {num(run.skipped)} already in CRM · {num(run.belowScore)} below score{run.inactiveAuthority ? ` · ${inactiveText(num(run.inactiveAuthority))}` : ''}</span>}
+      </div>
+      {run.message && <p className="mb-4 text-sm text-fg-2">{run.message}</p>}
+    </>
+  );
+}
+
 function RunResult({ result, onClose }) {
-  const [color, text] = STATUS[result.run.status] || STATUS.ok;
   const [enrolling, setEnrolling] = useState(false);
   const ids = result.run.carrierIds || result.carriers.map((c) => c.id);
   // A generator linked to a sequence enrolls its leads itself; otherwise offer it here.
@@ -221,11 +239,7 @@ function RunResult({ result, onClose }) {
         <Button onClick={onClose}>Done</Button>
       </>}>
       <EnrollModal open={enrolling} carrierIds={ids} onClose={() => setEnrolling(false)} />
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-        <Badge color={color}>{text}</Badge>
-        <span className="text-muted">{result.run.scanned} census records scanned · {result.run.skipped} already in CRM · {result.run.belowScore} below score{result.run.inactiveAuthority ? ` · ${inactiveText(result.run.inactiveAuthority)}` : ''}</span>
-      </div>
-      {result.run.message && <p className="mb-4 text-sm text-fg-2">{result.run.message}</p>}
+      <RunSummary run={result.run} />
       {result.carriers.length > 0 && (
         <DataTable dense rows={result.carriers} columns={[
           { key: 'companyName', header: 'Carrier', render: (c) => <Link to={`/app/carriers/${c.id}`} className="font-medium hover:underline">{c.companyName}</Link> },

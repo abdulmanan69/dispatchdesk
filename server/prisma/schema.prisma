@@ -1542,6 +1542,8 @@ model LeadGenerator {
   frequency  String       @default("daily") // daily | weekly
   nextRunAt  DateTime?
   lastRunAt  DateTime?
+  // JSON: per-state crawl position { v, criteriaHash, states: { TX: { deepOffset, headSeenAt, exhaustedAt } } } (services/leadgen.js)
+  cursor     String?
   active     Boolean      @default(true)
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt

@@ -195,7 +195,8 @@ describe('lead generator: only active authority', () => {
     const res = await U.agent.post(`/api/lead-generators/${g.id}/run`);
     expect(res.status).toBe(200);
     expect(res.body.run).toMatchObject({ created: 2, inactiveAuthority: 3 });
-    expect(res.body.run.message).toMatch(/3 skipped: authority not active\./);
+    // Every matching carrier was read: the "all checked" message lists the count.
+    expect(res.body.run.message).toMatch(/: 3 authority not active\./);
     expect(res.body.carriers.map((c) => c.dotNumber).sort()).toEqual(['9100001', '9100005']);
     const saved = await prisma.carrier.findMany({ where: { ownerId: U.user.id }, include: { notes: true } });
     expect(saved.map((c) => c.dotNumber).sort()).toEqual(['9100001', '9100005']);
