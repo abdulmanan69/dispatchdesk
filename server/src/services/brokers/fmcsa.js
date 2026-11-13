@@ -25,6 +25,11 @@ const TIMEOUT_MS = 12_000;
 const QC_BASE = 'https://mobile.fmcsa.dot.gov/qc/services';
 export const LICENSING_URL = 'https://data.transportation.gov/resource/6eyk-hxee.json';
 export const MOTUS_URL = 'https://data.transportation.gov/resource/inys-ebih.json';
+// Authority history and insurance on file (lead signals: MC age, insurer). The legacy ones stopped updating 2026-05-14.
+export const MOTUS_AUTH_HIST_URL = 'https://data.transportation.gov/resource/yu5v-wbh6.json';
+export const AUTH_HIST_URL = 'https://data.transportation.gov/resource/9mw4-x3tu.json';
+export const MOTUS_INSURANCE_URL = 'https://data.transportation.gov/resource/c5y8-a4uz.json';
+export const INSURANCE_URL = 'https://data.transportation.gov/resource/qh9u-swkp.json';
 const cache = new Map(); // key -> { at, value }
 const inflight = new Map(); // key -> Promise
 let fetchOverride = null;
@@ -42,11 +47,13 @@ const doFetch = (...args) => {
   return globalThis.fetch(...args);
 };
 const timedFetch = (url, opts = {}) => doFetch(url, { ...opts, signal: AbortSignal.timeout(TIMEOUT_MS) });
+/** The fetch every FMCSA lookup here uses (12 s timeout; tests inject a fake with setFmcsaFetch). */
+export const fmcsaFetch = timedFetch;
 
 // At most 2 concurrent upstream calls per process.
 let active = 0;
 const waiting = [];
-async function limited(fn) {
+export async function limited(fn) {
   if (active >= 2) await new Promise((resolve) => waiting.push(resolve));
   active += 1;
   try {
@@ -162,10 +169,13 @@ const padDot = (d) => String(d).padStart(8, '0'); // the licensing dataset store
  * when one is set. Rows, or null when the dataset did not answer. An answer that fills the whole $limit may be cut
  * off, so it counts as no answer too (a missing row must never read as "no authority").
  */
-async function sodaRows(base, where, limit, name) {
+export async function sodaRows(base, where, limit, name, { select, group, order } = {}) {
   const url = new URL(base);
   url.searchParams.set('$where', where);
   url.searchParams.set('$limit', String(limit));
+  if (select) url.searchParams.set('$select', select);
+  if (group) url.searchParams.set('$group', group);
+  if (order) url.searchParams.set('$order', order);
   try {
     const token = await getSetting('fmcsa.socrataAppToken');
     const res = await limited(() => timedFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) } }));

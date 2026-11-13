@@ -8,6 +8,7 @@ import { enrollCarriers } from '../sequenceEngine.js';
 import * as census from './fmcsaCensus.js';
 import { annotateAuthority } from './authority.js';
 import { normDot, normMc } from './normalize.js';
+import { scoreLead, sharedContactStep, mcAgeStep, signalsJson } from './leadSignals.js';
 
 /** Resolve an optional sequence id to one of the user's active sequences (400 otherwise). */
 export async function activeSequence(user, sequenceId) {
@@ -62,6 +63,12 @@ export async function saveCensusCarriers(user, dotNumbers, {
   }
   // One licensing request for every carrier about to be created (never cached).
   const { items: checked } = fresh.length ? await annotateAuthority(fresh) : { items: [] };
+  // Lead score v2 for the carriers about to be created (shared contacts and MC age: batched, fail-soft, never a
+  // reason to refuse a save the user asked for).
+  const shared = await sharedContactStep(checked, { excludeSharedContacts: false });
+  const aged = await mcAgeStep(shared.kept, {});
+  const scoreOf = new Map(aged.kept.map((rec) => [rec.dotNumber, scoreLead(rec, { now, timezone: user.timezone || null })]));
+  const leadColumns = (s) => (s ? { leadScore: s.score, leadTier: s.tier, leadSignals: signalsJson(s.signals) } : {});
   const created = [];
   for (const rec of checked) {
     const status = rec.authorityStatus;
@@ -75,7 +82,10 @@ export async function saveCensusCarriers(user, dotNumbers, {
     if (budget <= 0) { out.limited++; out.items.push({ dotNumber: rec.dotNumber, id: null, status: 'limited' }); continue; }
     try {
       const c = await prisma.carrier.create({
-        data: { ...census.carrierColumns(rec), ownerId: user.id, stageId: target.id, source: 'fmcsa_census', sourceRef: String(sourceRef(rec.dotNumber)).slice(0, 190), verifiedAt: now },
+        data: {
+          ...census.carrierColumns(rec), ownerId: user.id, stageId: target.id, source: 'fmcsa_census', sourceRef: String(sourceRef(rec.dotNumber)).slice(0, 190), verifiedAt: now,
+          ...leadColumns(scoreOf.get(rec.dotNumber)),
+        },
       });
       out.created++;
       out.ids.push(c.id);

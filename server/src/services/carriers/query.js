@@ -22,13 +22,18 @@ export const carrierFilterSchema = z.object({
   noActivity: z.enum(['any', 'no_call', 'no_email', 'none']).default('any'),
   activityDays: z.coerce.number().int().min(1).max(3650).optional(),
   scope: z.enum(['mine', 'team']).default('mine'),
+  // Lead tier from the lead score (A, B, C), or 'unscored'.
+  leadTier: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['A', 'B', 'C', 'unscored']).optional()),
 });
 
-const SORTS = { companyName: 'companyName', createdAt: 'createdAt', updatedAt: 'updatedAt', state: 'state', fleetSize: 'fleetSize', lastContactedAt: 'lastContactedAt', nextFollowUpAt: 'nextFollowUpAt', authorityDate: 'authorityDate', priority: 'priority' };
+const SORTS = { companyName: 'companyName', createdAt: 'createdAt', updatedAt: 'updatedAt', state: 'state', fleetSize: 'fleetSize', lastContactedAt: 'lastContactedAt', nextFollowUpAt: 'nextFollowUpAt', authorityDate: 'authorityDate', priority: 'priority', leadScore: 'leadScore' };
+// Carriers without a lead score sort after the scored ones in both directions.
+const NULLS_LAST = new Set(['leadScore']);
 
 export function carrierOrder(sort, dir) {
   const field = SORTS[sort] || 'createdAt';
-  return [{ [field]: dir === 'asc' ? 'asc' : 'desc' }, { id: 'asc' }];
+  const d = dir === 'asc' ? 'asc' : 'desc';
+  return [{ [field]: NULLS_LAST.has(field) ? { sort: d, nulls: 'last' } : d }, { id: 'asc' }];
 }
 
 const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
@@ -66,6 +71,7 @@ export async function carrierWhere(user, f) {
   if (f.source) and.push({ source: f.source });
   if (f.hasPhone === 'true') and.push({ phone: { not: null } });
   if (f.hasEmail === 'true') and.push({ email: { not: null } });
+  if (f.leadTier) and.push({ leadTier: f.leadTier === 'unscored' ? null : f.leadTier });
   if (f.noActivity && f.noActivity !== 'any') {
     const since = f.activityDays ? new Date(Date.now() - f.activityDays * 86400000) : null;
     const noCall = { calls: { none: since ? { calledAt: { gte: since } } : {} } };
@@ -94,7 +100,7 @@ export const listSelect = {
   companyName: true, dbaName: true, dotNumber: true, mcNumber: true, phone: true, email: true,
   address: true, city: true, state: true, zip: true, timezone: true,
   equipment: true, fleetSize: true, drivers: true, authorityStatus: true, authorityDate: true, operatingStatus: true,
-  source: true, verifiedAt: true, doNotCall: true, doNotEmail: true, priority: true, truckStatus: true,
+  source: true, verifiedAt: true, doNotCall: true, doNotEmail: true, priority: true, truckStatus: true, leadScore: true, leadTier: true,
   lastContactedAt: true, nextFollowUpAt: true, stageChangedAt: true, createdAt: true, updatedAt: true,
   ...listInclude,
 };
@@ -116,10 +122,18 @@ export async function lastTouches(ids) {
   return out;
 }
 
+/** Stored lead signals (Carrier.leadSignals JSON) as an array; [] when missing or unreadable. */
+export function parseLeadSignals(v) {
+  if (Array.isArray(v)) return v;
+  try { const a = v ? JSON.parse(v) : []; return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
 export function serializeCarrier(c) {
   if (!c) return c;
   const { tags, ...rest } = c;
-  return { ...rest, tags: tags ? tags.map((t) => t.tag) : undefined };
+  const out = { ...rest, tags: tags ? tags.map((t) => t.tag) : undefined };
+  if ('leadSignals' in rest) out.leadSignals = parseLeadSignals(rest.leadSignals);
+  return out;
 }
 
 /** Split a list into chunks (SQLite bound-variable limits, and short write bursts). */

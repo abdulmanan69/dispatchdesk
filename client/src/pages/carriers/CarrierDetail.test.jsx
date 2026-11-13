@@ -86,6 +86,25 @@ describe('Carrier profile', () => {
     expect(await screen.findByText('Factors with Apex Capital')).toBeInTheDocument();
   });
 
+  it('shows the lead tier and the top 3 reasons in the header, and nothing for a carrier without a score', async () => {
+    const leadSignals = [
+      { key: 'shared_contact', label: 'Shared contact · 4 carriers', points: -20, group: 'need', tone: 'bad' },
+      { key: 'owner_operator', label: 'Owner-operator · 1 truck', points: 10, group: 'fit', tone: 'good' },
+      { key: 'new_authority', label: 'New MC · 45 days', points: 25, group: 'need', tone: 'good' },
+      { key: 'eq_reefer', label: 'Reefer', points: 5, group: 'fit', tone: 'good' },
+      { key: 'cell_phone', label: 'Cell phone', points: 14, group: 'reach', tone: 'good' },
+    ];
+    get.mockImplementation(async (url) => (url === '/api/carriers/c4' ? { ...DETAIL, carrier: { ...CARRIER, id: 'c4', leadScore: 84, leadTier: 'A', leadSignals } } : url === '/api/carriers/c1' ? DETAIL : { items: [] }));
+    renderIt('/app/carriers/c4');
+    const line = await screen.findByLabelText('Lead score');
+    expect(line).toHaveTextContent('A · 84');
+    expect(line).toHaveTextContent('New MC · 45 days · Cell phone · Owner-operator · 1 truck');
+    expect(line).not.toHaveTextContent('Reefer');
+    renderIt('/app/carriers/c1');
+    expect(await screen.findByRole('heading', { name: 'Lone Star Haulers' })).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Lead score')).toHaveLength(1);
+  });
+
   it('keeps the profile on screen when a refresh fails', async () => {
     const qc = renderIt();
     expect(await screen.findByRole('heading', { name: 'Lone Star Haulers' })).toBeInTheDocument();

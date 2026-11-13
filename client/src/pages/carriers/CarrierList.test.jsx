@@ -47,6 +47,20 @@ describe('Carrier list', () => {
     expect(download).toHaveBeenCalledWith('/api/carriers/export.csv?state=TX&sort=companyName&dir=asc', 'carriers.csv');
   });
 
+  it('shows the lead score, sorts by it and filters by tier', async () => {
+    get.mockImplementation(async (url) => (url === '/api/carriers' ? { ...PAGE, items: [{ ...CARRIER, leadScore: 82, leadTier: 'A' }] } : { items: [] }));
+    renderIt('/app/carriers');
+    expect((await screen.findAllByText('A · 82')).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Lead score' }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/carriers', expect.objectContaining({ sort: 'leadScore', dir: 'asc' }), expect.anything()));
+    fireEvent.click(screen.getByLabelText('Lead tier'));
+    fireEvent.click(screen.getByRole('option', { name: 'Tier A (75+)' }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/carriers', expect.objectContaining({ leadTier: 'A' }), expect.anything()));
+    fireEvent.click(screen.getByLabelText('Lead tier'));
+    fireEvent.click(screen.getByRole('option', { name: 'Not scored' }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/carriers', expect.objectContaining({ leadTier: 'unscored' }), expect.anything()));
+  });
+
   it('keeps the loaded page on screen when a refresh fails', async () => {
     const qc = renderIt('/app/carriers');
     await waitFor(() => expect(screen.getAllByText('Lone Star Haulers').length).toBeGreaterThan(0));

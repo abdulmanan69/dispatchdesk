@@ -370,6 +370,10 @@ model Carrier {
   fmcsaSnapshot     String? // JSON: last FMCSA authority/insurance/contact snapshot (watchlist)
   fmcsaCheckedAt    DateTime?
   priority          Int       @default(0) // 0 normal, 1 high, 2 hot
+  // Lead score v2 (services/carriers/leadSignals.js): 0-100, tier A | B | C, JSON [{ key, label, points, group, tone }]
+  leadScore         Int?
+  leadTier          String?
+  leadSignals       String?
   lastContactedAt   DateTime?
   nextFollowUpAt    DateTime?
   stageChangedAt    DateTime  @default(now())
@@ -409,6 +413,7 @@ model Carrier {
   @@index([ownerId, createdAt])
   @@index([ownerId, isFleet])
   @@index([ownerId, email])
+  @@index([ownerId, leadScore])
 }
 
 model CarrierContact {
@@ -1566,6 +1571,8 @@ model LeadGenRun {
   belowScore  Int            @default(0)
   carrierIds  String         @default("[]") // JSON array of created carrier ids
   message     String?
+  // JSON: candidates left out per reason { inactiveAuthority, sharedContact, unsafe, outOfService, filtered, teamClaimed, suppressed }
+  exclusions  String?
   createdAt   DateTime       @default(now())
   generator   LeadGenerator? @relation(fields: [generatorId], references: [id], onDelete: SetNull)
   owner       User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)

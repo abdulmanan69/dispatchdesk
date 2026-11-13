@@ -7,6 +7,13 @@
  *     `usdot_number in(…)` from `motusByDot` (USDOT -> array of rows).
  * `fake.down` fails both datasets, `fake.legacyDown` / `fake.motusDown` one of them. `fake.calls` lists the MC
  * dockets of each legacy request, `fake.motusCalls` those of each Motus request.
+ * Lead-signal datasets (answered with no rows unless set; `fake.signalsDown` fails them all):
+ *   - Motus / legacy authority history (yu5v-wbh6 / 9mw4-x3tu): `motusHistory` / `history` (MC -> array of rows).
+ *   - Motus / legacy insurance (c5y8-a4uz / qh9u-swkp): `motusInsurance` / `insurance` (MC -> array of rows).
+ *   - Census count(*) grouped by phone or email (az4n-8mr2 with $group): `sharedPhones` / `sharedEmails`
+ *     (value -> count). `fake.signalCalls` lists { dataset, values } for each of these requests (values = the in() list).
+ *   - QCMobile carriers/{dot} (needs the fmcsa.webKey setting): `qc` (USDOT -> carrier record; missing = 404).
+ *     `fake.qcCalls` lists the USDOT numbers asked, `fake.qcPeak` the most QCMobile calls in flight at once.
  */
 export const ACTIVE_ROW = Object.freeze({
   common_stat: 'A', contract_stat: 'N', broker_stat: 'N', common_app_pend: 'N', contract_app_pend: 'N', broker_app_pend: 'N',
@@ -29,8 +36,23 @@ const list = (where, field) => {
 };
 const asArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
-export function licensingFake({ rows = {}, fallback = ACTIVE_ROW, byDot = {}, motus = {}, motusByDot = {} } = {}) {
+export function licensingFake({
+  rows = {}, fallback = ACTIVE_ROW, byDot = {}, motus = {}, motusByDot = {}, motusHistory = {}, history = {}, motusInsurance = {}, insurance = {},
+  sharedPhones = {}, sharedEmails = {}, qc = {},
+} = {}) {
   const fake = {
+    motusHistory: { ...motusHistory },
+    history: { ...history },
+    motusInsurance: { ...motusInsurance },
+    insurance: { ...insurance },
+    sharedPhones: { ...sharedPhones },
+    sharedEmails: { ...sharedEmails },
+    signalsDown: false,
+    signalCalls: [],
+    qc: { ...qc },
+    qcCalls: [],
+    qcPeak: 0,
+    qcInFlight: 0,
     rows: { ...rows },
     fallback,
     byDot: { ...byDot },
@@ -43,9 +65,36 @@ export function licensingFake({ rows = {}, fallback = ACTIVE_ROW, byDot = {}, mo
     motusCalls: [],
     fetch: async (url) => {
       const u = new URL(String(url));
+      if (u.host === 'mobile.fmcsa.dot.gov') {
+        const dot = /\/carriers\/(\d+)$/.exec(u.pathname)?.[1];
+        fake.qcCalls.push(dot);
+        fake.qcInFlight++;
+        fake.qcPeak = Math.max(fake.qcPeak, fake.qcInFlight);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        fake.qcInFlight--;
+        const carrier = fake.qc[dot];
+        return carrier ? { ok: true, status: 200, json: async () => ({ content: { carrier } }) } : { ok: false, status: 404, json: async () => ({}) };
+      }
       const where = u.searchParams.get('$where') || '';
       const dockets = list(where, 'docket_number');
       const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+      const byDocket = (dataset, map) => {
+        fake.signalCalls.push({ dataset, values: dockets });
+        if (fake.signalsDown) throw new Error(`${dataset} timeout`);
+        return ok(dockets.flatMap((d) => asArray(map[d.slice(2)]).map((r) => ({ docket_number: d, ...r }))));
+      };
+      if (u.pathname.includes('yu5v-wbh6')) return byDocket('motusHistory', fake.motusHistory);
+      if (u.pathname.includes('9mw4-x3tu')) return byDocket('history', fake.history);
+      if (u.pathname.includes('c5y8-a4uz')) return byDocket('motusInsurance', fake.motusInsurance);
+      if (u.pathname.includes('qh9u-swkp')) return byDocket('insurance', fake.insurance);
+      if (u.pathname.includes('az4n-8mr2') && u.searchParams.get('$group')) {
+        const email = /email/.test(u.searchParams.get('$group'));
+        const values = /in\(([^)]*)\)/.exec(where)?.[1].split(',').map((x) => x.trim().replace(/^'|'$/g, '')) || [];
+        fake.signalCalls.push({ dataset: email ? 'sharedEmails' : 'sharedPhones', values });
+        if (fake.signalsDown) throw new Error('census timeout');
+        const map = email ? fake.sharedEmails : fake.sharedPhones;
+        return ok(values.filter((v) => map[v]).map((v) => ({ v, n: String(map[v]) })));
+      }
       if (u.pathname.includes('6eyk-hxee')) {
         fake.calls.push(dockets);
         if (fake.down || fake.legacyDown) throw new Error('licensing dataset timeout');

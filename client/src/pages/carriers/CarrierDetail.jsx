@@ -24,6 +24,7 @@ import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
 import ComposeModal from '../../components/email/ComposeModal.jsx';
 import ContactConsentCard, { ConsentBadge } from '../../components/consent/ContactConsentCard.jsx';
 import { FmcsaProfileTab } from '../../components/carriers/FmcsaProfile.jsx';
+import { TierBadge, topReasons } from '../../components/carriers/LeadScore.jsx';
 
 const CARRIER_TABS = ['overview', 'fmcsa', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
 
@@ -257,6 +258,12 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
             {c.doNotEmail && <Badge color="red">Do not email</Badge>}
             <ConsentBadge carrierId={c.id} />
           </div>
+          {c.leadTier && (
+            <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-fg-2" aria-label="Lead score">
+              <TierBadge tier={c.leadTier} score={c.leadScore} />
+              {topReasons(c.leadSignals).map((s) => s.label).join(' · ') || 'Lead score from FMCSA data'}
+            </p>
+          )}
         </div>
         {canWrite && (
           <div className="flex flex-wrap items-center gap-2">

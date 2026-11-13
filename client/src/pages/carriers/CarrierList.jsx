@@ -14,8 +14,10 @@ import EnrollModal from '../../components/carriers/EnrollModal.jsx';
 import BulkEmailModal from '../../components/carriers/BulkEmailModal.jsx';
 import { SELECT_ALL_CAP, bulkFilter, bulkTarget, selectAllState } from '../../components/carriers/bulkSelection.js';
 import { AUTHORITY_FILTERS, AuthorityBadge, PhoneLink, ResourceLinks, STAGES, StageBadge, TagList, authorityProblem, equipmentLabel, rememberCarrierNav, useAssignees, useProspectLists, useTags } from '../../components/carriers/shared.jsx';
+import { TierBadge } from '../../components/carriers/LeadScore.jsx';
 
-const FILTER_KEYS = ['q', 'state', 'equipment', 'fleetMin', 'fleetMax', 'authorityStatus', 'authorityAgeMinMonths', 'authorityAgeMaxMonths', 'stage', 'tagId', 'assignedTo', 'source', 'scope', 'noActivity', 'activityDays'];
+const FILTER_KEYS = ['q', 'state', 'equipment', 'fleetMin', 'fleetMax', 'authorityStatus', 'authorityAgeMinMonths', 'authorityAgeMaxMonths', 'stage', 'tagId', 'assignedTo', 'source', 'scope', 'noActivity', 'activityDays', 'leadTier'];
+const TIERS = [['A', 'Tier A (75+)'], ['B', 'Tier B (55–74)'], ['C', 'Tier C (under 55)'], ['unscored', 'Not scored']];
 const PAGE_SIZE = 25;
 
 export default function CarrierList() {
@@ -109,6 +111,8 @@ export default function CarrierList() {
         <TagList tags={c.tags} className="mt-1" />
       </div>
     ) },
+    // Lead score v2 (lead generator and Find carriers); carriers without one sort last.
+    { key: 'leadScore', header: 'Lead score', sortable: true, render: (c) => <TierBadge tier={c.leadTier} score={c.leadScore} /> },
     { key: 'phone', header: 'Phone', render: (c) => (c.doNotCall ? <span className="whitespace-nowrap text-xs text-red-600">Do not call</span> : <PhoneLink phone={c.phone} carrierId={c.id} className="whitespace-nowrap" />) },
     { key: 'state', header: 'Location', sortable: true, render: (c) => <span className="whitespace-nowrap">{[c.city, c.state].filter(Boolean).join(', ') || '—'}</span> },
     { key: 'equipment', header: 'Equipment', render: (c) => <span className="text-[13px]">{equipmentLabel(c.equipment)}</span> },
@@ -155,6 +159,9 @@ export default function CarrierList() {
               title="Only count activity in the last N days (empty = ever)"
               onKeyDown={(e) => { if (e.key === 'Enter') update({ activityDays: e.currentTarget.value }); }} onBlur={(e) => e.target.value !== filters.activityDays && update({ activityDays: e.target.value })} className="w-24" />
           )}
+          <Select aria-label="Lead tier" value={filters.leadTier} onChange={(e) => update({ leadTier: e.target.value })} className="w-40">
+            <option value="">Any lead tier</option>{TIERS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+          </Select>
           <Button variant="secondary" icon={Filter} onClick={() => setShowFilters(!showFilters)} aria-expanded={showFilters}>
             Filters{activeFilters ? ` (${activeFilters})` : ''}
           </Button>
@@ -245,7 +252,7 @@ export default function CarrierList() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <span className="truncate font-medium">{c.companyName}</span>
-                      <StageBadge stage={c.stage} />
+                      <span className="flex shrink-0 items-center gap-1">{c.leadTier && <TierBadge tier={c.leadTier} score={c.leadScore} />}<StageBadge stage={c.stage} /></span>
                     </div>
                     {authorityProblem(c.authorityStatus) && <div className="mt-1"><AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /></div>}
                     <div className="mt-0.5 text-xs text-muted">{[c.city, c.state].filter(Boolean).join(', ') || 'No location'}{c.dotNumber ? ` · DOT ${c.dotNumber}` : ''}</div>

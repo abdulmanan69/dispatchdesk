@@ -45,6 +45,61 @@ export async function status() {
   return { id, label, available: true, configured: true, requiresKey: false, note: token ? 'Using Socrata app token (higher rate limit).' : 'Anonymous access — rate limited. Add a Socrata app token in Admin → Integrations for higher limits.' };
 }
 
+const DRY_FREIGHT = ['crgo_genfreight', 'crgo_paperprod', 'crgo_beverages'];
+/**
+ * Equipment a dispatcher can book, inferred from census cargo classes and vehicle counts (owned + term + trip leased):
+ * reefer / flatbed / car hauler / tanker from cargo classes; straight trucks and no tractors = hotshot (with trailers)
+ * or box truck (without); dry freight on tractors (or unknown vehicle counts) = dry van. An inference, never a fact.
+ */
+export function inferEquipment({ cargoKeys = [], straightTrucks = null, tractors = null, trailers = null } = {}) {
+  const out = new Set(cargoKeys.map((k) => CARGO_EQUIPMENT[k]).filter(Boolean));
+  const straightOnly = straightTrucks > 0 && !(tractors > 0);
+  if (straightOnly) out.add(trailers > 0 ? 'hotshot' : 'box_truck');
+  else if (cargoKeys.some((k) => DRY_FREIGHT.includes(k))) out.add('dry_van');
+  return [...out];
+}
+
+const sumOf = (r, keys) => {
+  const vals = keys.map((k) => intOrNull(r[k])).filter((v) => v != null);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+};
+const ymdDay = (v) => {
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(v ?? '').trim());
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+};
+
+/** Lead facts of a census row (leadSignals.js scores them; leadFilters.postFilter checks them). */
+export function censusFacts(r) {
+  const cargoKeys = Object.keys(CARGO_LABELS).filter((k) => String(r[k] || '').toUpperCase() === 'X');
+  const straightTrucks = sumOf(r, ['owntruck', 'trmtruck', 'trptruck']);
+  const tractors = sumOf(r, ['owntract', 'trmtract', 'trptract']);
+  const trailers = sumOf(r, ['owntrail', 'trmtrail', 'trptrail']);
+  const rating = String(r.safety_rating || '').trim().toUpperCase();
+  const crash = Number(String(r.recordable_crash_rate ?? '').trim());
+  return {
+    cellPhone: normPhone(r.cell_phone),
+    officer: trimOrNull(r.company_officer_1, 120) || trimOrNull(r.company_officer_2, 120),
+    powerUnits: intOrNull(r.power_units),
+    drivers: intOrNull(r.total_drivers),
+    cdlDrivers: intOrNull(r.total_cdl),
+    straightTrucks, tractors, trailers,
+    mileage: intOrNull(r.mcs150_mileage),
+    mileageYear: intOrNull(r.mcs150_mileage_year),
+    mcs150Date: ymdDay(r.mcs150_date),
+    addDate: ymdDay(r.add_date),
+    operation: String(r.carrier_operation || '').trim().toUpperCase() || null,
+    forHire: /AUTHORIZED FOR HIRE/i.test(String(r.classdef || '')),
+    hazmat: String(r.hm_ind || '').toUpperCase() === 'Y',
+    cargoKeys,
+    safetyRating: ['S', 'C', 'U'].includes(rating) ? rating : null,
+    crashRate: String(r.recordable_crash_rate ?? '').trim() !== '' && Number.isFinite(crash) ? crash : null,
+    priorRevoke: String(r.prior_revoke_flag || '').toUpperCase() === 'Y',
+    undeliverable: String(r.undeliv_phy || '').toUpperCase() === 'U',
+    county: trimOrNull(r.phy_cnty, 5),
+    equipment: inferEquipment({ cargoKeys, straightTrucks, tractors, trailers }),
+  };
+}
+
 /** Map a census row into DispatchDesk carrier fields (plus display-only extras). */
 export function mapRecord(r) {
   const state = normState(r.phy_state);
@@ -84,6 +139,7 @@ export function mapRecord(r) {
       docket: r.docket1prefix && r.docket1 ? `${r.docket1prefix}-${r.docket1}` : null,
       // Status of the first docket (MC) in the census: A active, I inactive, P pending. Not a live authority check.
       docketStatus: DOCKET_STATUS[String(r.docket1_status_code || '').toUpperCase()] || null,
+      facts: censusFacts(r),
     },
   };
 }
@@ -118,8 +174,29 @@ function buildWhere(f, { numeric = true } = {}) {
   if (f.addedBefore) w.push(`add_date<='${ymd(f.addedBefore)}'`);
   if (numeric && f.minPowerUnits != null) w.push(`power_units::number>=${Number(f.minPowerUnits)}`);
   if (numeric && f.maxPowerUnits != null) w.push(`power_units::number<=${Number(f.maxPowerUnits)}`);
+  // Lead filters (services/carriers/leadFilters.js censusLeadFilters). All census columns are text.
+  const zips = (f.zipPrefixes || []).filter((z) => /^\d{3,5}$/.test(z));
+  if (zips.length) w.push(`(${zips.map((z) => `phy_zip like '${z}%'`).join(' OR ')})`);
+  const counties = (f.counties || []).filter((c) => /^\d{3}$/.test(c));
+  if (counties.length) w.push(`phy_cnty in(${counties.map((c) => `'${c}'`).join(',')})`);
+  if (f.interstateOnly) w.push(`carrier_operation='A'`);
+  if (f.forHireOnly) w.push(`classdef like '%AUTHORIZED FOR HIRE%'`);
+  if (f.hazmat === 'yes') w.push(`hm_ind='Y'`);
+  if (f.hazmat === 'no') w.push(`(hm_ind IS NULL OR hm_ind!='Y')`);
+  if (numeric && f.minDrivers != null) w.push(`total_drivers::number>=${Number(f.minDrivers)}`);
+  if (numeric && f.maxDrivers != null) w.push(`total_drivers::number<=${Number(f.maxDrivers)}`);
+  if (numeric && f.minCdlDrivers != null) w.push(`total_cdl::number>=${Number(f.minCdlDrivers)}`);
+  if (f.mcs150After) w.push(`mcs150_date>='${ymd(f.mcs150After)}'`);
+  // A NULL rating is "not rated" (most small carriers): it must stay in, so NOT IN alone is not enough.
+  const ratings = (f.excludeRatings || []).filter((x) => x === 'U' || x === 'C');
+  if (ratings.length) w.push(`(safety_rating IS NULL OR safety_rating not in(${ratings.map((x) => `'${x}'`).join(',')}))`);
+  if (f.hasCell) w.push('cell_phone IS NOT NULL');
+  if (f.hasCellOrEmail) w.push('(cell_phone IS NOT NULL OR email_address IS NOT NULL)');
+  const eqCargo = (f.equipmentCargo || []).filter((k) => Object.hasOwn(CARGO_LABELS, k));
+  if (eqCargo.length) w.push(`(${eqCargo.map((k) => `${k}='X'`).join(' OR ')})`);
   return w.join(' AND ');
 }
+export { buildWhere };
 
 // ---------------------------------------------------------------------------
 // Response cache (opt-in per call site)
@@ -226,16 +303,18 @@ export async function search(filters, fetchImpl, opts = {}) {
   const base = { $limit: String(limit), $offset: String(offset), $order: filters.order === 'newest' ? 'add_date DESC, dot_number' : 'dot_number' };
   let rows;
   let note = null;
+  const numeric = [['minPowerUnits', 'power_units', 1], ['maxPowerUnits', 'power_units', -1], ['minDrivers', 'total_drivers', 1], ['maxDrivers', 'total_drivers', -1], ['minCdlDrivers', 'total_cdl', 1]]
+    .filter(([k]) => filters[k] != null);
   try {
     rows = await query({ ...base, $where: buildWhere(filters) || undefined }, fetchImpl, opts);
   } catch (err) {
-    if (err.upstreamStatus !== 400 || (filters.minPowerUnits == null && filters.maxPowerUnits == null)) throw err;
+    if (err.upstreamStatus !== 400 || !numeric.length) throw err;
     rows = await query({ ...base, $limit: String(Math.min(limit * 4, 1000)), $where: buildWhere(filters, { numeric: false }) || undefined }, fetchImpl, opts);
-    rows = rows.filter((r) => {
-      const n = intOrNull(r.power_units) ?? 0;
-      return (filters.minPowerUnits == null || n >= filters.minPowerUnits) && (filters.maxPowerUnits == null || n <= filters.maxPowerUnits);
-    }).slice(0, limit);
-    note = 'Fleet-size filter applied to the fetched page only.';
+    rows = rows.filter((r) => numeric.every(([k, col, dir]) => {
+      const n = intOrNull(r[col]) ?? 0;
+      return dir > 0 ? n >= filters[k] : n <= filters[k];
+    })).slice(0, limit);
+    note = 'Fleet-size and driver filters applied to the fetched page only.';
   }
   return { provider: id, source: label, retrievedAt: new Date().toISOString(), note, items: rows.map(mapRecord) };
 }

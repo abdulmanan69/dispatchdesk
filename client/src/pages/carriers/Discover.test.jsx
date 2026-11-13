@@ -24,6 +24,8 @@ const RESULTS = {
   items: [rec('1000001'), rec('1000002', { existsInCrm: true, existingId: 'c2' }), rec('1000003', { teamClaims: [{ ownerName: 'Ana' }] })],
 };
 
+const FILTER_OPTIONS = { equipmentOptions: [{ value: 'dry_van', label: 'Dry van' }, { value: 'reefer', label: 'Reefer' }], insurerSuggestions: ['Progressive', 'Canal'] };
+
 function renderIt() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={qc}><MemoryRouter initialEntries={['/app/discover?state=OH']}><Discover /></MemoryRouter></QueryClientProvider>);
@@ -34,6 +36,7 @@ beforeEach(() => {
   get.mockImplementation(async (url) => {
     if (url === '/api/sequences') return { items: [] };
     if (url === '/api/discovery/providers') return { items: [] };
+    if (url === '/api/discovery/filter-options') return FILTER_OPTIONS;
     if (url === '/api/discovery/search') return RESULTS;
     throw new Error(`unexpected ${url}`);
   });
@@ -89,5 +92,46 @@ describe('Find carriers page', () => {
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Authority is not active', confirmLabel: 'Save anyway', message: expect.stringContaining('CARRIER 1000001 LLC: No insurance on file') }));
     expect(post).toHaveBeenLastCalledWith('/api/discovery/save', { dotNumbers: ['1000001'], sequenceId: null, allowInactive: true });
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved 1 carrier'));
+  });
+
+  it('sends the shared lead filters with the search (only what differs from the defaults)', async () => {
+    renderIt();
+    fireEvent.click(screen.getByRole('button', { name: /^Location/ }));
+    fireEvent.change(screen.getByLabelText('ZIP prefixes'), { target: { value: '773, 750' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Operation/ }));
+    fireEvent.click(screen.getByLabelText('Interstate only'));
+    fireEvent.click(screen.getByRole('button', { name: /^Contact quality/ }));
+    fireEvent.click(screen.getByLabelText('Leave out shared contacts'));
+    fireEvent.click(screen.getByLabelText('Has a cell phone'));
+    fireEvent.click(screen.getByRole('button', { name: /^Size and equipment/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reefer' }));
+    fireEvent.click(screen.getByLabelText('Order'));
+    fireEvent.click(screen.getByRole('option', { name: 'Best leads first (each page)' }));
+    fireEvent.click(screen.getByRole('button', { name: /Find leads/ }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/discovery/search', expect.objectContaining({
+      state: 'OH', order: 'score', zipPrefixes: '773,750', interstateOnly: 'true', excludeSharedContacts: 'false', requireCell: 'true', equipment: 'reefer',
+    }), expect.anything()));
+    const params = get.mock.calls.find(([url]) => url === '/api/discovery/search')[1];
+    expect(params).not.toHaveProperty('excludeRatings');
+    expect(params).not.toHaveProperty('hazmat');
+  });
+
+  it('shows each lead tier with its signal chips and how many carriers the filters hid', async () => {
+    get.mockImplementation(async (url) => {
+      if (url === '/api/discovery/search') {
+        return {
+          ...RESULTS, hiddenByFilters: 4, hiddenReasons: { sharedContact: 3, unsafe: 0, filtered: 1 },
+          items: [rec('1000001', { score: 82, tier: 'A', signals: [{ key: 'new_authority', label: 'New MC · 45 days', points: 25, group: 'need', tone: 'good' }, { key: 'cell_phone', label: 'Cell phone', points: 14, group: 'reach', tone: 'good' }] })],
+        };
+      }
+      return url === '/api/discovery/filter-options' ? FILTER_OPTIONS : { items: [] };
+    });
+    renderIt();
+    fireEvent.click(screen.getByRole('button', { name: /Find leads/ }));
+    expect(await screen.findByText('4 hidden by filters (3 shared contact, 1 outside the filters).')).toBeInTheDocument();
+    // Table and phone cards both render (CSS picks one by width).
+    expect(screen.getAllByText('A · 82')).toHaveLength(2);
+    expect(screen.getAllByText('New MC · 45 days')).toHaveLength(2);
+    expect(screen.getAllByText('Cell phone').length).toBe(2);
   });
 });

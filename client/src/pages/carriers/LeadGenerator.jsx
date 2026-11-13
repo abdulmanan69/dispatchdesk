@@ -10,31 +10,47 @@ import { Modal, useConfirm } from '../../components/Modal.jsx';
 import EnrollModal from '../../components/carriers/EnrollModal.jsx';
 import { AuthorityBadge } from '../../components/carriers/shared.jsx';
 import { FmcsaProfileButton } from '../../components/carriers/FmcsaProfile.jsx';
+import LeadFilters, { EquipmentChips, LEAD_FILTER_DEFAULTS, leadFiltersFromCriteria, leadFiltersToCriteria } from '../../components/carriers/LeadFilters.jsx';
+import { SignalChips, TierBadge } from '../../components/carriers/LeadScore.jsx';
 import {
   Badge, Button, Card, Checkbox, DataTable, EmptyState, Field, Input, PageHeader, QueryState, Select, Switch, cx,
 } from '../../components/ui.jsx';
 
-const FLEET = ['', '1', '2', '3', '5', '10', '15', '25', '50', '100'];
+const FLEET = ['', '1', '2', '3', '4', '5', '10', '15', '25', '50', '100'];
 const AGE = [['', 'Any'], ['1', '1 month'], ['3', '3 months'], ['6', '6 months'], ['12', '1 year'], ['24', '2 years'], ['36', '3 years'], ['60', '5 years']];
 const BATCH = [10, 25, 50, 100, 200];
-const SCORES = [[0, 'Any score'], [40, '40+'], [60, '60+ (contactable)'], [80, '80+ (best fit)']];
+const SCORES = [[0, 'Any score'], [40, '40+'], [50, '50+'], [55, '55+ (tiers A and B)'], [60, '60+'], [75, '75+ (tier A only)'], [80, '80+']];
 /** "12 skipped: authority not active" (carriers FMCSA licensing does not show with active authority). */
 const inactiveText = (n) => `${n} skipped: authority not active`;
 const STATUS = { ok: ['green', 'Completed'], limited: ['amber', 'Plan limit'], exhausted: ['gray', 'All matches checked'], error: ['red', 'Failed'] };
 const num = (v) => Number(v || 0).toLocaleString('en-US');
+/** Why candidates were left out, besides the CRM, the score and authority (run.exclusions, preview counts). */
+const EXCLUSION_TEXT = [
+  ['sharedContact', 'shared contact (likely has a dispatcher)'],
+  ['unsafe', 'unsafe safety rating'],
+  ['outOfService', 'out of service'],
+  ['filtered', 'outside your filters'],
+  ['teamClaimed', 'with teammates'],
+  ['suppressed', 'on your do-not-contact lists'],
+];
+/** "3 shared contact (likely has a dispatcher) · 1 out of service", or '' when nothing else was left out. */
+export const exclusionText = (counts) => EXCLUSION_TEXT.filter(([k]) => Number(counts?.[k]) > 0).map(([k, t]) => `${num(counts[k])} ${t}`).join(' · ');
 
 const BLANK = {
   name: '', states: [], cargo: [], minPowerUnits: '1', maxPowerUnits: '10', authorityAgeMinMonths: '', authorityAgeMaxMonths: '24',
-  requirePhone: true, requireEmail: false, requireMc: true, activeOnly: true,
+  requirePhone: true, requireEmail: false, requireMc: true, activeOnly: true, lead: { ...LEAD_FILTER_DEFAULTS }, playbook: null,
   batchSize: 25, stageKey: 'lead', listId: '', newListName: '', sequenceId: '', minScore: 40, autoRun: false, frequency: 'daily',
 };
 
 const intOrNull = (v) => (v === '' || v == null ? null : Number(v));
 const fleetText = (c) => (c.minPowerUnits == null && c.maxPowerUnits == null ? 'Any fleet size'
   : `${c.minPowerUnits ?? 0}–${c.maxPowerUnits ?? '∞'} trucks`);
-const ageText = (c) => (c.authorityAgeMinMonths == null && c.authorityAgeMaxMonths == null ? 'Any authority age'
-  : c.authorityAgeMaxMonths != null && c.authorityAgeMinMonths == null ? `Authority under ${c.authorityAgeMaxMonths} mo`
-    : `Authority ${c.authorityAgeMinMonths ?? 0}–${c.authorityAgeMaxMonths ?? '∞'} mo`);
+const ageText = (c) => {
+  if (c.mcAgeMinDays != null || c.mcAgeMaxDays != null) return `MC ${c.mcAgeMinDays ?? 0}–${c.mcAgeMaxDays ?? '∞'} days`;
+  return c.authorityAgeMinMonths == null && c.authorityAgeMaxMonths == null ? 'Any authority age'
+    : c.authorityAgeMaxMonths != null && c.authorityAgeMinMonths == null ? `Authority under ${c.authorityAgeMaxMonths} mo`
+      : `Authority ${c.authorityAgeMinMonths ?? 0}–${c.authorityAgeMaxMonths ?? '∞'} mo`;
+};
 
 function Meter({ name, used, limit, calm }) {
   const unlimited = limit < 0;
@@ -59,18 +75,22 @@ function Chip({ on, children, ...props }) {
   );
 }
 
-function ScoreBadge({ score }) {
-  return <Badge color={score >= 80 ? 'brand' : score >= 60 ? 'green' : 'gray'} className="tabular">{score}</Badge>;
+/** Form fields for the filters of a criteria object (a generator's, or a playbook's preset). */
+function criteriaFields(c = {}) {
+  const s = (v) => (v == null ? '' : String(v));
+  return {
+    cargo: c.cargo || [], minPowerUnits: s(c.minPowerUnits), maxPowerUnits: s(c.maxPowerUnits),
+    authorityAgeMinMonths: s(c.authorityAgeMinMonths), authorityAgeMaxMonths: s(c.authorityAgeMaxMonths),
+    requirePhone: !!c.requirePhone, requireEmail: !!c.requireEmail, requireMc: !!c.requireMc, activeOnly: c.activeOnly !== false,
+    lead: leadFiltersFromCriteria(c), playbook: c.playbook || null,
+  };
 }
 
 function toForm(g) {
   if (!g) return BLANK;
   const c = g.criteria || {};
-  const s = (v) => (v == null ? '' : String(v));
   return {
-    name: g.name, states: c.states || [], cargo: c.cargo || [], minPowerUnits: s(c.minPowerUnits), maxPowerUnits: s(c.maxPowerUnits),
-    authorityAgeMinMonths: s(c.authorityAgeMinMonths), authorityAgeMaxMonths: s(c.authorityAgeMaxMonths),
-    requirePhone: !!c.requirePhone, requireEmail: !!c.requireEmail, requireMc: !!c.requireMc, activeOnly: c.activeOnly !== false,
+    name: g.name, states: c.states || [], ...criteriaFields(c),
     batchSize: g.batchSize, stageKey: g.stageKey, listId: g.listId || '', newListName: '', sequenceId: g.sequenceId || '', minScore: g.minScore, autoRun: g.autoRun, frequency: g.frequency,
   };
 }
@@ -80,19 +100,52 @@ function criteriaOf(f) {
     states: f.states, cargo: f.cargo, minPowerUnits: intOrNull(f.minPowerUnits), maxPowerUnits: intOrNull(f.maxPowerUnits),
     authorityAgeMinMonths: intOrNull(f.authorityAgeMinMonths), authorityAgeMaxMonths: intOrNull(f.authorityAgeMaxMonths),
     requirePhone: f.requirePhone, requireEmail: f.requireEmail, requireMc: f.requireMc, activeOnly: f.activeOnly,
+    ...leadFiltersToCriteria(f.lead), playbook: f.playbook || null,
   };
 }
 
-function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
+/** Playbook cards: one click sets the filters and what the score weighs most; everything stays editable afterwards. */
+function PlaybookPicker({ playbooks, value, onPick, equipment, onEquipment, equipmentOptions }) {
+  if (!playbooks?.length) return null;
+  const chosen = playbooks.find((p) => p.key === value);
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-[13px] font-medium">Start from a playbook <span className="font-normal text-muted">sets the filters and what the score weighs most; change anything after</span></legend>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {playbooks.map((p) => {
+          const on = p.key === value;
+          return (
+            <button key={p.key} type="button" aria-pressed={on} onClick={() => onPick(on ? null : p)}
+              className={cx('rounded-lg border p-3 text-left transition-ui', on ? 'border-brand-600 bg-brand-50/60 ring-1 ring-brand-600 dark:bg-brand-900/20' : 'border-line bg-surface hover:bg-surface-2')}>
+              <span className="block text-sm font-medium">{p.title}</span>
+              <span className="mt-0.5 block text-xs text-fg-2">{p.why}</span>
+              <span className="mt-1.5 block text-[11.5px] text-muted">{p.sets}</span>
+            </button>
+          );
+        })}
+      </div>
+      {chosen?.pickEquipment && (
+        <div className="space-y-1.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+          <p className="text-[13px] font-medium">Equipment you book</p>
+          <EquipmentChips value={equipment} options={equipmentOptions} onChange={onEquipment} />
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
+function GeneratorEditor({ generator, cargoOptions, entitlements, onClose, playbooks = [], equipmentOptions, insurerSuggestions = [] }) {
   const toast = useToast();
   const [f, setF] = useState(() => toForm(generator));
   const [preview, setPreview] = useState(null);
   const previewRef = useRef(null);
-  useEffect(() => { if (preview) previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [preview]);
+  useEffect(() => { if (preview) previewRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); }, [preview]);
   const lists = useQuery({ queryKey: ['prospecting', 'lists'], queryFn: () => api.get('/api/prospecting/lists') });
   const sequences = useQuery({ queryKey: ['sequences'], queryFn: () => api.get('/api/sequences') });
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e?.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e }));
   const toggle = (k, v) => setF((x) => ({ ...x, [k]: x[k].includes(v) ? x[k].filter((y) => y !== v) : [...x[k], v] }));
+  // A playbook replaces the filters (states, name and delivery settings stay) and suggests a minimum score.
+  const pickPlaybook = (p) => setF((x) => (p ? { ...x, ...criteriaFields(p.criteria), playbook: p.key, minScore: p.minScore ?? x.minScore } : { ...x, playbook: null }));
 
   const save = useApiMutation((body) => (generator ? api.patch(`/api/lead-generators/${generator.id}`, body) : api.post('/api/lead-generators', body)), {
     invalidate: [['lead-generators'], ['prospecting', 'lists'], ['billing']],
@@ -122,6 +175,9 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
         <Button type="submit" form="leadgen-form" loading={save.isPending} disabled={!valid}>{generator ? 'Save' : 'Create generator'}</Button>
       </>}>
       <form id="leadgen-form" onSubmit={submit} className="space-y-6">
+        <PlaybookPicker playbooks={playbooks} value={f.playbook} onPick={pickPlaybook} equipment={f.lead.equipment} equipmentOptions={equipmentOptions}
+          onEquipment={(equipment) => setF((x) => ({ ...x, lead: { ...x.lead, equipment } }))} />
+
         <Field label="Name" required><Input value={f.name} onChange={set('name')} placeholder="Texas small reefer fleets" maxLength={80} /></Field>
 
         <fieldset className="space-y-2">
@@ -152,9 +208,15 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
           <Checkbox label="Active authority only (FMCSA licensing)" checked={f.activeOnly} onChange={set('activeOnly')} />
         </div>
 
+        <fieldset className="space-y-2">
+          <legend className="text-[13px] font-medium">More filters <span className="font-normal text-muted">location, operation, drivers, MC age, safety, contact quality, insurer</span></legend>
+          <LeadFilters value={f.lead} onChange={(lead) => setF((x) => ({ ...x, lead }))} columns={2} idPrefix="lg"
+            equipmentOptions={equipmentOptions} insurerSuggestions={insurerSuggestions} />
+        </fieldset>
+
         <div className="grid gap-4 border-t border-line pt-5 sm:grid-cols-4">
           <Field label="Leads per run"><Select value={f.batchSize} onChange={set('batchSize')}>{BATCH.map((v) => <option key={v} value={v}>{v}</option>)}</Select></Field>
-          <Field label="Minimum lead score" hint="Phone, email, MC, active authority, new authority, small fleet"><Select value={f.minScore} onChange={set('minScore')}>{SCORES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
+          <Field label="Minimum lead score" hint="0–100: Need, Fit, Reachability and Quality. Tier A is 75+, tier B 55–74."><Select value={f.minScore} onChange={set('minScore')}>{SCORES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
           <Field label="Pipeline stage"><Select value={f.stageKey} onChange={set('stageKey')}><option value="lead">Lead</option><option value="prospecting">Prospecting</option></Select></Field>
           <Field label="Add to prospect list">
             <Select value={f.listId} onChange={set('listId')}>
@@ -186,20 +248,29 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
         <div ref={previewRef} className="mt-6 scroll-mt-4 border-t border-line pt-5">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-sm font-medium">Preview · {preview.items.length} new match{preview.items.length === 1 ? '' : 'es'} on the first page</h3>
-            <span className="text-xs text-muted">{preview.scanned} scanned · {preview.skipped} already in CRM · {preview.belowScore} below score{preview.inactiveAuthority ? ` · ${inactiveText(preview.inactiveAuthority)}` : ''} · {preview.source}</span>
+            <span className="text-xs text-muted">
+              {preview.scanned} scanned · {preview.skipped} already in CRM · {preview.belowScore} below score{preview.inactiveAuthority ? ` · ${inactiveText(preview.inactiveAuthority)}` : ''}{exclusionText(preview) ? ` · ${exclusionText(preview)}` : ''} · {preview.source}
+            </span>
           </div>
           {preview.note && <p className="mb-2 text-xs text-muted">{preview.note}</p>}
           {preview.authorityError ? (
             <p role="alert" className="flex items-start gap-2 rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-sm"><AlertTriangle className="mt-0.5 size-4 shrink-0 text-c-amber" aria-hidden />{preview.authorityError}</p>
           ) : (
-            <DataTable dense rows={preview.items.map((r) => ({ ...r, id: r.dotNumber }))} empty={<p className="py-6 text-center text-sm text-muted">No new carriers match. Add states or loosen the filters.</p>}
+            <DataTable dense rows={[...preview.items].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map((r) => ({ ...r, id: r.dotNumber }))}
+              empty={<p className="py-6 text-center text-sm text-muted">No new carriers match. Add states or loosen the filters.</p>}
               columns={[
-                { key: 'score', header: 'Score', render: (r) => <span title={r.scoreReasons.join(', ')}><ScoreBadge score={r.score} /></span> },
-                { key: 'companyName', header: 'Carrier', render: (r) => <div className="min-w-40"><div className="font-medium">{r.companyName}</div><div className="font-mono text-xs text-muted">USDOT {r.dotNumber}{r.mcNumber ? ` · MC ${r.mcNumber}` : ''}</div></div> },
+                { key: 'score', header: 'Lead', render: (r) => <span title={(r.scoreReasons || []).join(', ')}><TierBadge tier={r.tier} score={r.score} /></span> },
+                { key: 'companyName', header: 'Carrier', render: (r) => (
+                  <div className="min-w-48">
+                    <div className="font-medium">{r.companyName}</div>
+                    <div className="font-mono text-xs text-muted">USDOT {r.dotNumber}{r.mcNumber ? ` · MC ${r.mcNumber}` : ''}</div>
+                    <SignalChips signals={r.signals} max={5} className="mt-1" />
+                  </div>
+                ) },
                 { key: 'state', header: 'Location', render: (r) => [r.city, r.state].filter(Boolean).join(', ') },
                 { key: 'fleetSize', header: 'Trucks', render: (r) => <span className="tabular">{r.fleetSize ?? '—'}</span> },
                 { key: 'authorityStatus', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
-                { key: 'phone', header: 'Phone', render: (r) => (r.phone ? phoneFmt(r.phone) : '—') },
+                { key: 'phone', header: 'Phone', render: (r) => (r.cellPhone || r.phone ? phoneFmt(r.cellPhone || r.phone) : '—') },
               ]} />
           )}
         </div>
@@ -211,16 +282,19 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose }) {
 /**
  * Status, counts and the server's message for one run. The message says what happened: every matching carrier checked
  * (with the counts, so they are not repeated here), or how many carriers this run read and that the next run continues.
+ * A second line lists the other reasons carriers were left out (shared contact, unsafe rating, out of service...).
  */
 export function RunSummary({ run }) {
   const [color, text] = STATUS[run.status] || STATUS.ok;
   const counts = run.status !== 'exhausted' && run.status !== 'error' && run.scanned > 0;
+  const extra = counts ? exclusionText(run.exclusions) : '';
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Badge color={color}>{text}</Badge>
         {counts && <span className="text-muted">{num(run.scanned)} carriers read · {num(run.skipped)} already in CRM · {num(run.belowScore)} below score{run.inactiveAuthority ? ` · ${inactiveText(num(run.inactiveAuthority))}` : ''}</span>}
       </div>
+      {extra && <p className="-mt-2 mb-4 text-xs text-muted">Also left out: {extra}</p>}
       {run.message && <p className="mb-4 text-sm text-fg-2">{run.message}</p>}
     </>
   );
@@ -231,6 +305,7 @@ function RunResult({ result, onClose }) {
   const ids = result.run.carrierIds || result.carriers.map((c) => c.id);
   // A generator linked to a sequence enrolls its leads itself; otherwise offer it here.
   const enrolledAlready = /Enrolled \d+ in "/.test(result.run.message || '');
+  const rows = [...result.carriers].sort((a, b) => (b.leadScore ?? -1) - (a.leadScore ?? -1));
   return (
     <Modal open onClose={onClose} size="lg" title={`${result.run.created} new lead${result.run.created === 1 ? '' : 's'}`}
       footer={<>
@@ -240,9 +315,15 @@ function RunResult({ result, onClose }) {
       </>}>
       <EnrollModal open={enrolling} carrierIds={ids} onClose={() => setEnrolling(false)} />
       <RunSummary run={result.run} />
-      {result.carriers.length > 0 && (
-        <DataTable dense rows={result.carriers} columns={[
-          { key: 'companyName', header: 'Carrier', render: (c) => <Link to={`/app/carriers/${c.id}`} className="font-medium hover:underline">{c.companyName}</Link> },
+      {rows.length > 0 && (
+        <DataTable dense rows={rows} columns={[
+          { key: 'leadScore', header: 'Lead', render: (c) => <TierBadge tier={c.leadTier} score={c.leadScore} /> },
+          { key: 'companyName', header: 'Carrier', render: (c) => (
+            <div className="min-w-44">
+              <Link to={`/app/carriers/${c.id}`} className="font-medium hover:underline">{c.companyName}</Link>
+              <SignalChips signals={c.leadSignals} max={4} className="mt-1" />
+            </div>
+          ) },
           { key: 'dotNumber', header: 'USDOT', render: (c) => <span className="font-mono text-xs">{c.dotNumber}</span> },
           { key: 'state', header: 'Location', render: (c) => [c.city, c.state].filter(Boolean).join(', ') },
           { key: 'fleetSize', header: 'Trucks', render: (c) => <span className="tabular">{c.fleetSize ?? '—'}</span> },
@@ -254,7 +335,7 @@ function RunResult({ result, onClose }) {
   );
 }
 
-function GeneratorCard({ g, cargoLabels, entitlements, onEdit, onRun, running }) {
+function GeneratorCard({ g, cargoLabels, entitlements, onEdit, onRun, running, playbookTitles = {} }) {
   const confirm = useConfirm();
   const c = g.criteria;
   const toggleAuto = useApiMutation((autoRun) => api.patch(`/api/lead-generators/${g.id}`, { autoRun }), {
@@ -277,6 +358,7 @@ function GeneratorCard({ g, cargoLabels, entitlements, onEdit, onRun, running })
         </div>
       </div>
       <dl className="grid grid-cols-[80px_1fr] gap-x-4 gap-y-1.5 text-[13px]">
+        {c.playbook && <><dt className="text-muted">Playbook</dt><dd className="truncate">{playbookTitles[c.playbook] || c.playbook}</dd></>}
         <dt className="text-muted">Fleet</dt><dd>{fleetText(c)}</dd>
         <dt className="text-muted">Authority</dt><dd>{ageText(c)}</dd>
         <dt className="text-muted">Cargo</dt><dd className="truncate" title={(c.cargo || []).map((k) => cargoLabels[k]).join(', ')}>{c.cargo?.length ? c.cargo.map((k) => cargoLabels[k] || k).join(', ') : 'Any'}</dd>
@@ -318,6 +400,8 @@ export default function LeadGenerator() {
   const atLimit = ent && ent.maxGenerators >= 0 && ent.generators >= ent.maxGenerators;
   const cargoOptions = q.data?.cargoOptions || [];
   const cargoLabels = Object.fromEntries(cargoOptions.map((o) => [o.value, o.label]));
+  const playbooks = q.data?.playbooks || [];
+  const playbookTitles = Object.fromEntries(playbooks.map((p) => [p.key, p.title]));
 
   return (
     <div>
@@ -341,13 +425,13 @@ export default function LeadGenerator() {
               <Card>
                 <EmptyState icon={Crosshair} title="No generators yet"
                   action={<Button icon={Plus} disabled={atLimit} onClick={() => setEditing('new')}>Create your first generator</Button>}>
-                  Pick states, fleet size, authority age and cargo. Each run pulls carriers from the public FMCSA Census, skips anyone already in your CRM or without active operating authority (FMCSA licensing), scores them, and adds the best to your pipeline.
+                  Start from a playbook, or pick states, fleet size, MC age and equipment. Each run pulls carriers from the public FMCSA Census, skips anyone already in your CRM, likely served by another dispatcher or without active operating authority (FMCSA licensing), scores them A, B or C, and adds the best to your pipeline.
                 </EmptyState>
               </Card>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {d.items.map((g) => (
-                  <GeneratorCard key={g.id} g={g} cargoLabels={cargoLabels} entitlements={d.entitlements}
+                  <GeneratorCard key={g.id} g={g} cargoLabels={cargoLabels} entitlements={d.entitlements} playbookTitles={playbookTitles}
                     onEdit={() => setEditing(g)} onRun={() => start(g.id)} running={runningId === g.id} />
                 ))}
               </div>
@@ -364,7 +448,7 @@ export default function LeadGenerator() {
                       { key: 'status', header: 'Status', render: (x) => { const [c, t] = STATUS[x.status] || STATUS.ok; return <Badge color={c}>{t}</Badge>; } },
                       { key: 'created', header: 'Added', render: (x) => <span className="tabular">{x.created}</span> },
                       { key: 'scanned', header: 'Scanned', render: (x) => <span className="tabular text-muted">{x.scanned}</span> },
-                      { key: 'message', header: 'Note', render: (x) => <span className="block max-w-md truncate text-xs text-muted" title={x.message || ''}>{x.message || '—'}</span> },
+                      { key: 'message', header: 'Note', render: (x) => <span className="block max-w-md truncate text-xs text-muted" title={[x.message, exclusionText(x.exclusions) && `Also left out: ${exclusionText(x.exclusions)}`].filter(Boolean).join(' ')}>{x.message || '—'}</span> },
                     ]} />
                 )}
               </QueryState>
@@ -374,7 +458,8 @@ export default function LeadGenerator() {
       </QueryState>
 
       {editing && ent && (
-        <GeneratorEditor generator={editing === 'new' ? null : editing} cargoOptions={cargoOptions} entitlements={ent} onClose={() => setEditing(null)} />
+        <GeneratorEditor generator={editing === 'new' ? null : editing} cargoOptions={cargoOptions} entitlements={ent} onClose={() => setEditing(null)}
+          playbooks={playbooks} equipmentOptions={q.data?.equipmentOptions} insurerSuggestions={q.data?.insurerSuggestions || []} />
       )}
       {result && <RunResult result={result} onClose={() => setResult(null)} />}
     </div>

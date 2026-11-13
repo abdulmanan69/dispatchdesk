@@ -11,15 +11,21 @@ import { AuthorityBadge, equipmentLabel } from '../../components/carriers/shared
 import { FmcsaProfileButton } from '../../components/carriers/FmcsaProfile.jsx';
 import SaveAndCall, { claimText } from '../../components/carriers/SaveAndCall.jsx';
 import { saveCensusLeads } from '../../components/carriers/saveLeads.js';
+import LeadFilters, { LEAD_FILTER_DEFAULTS, activeLeadFilters, leadFiltersToQuery } from '../../components/carriers/LeadFilters.jsx';
+import { SignalChips, TierBadge } from '../../components/carriers/LeadScore.jsx';
 
 const INITIAL = { state: '', city: '', name: '', dot: '', mc: '', minPowerUnits: '', maxPowerUnits: '', authorityAgeMinMonths: '', authorityAgeMaxMonths: '', activeOnly: true, hasMc: true, hasEmail: false, order: 'newest' };
 const LIMIT = 50;
+const HIDDEN_REASONS = [['sharedContact', 'shared contact'], ['unsafe', 'unsafe safety rating'], ['filtered', 'outside the filters']];
+/** "2 shared contact, 1 outside the filters" from the search's hiddenReasons. */
+const hiddenReasonText = (r) => HIDDEN_REASONS.filter(([k]) => r?.[k] > 0).map(([k, t]) => `${r[k]} ${t}`).join(', ');
 
 export default function Discover() {
   const [params] = useSearchParams();
   const confirm = useConfirm();
   // ?state=XX (from the market map) pre-fills the state filter.
   const [form, setForm] = useState(() => ({ ...INITIAL, state: /^[A-Z]{2}$/.test(params.get('state') || '') ? params.get('state') : INITIAL.state }));
+  const [lead, setLead] = useState(() => ({ ...LEAD_FILTER_DEFAULTS }));
   const [search, setSearch] = useState(null); // submitted params
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState(new Set());
@@ -31,6 +37,7 @@ export default function Discover() {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
   const providers = useQuery({ queryKey: ['discovery', 'providers'], queryFn: () => api.get('/api/discovery/providers'), staleTime: 300000 });
+  const filterOptions = useQuery({ queryKey: ['discovery', 'filter-options'], queryFn: () => api.get('/api/discovery/filter-options'), staleTime: 3600000 });
   // The signal cancels a search the user has already moved past (new filters, next page).
   const results = useQuery({
     queryKey: ['discovery', 'search', search, offset],
@@ -64,7 +71,7 @@ export default function Discover() {
 
   const submit = (e) => {
     e.preventDefault();
-    const p = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, typeof v === 'boolean' ? String(v) : v]));
+    const p = { ...Object.fromEntries(Object.entries(form).map(([k, v]) => [k, typeof v === 'boolean' ? String(v) : v])), ...leadFiltersToQuery(lead) };
     setOffset(0);
     setSelected(new Set());
     setSearch(p);
@@ -89,13 +96,14 @@ export default function Discover() {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <span className="min-w-0 break-words font-medium">{r.companyName}</span>
-          <span className="flex shrink-0 items-center gap-1"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></span>
+          <span className="flex shrink-0 items-center gap-1"><TierBadge tier={r.tier} score={r.score} /><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></span>
         </div>
         <div className="mt-0.5 text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
         <div className="text-xs text-muted">
           {[[r.city, r.state].filter(Boolean).join(', '), r.fleetSize != null && `${r.fleetSize} truck${r.fleetSize === 1 ? '' : 's'}`, r.authorityDate && `registered ${date(r.authorityDate)}`].filter(Boolean).join(' · ') || 'No location on file'}
         </div>
         {r.email && <div className="truncate text-xs text-muted">{r.email}</div>}
+        <SignalChips signals={r.signals} max={4} className="mt-1.5" />
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
           <SaveAndCall record={r} />
           {crmStatus(r)}
@@ -105,11 +113,13 @@ export default function Discover() {
   );
 
   const columns = [
+    { key: 'score', header: 'Lead', render: (r) => <span title={(r.scoreReasons || []).join(', ')}><TierBadge tier={r.tier} score={r.score} /></span> },
     { key: 'companyName', header: 'Carrier', render: (r) => (
-      <div className="min-w-44">
+      <div className="min-w-48">
         <div className="font-medium">{r.companyName}</div>
         {r.dbaName && <div className="text-xs text-muted">DBA {r.dbaName}</div>}
         <div className="text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
+        <SignalChips signals={r.signals} max={4} className="mt-1" />
       </div>
     ) },
     // Calling a lead that is not saved yet saves it first, so the call is logged on the record.
@@ -155,11 +165,16 @@ export default function Discover() {
                 <Field label="Registered ≥ months ago"><Input type="number" min="0" value={form.authorityAgeMinMonths} onChange={set('authorityAgeMinMonths')} /></Field>
                 <Field label="Registered ≤ months ago"><Input type="number" min="0" value={form.authorityAgeMaxMonths} onChange={set('authorityAgeMaxMonths')} /></Field>
               </div>
-              <Field label="Order"><Select value={form.order} onChange={set('order')}><option value="newest">Newest registrations first</option><option value="dot">USDOT number</option></Select></Field>
+              <Field label="Order"><Select value={form.order} onChange={set('order')}><option value="newest">Newest registrations first</option><option value="score">Best leads first (each page)</option><option value="dot">USDOT number</option></Select></Field>
               <div className="space-y-1.5">
                 <Checkbox label="Active authority only" checked={form.activeOnly} onChange={set('activeOnly')} />
                 <Checkbox label="Has MC number (for-hire)" checked={form.hasMc} onChange={set('hasMc')} />
                 <Checkbox label="Has email on file" checked={form.hasEmail} onChange={set('hasEmail')} />
+              </div>
+              <div className="space-y-2">
+                <p className="text-[13px] font-medium">Lead filters{activeLeadFilters(lead) > 0 && <span className="ml-1 font-normal text-muted">({activeLeadFilters(lead)} on)</span>}</p>
+                <LeadFilters value={lead} onChange={setLead} idPrefix="disc"
+                  equipmentOptions={filterOptions.data?.equipmentOptions} insurerSuggestions={filterOptions.data?.insurerSuggestions || []} />
               </div>
               <Button type="submit" icon={Search} className="w-full" loading={results.isFetching}>Find leads</Button>
             </form>
@@ -226,6 +241,10 @@ export default function Discover() {
               {results.data.hiddenInactive > 0 && (
                 <p role="status" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-muted"><Info className="size-3.5 shrink-0" aria-hidden />
                   {results.data.hiddenInactive} carrier{results.data.hiddenInactive === 1 ? '' : 's'} hidden: authority not active. Untick “Active authority only” to see {results.data.hiddenInactive === 1 ? 'it' : 'them'}.</p>
+              )}
+              {results.data.hiddenByFilters > 0 && (
+                <p role="status" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-xs text-muted"><Info className="size-3.5 shrink-0" aria-hidden />
+                  {results.data.hiddenByFilters} hidden by filters{hiddenReasonText(results.data.hiddenReasons) ? ` (${hiddenReasonText(results.data.hiddenReasons)})` : ''}.</p>
               )}
               <DataTable dense columns={columns} rows={rows} selected={selected} mobileRow={mobileRow}
                 onSelect={(s) => setSelected(new Set([...s].filter((id) => selectable.has(id))))}

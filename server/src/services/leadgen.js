@@ -6,9 +6,17 @@ import { logActivity, notify } from '../lib/activity.js';
 import { stageByKey } from './pipeline.js';
 import { runAutomations } from './automation.js';
 import { enrollCarriers } from './sequenceEngine.js';
-import { normMc } from './carriers/normalize.js';
+import { normMc, normPhone } from './carriers/normalize.js';
 import * as census from './carriers/fmcsaCensus.js';
 import { AUTHORITY_UNAVAILABLE, annotateAuthority } from './carriers/authority.js';
+import { teamClaims, matchFor } from './carriers/collisions.js';
+import { normalizeLeadFilters, censusLeadFilters, postFilter, weightsFor } from './carriers/leadFilters.js';
+import {
+  scoreLead as scoreLeadV2, sharedContactStep, mcAgeStep, insurerStep, qcSafety, qcBlocks, withQc, tierPriority, scoreText, signalsJson,
+  QC_MAX_PER_RUN, leadView,
+} from './carriers/leadSignals.js';
+
+export { leadView };
 import { withLock, LockBusyError } from '../lib/locks.js';
 
 /**
@@ -17,6 +25,10 @@ import { withLock, LockBusyError } from '../lib/locks.js';
  * With "active only" (the default) every candidate's operating authority is checked against the FMCSA licensing
  * dataset before it is picked: only active authority (with insurance on file) is saved, and when the dataset does not
  * answer the run saves nothing (fail closed).
+ * Each page goes through the cheapest checks first (see collect()): de-duplication (own CRM, teammates, do-not-call
+ * and email suppression lists), the shared filters (services/carriers/leadFilters.js), the best score the carrier
+ * could reach, then the batched lookups of services/carriers/leadSignals.js (shared contacts, operating authority,
+ * MC age, insurer), the lead score v2, and QCMobile live safety for the picks only.
  * Usage counts against the plan's monthlyLeadGenLimit (and maxCarriers).
  */
 
@@ -63,17 +75,32 @@ const num = (n) => Number(n).toLocaleString('en-US');
 const plural = (n, word) => `${num(n)} ${word}${n === 1 ? '' : 's'}`;
 const WIDEN = 'Widen the filters (more states, a longer authority age range, fewer contact requirements) to find more.';
 
+/** Why candidates were left out, in the order a run checks them (stats keys of collect() and their wording). */
+export const EXCLUSION_REASONS = Object.freeze([
+  ['skipped', 'already in your CRM'],
+  ['teamClaimed', 'with a teammate'],
+  ['suppressed', 'on your do-not-contact lists'],
+  ['unsafe', 'unsafe safety rating'],
+  ['filtered', 'outside your filters'],
+  ['sharedContact', 'share a phone or email with other carriers (likely have a dispatcher)'],
+  ['inactiveAuthority', 'authority not active'],
+  ['outOfService', 'out of service'],
+  ['belowScore', 'below your minimum score'],
+]);
+/** Counts LeadGenRun stores in its `exclusions` JSON (the ones without a column of their own). */
+export const EXCLUSION_KEYS = Object.freeze(['teamClaimed', 'suppressed', 'unsafe', 'filtered', 'sharedContact', 'inactiveAuthority', 'outOfService']);
+
 /**
  * Message for a run whose crawl reached the end of the census list in every state.
  * `fromTop`: this run read every state from the first row, so `scanned` is every matching carrier. Otherwise earlier
  * runs read the first part and `matching` (the length of each state's list) is the total.
  */
-export function exhaustedMessage({ created = 0, scanned = 0, matching = 0, fromTop = true, skipped = 0, inactiveAuthority = 0, belowScore = 0 }) {
+export function exhaustedMessage({ created = 0, scanned = 0, matching = 0, fromTop = true, ...counts }) {
   // This run read every row of every list (scanned counts distinct rows): the counts below cover all of them.
   if (scanned && scanned === matching) fromTop = true;
   const total = fromTop ? scanned : matching;
   if (!total) return `No carriers match these filters right now. ${WIDEN}`;
-  const parts = [[skipped, 'already in your CRM'], [inactiveAuthority, 'authority not active'], [belowScore, 'below your minimum score']]
+  const parts = EXCLUSION_REASONS.map(([k, text]) => [counts[k] || 0, text])
     .filter(([n]) => n > 0).map(([n, text]) => `${num(n)} ${text}`);
   const added = created ? `Added ${plural(created, 'new lead')}. ` : '';
   const all = `All ${plural(total, 'carrier')} matching these filters ${total === 1 ? 'was' : 'were'} checked`;
@@ -85,7 +112,6 @@ export function exhaustedMessage({ created = 0, scanned = 0, matching = 0, fromT
 export const continuesMessage = ({ created = 0, scanned = 0 }) =>
   `Added ${plural(created, 'new lead')}. Read ${plural(scanned, 'carrier')} this run; the next run continues where this one stopped.`;
 
-const monthsAgo = (m) => { const d = new Date(); d.setMonth(d.getMonth() - m); return d; };
 
 export function parseCriteria(raw) {
   try { return typeof raw === 'string' ? JSON.parse(raw) : raw || {}; } catch { return {}; }
@@ -111,7 +137,11 @@ export function parseCriteria(raw) {
  */
 const CURSOR_VERSION = 1;
 
-/** Stable hash of the filters a crawl position depends on (everything but the state list) and the minimum score. */
+/**
+ * Stable hash of the filters a crawl position depends on (everything but the state list), the playbook (its weights
+ * change scores) and the minimum score. Every shared lead filter is in it with its default filled in, so criteria
+ * stored before a filter existed hash like criteria that spell the default out.
+ */
 export function criteriaHash(criteria, minScore = 0) {
   const c = parseCriteria(criteria);
   const n = (v) => (v == null || v === '' ? null : Number(v));
@@ -121,6 +151,8 @@ export function criteriaHash(criteria, minScore = 0) {
     authorityAgeMinMonths: n(c.authorityAgeMinMonths), authorityAgeMaxMonths: n(c.authorityAgeMaxMonths),
     requirePhone: !!c.requirePhone, requireEmail: !!c.requireEmail, requireMc: !!c.requireMc, activeOnly: c.activeOnly !== false,
     minScore: Number(minScore) || 0,
+    leadFilters: normalizeLeadFilters(c),
+    playbook: c.playbook || null,
   };
   return createHash('sha256').update(JSON.stringify(norm)).digest('hex').slice(0, 16);
 }
@@ -138,31 +170,15 @@ export function readCursor(raw, hash) {
 const addDay = (rec) => (rec.authorityDate instanceof Date && !Number.isNaN(rec.authorityDate.getTime()) ? rec.authorityDate.toISOString().slice(0, 10) : null);
 const newestDay = (items) => items.map(addDay).filter(Boolean).sort().pop() || null;
 
-/** 0–100 fit score for a dispatch prospect, with the reasons shown to the user. */
-export function scoreLead(rec, now = new Date()) {
-  const reasons = [];
-  let score = 0;
-  const add = (n, why) => { score += n; reasons.push(why); };
-  if (rec.phone) add(25, 'Phone on file');
-  if (rec.email) add(20, 'Email on file');
-  if (rec.mcNumber) add(15, 'MC authority');
-  // Census registration only: says nothing about operating authority.
-  if (rec.usdotStatus === 'active') add(10, 'USDOT registration active (census)');
-  // Set only after the FMCSA licensing check (mapRecord leaves authorityStatus 'unknown').
-  if (rec.authorityStatus === 'active') add(10, 'Authority active, insurance on file (FMCSA licensing)');
-  if (rec.authorityDate) {
-    const months = (now - new Date(rec.authorityDate)) / (30.44 * 86400000);
-    if (months >= 0 && months <= 24) add(15, months <= 6 ? 'New authority (under 6 months)' : 'Authority under 2 years');
-  }
-  if (rec.fleetSize != null) {
-    if (rec.fleetSize >= 1 && rec.fleetSize <= 10) add(15, 'Small fleet (1–10 trucks)');
-    else if (rec.fleetSize <= 50) add(8, 'Mid-size fleet');
-  }
-  return { score: Math.min(100, score), reasons };
-}
+/**
+ * Lead score v2 (services/carriers/leadSignals.js): { score, tier, signals, reasons, groups }. The second argument is
+ * the scoring context ({ now, timezone, weights }) or, as before, just `now`.
+ */
+export const scoreLead = (rec, ctx = {}) => scoreLeadV2(rec, ctx instanceof Date ? { now: ctx } : ctx);
 
-function censusFilters(c, state) {
+function censusFilters(c, state, now = new Date()) {
   return {
+    ...censusLeadFilters(c, now),
     state,
     activeOnly: c.activeOnly !== false,
     hasMc: !!c.requireMc,
@@ -171,21 +187,44 @@ function censusFilters(c, state) {
     cargo: c.cargo || [],
     minPowerUnits: c.minPowerUnits ?? undefined,
     maxPowerUnits: c.maxPowerUnits ?? undefined,
-    addedBefore: c.authorityAgeMinMonths != null ? monthsAgo(c.authorityAgeMinMonths) : undefined,
-    addedAfter: c.authorityAgeMaxMonths != null ? monthsAgo(c.authorityAgeMaxMonths) : undefined,
+    // addedBefore / addedAfter (authority age months, MC age days) come from censusLeadFilters.
     order: 'newest',
     limit: PAGE,
   };
 }
 
-async function existingKeys(userId, recs) {
-  const dots = recs.map((r) => r.dotNumber).filter(Boolean);
-  const mcs = recs.map((r) => r.mcNumber).filter(Boolean);
-  const rows = await prisma.carrier.findMany({
-    where: { ownerId: userId, OR: [{ dotNumber: { in: dots } }, { mcNumber: { in: mcs } }] },
-    select: { dotNumber: true, mcNumber: true },
-  });
-  return { dots: new Set(rows.map((r) => r.dotNumber).filter(Boolean)), mcs: new Set(rows.map((r) => r.mcNumber).filter(Boolean)) };
+const lower = (e) => String(e || '').trim().toLowerCase();
+
+/**
+ * What de-duplication needs for one page: the user's own carriers (USDOT / MC), teammates' carriers (collision guard),
+ * phones on the user's do-not-call carriers and addresses on the user's email suppression list.
+ */
+async function dedupeKeys(user, recs) {
+  const dots = [...new Set(recs.map((r) => r.dotNumber).filter(Boolean))];
+  const mcs = [...new Set(recs.map((r) => r.mcNumber).filter(Boolean))];
+  const phones = [...new Set(recs.map((r) => normPhone(r.phone)).filter(Boolean))];
+  const emails = [...new Set(recs.map((r) => lower(r.email)).filter(Boolean))];
+  const [rows, dnc, suppressed] = await Promise.all([
+    prisma.carrier.findMany({ where: { ownerId: user.id, OR: [{ dotNumber: { in: dots } }, { mcNumber: { in: mcs } }] }, select: { dotNumber: true, mcNumber: true } }),
+    phones.length ? prisma.carrier.findMany({ where: { ownerId: user.id, doNotCall: true, phone: { in: phones } }, select: { phone: true } }) : [],
+    emails.length ? prisma.emailSuppression.findMany({ where: { ownerId: user.id, email: { in: emails } }, select: { email: true } }) : [],
+  ]);
+  // teamClaims takes 500 numbers per call.
+  const team = new Map();
+  if (user.teamMembership) {
+    for (let i = 0; i < recs.length; i += 250) {
+      const part = recs.slice(i, i + 250);
+      const claims = await teamClaims(user, { dots: part.map((r) => r.dotNumber), mcs: part.map((r) => r.mcNumber) });
+      for (const r of part) if (matchFor(claims, r)) team.set(r.dotNumber, true);
+    }
+  }
+  return {
+    dots: new Set(rows.map((r) => r.dotNumber).filter(Boolean)),
+    mcs: new Set(rows.map((r) => r.mcNumber).filter(Boolean)),
+    team,
+    dncPhones: new Set(dnc.map((r) => normPhone(r.phone)).filter(Boolean)),
+    suppressedEmails: new Set(suppressed.map((r) => lower(r.email))),
+  };
 }
 
 /**
@@ -263,18 +302,33 @@ function nextCursor(crawl, hash, now = new Date()) {
  * At most STATE_CONCURRENCY census requests run at once. The first failed request (a 429, a timeout) stops the crawl:
  * no new request starts, the ones already in flight are awaited, and then the error is thrown, so nothing from this
  * crawl keeps calling FMCSA after collect() has returned and the generator lock is released.
- * Authority checks (FMCSA licensing) run after de-duplication, in batches of VERIFY_BATCH, one at a time and only until
- * enough candidates are picked. A batch the licensing dataset did not answer throws AuthorityUnavailableError.
+ * Each page, cheapest first:
+ *   1. de-duplication: the user's CRM (skipped), teammates' carriers (teamClaimed), do-not-call phones and suppressed
+ *      emails (suppressed);
+ *   2. the shared filters on the page (leadFilters.postFilter: unsafe rating, or filtered);
+ *   3. the best score the carrier could reach (belowScore);
+ * then, in batches of VERIFY_BATCH, one batch at a time and only until enough candidates are picked:
+ *   4. shared-contact counts (sharedContact; fail-soft);
+ *   5. operating authority (inactiveAuthority; a batch the licensing dataset did not answer throws
+ *      AuthorityUnavailableError: fail closed);
+ *   6. MC age from authority history, then the insurer (filtered; both fail-soft);
+ *   7. the lead score (belowScore), picked in crawl order;
+ *   8. QCMobile live safety for the picks only, at most `qcMax` per crawl (outOfService; fail-open).
  * Returns the next cursor too; the caller decides whether to save it.
  */
-async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STATE, cacheMs = 0, budgetMs = RUN_BUDGET_MS, cursor = null, hash = null } = {}) {
+async function collect(user, criteria, minScore, want, {
+  pages = PAGES_PER_STATE, cacheMs = 0, budgetMs = RUN_BUDGET_MS, cursor = null, hash = null, qcMax = QC_MAX_PER_RUN, now = new Date(),
+} = {}) {
   const crawl = (criteria.states || []).map((s) => startCrawl(s, cursor?.states?.[s]));
-  const stats = { scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0 };
+  const stats = { scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0, outOfService: 0 };
+  const scoring = { now, timezone: user.timezone || null, weights: weightsFor(criteria) };
   const picked = [];
   const seen = new Set();
   const handled = new Set(); // dot numbers fully handled this run (the cursor may move past them)
   const isHandled = (rec) => !rec.dotNumber || handled.has(rec.dotNumber);
+  const done = (list, key) => { for (const r of list) { handled.add(r.dotNumber); if (key) stats[key]++; } };
   const deadline = Date.now() + budgetMs;
+  let qcLeft = qcMax;
   let notes = null;
   let timedOut = false;
   for (let p = 0; p < pages && picked.length < want; p++) {
@@ -293,7 +347,7 @@ async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STA
         const phase = c.phase;
         const offset = phase === 'head' ? c.headOffset : c.deepPos;
         try {
-          const res = await census.search({ ...censusFilters(criteria, c.state), offset }, undefined, { cacheMs });
+          const res = await census.search({ ...censusFilters(criteria, c.state, now), offset }, undefined, { cacheMs });
           if (res.note) notes = res.note;
           const items = res.items;
           if (offset === 0) c.top = newestDay(items);
@@ -316,29 +370,55 @@ async function collect(userId, criteria, minScore, want, { pages = PAGES_PER_STA
     const fetched = pageOf.filter(Boolean);
     const page = [];
     for (let i = 0; fetched.some((f) => i < f.rows.length); i++) for (const f of fetched) if (i < f.rows.length) page.push(f.rows[i]);
-    const have = await existingKeys(userId, page);
+    const have = await dedupeKeys(user, page);
     const fresh = [];
     for (const rec of page) {
       if (!rec.dotNumber || seen.has(rec.dotNumber)) continue;
       seen.add(rec.dotNumber);
       stats.scanned++;
-      if (have.dots.has(rec.dotNumber) || (rec.mcNumber && have.mcs.has(normMc(rec.mcNumber)))) { stats.skipped++; handled.add(rec.dotNumber); continue; }
-      // The best score this record can reach (authority confirmed active): below the minimum it is not worth a check.
-      if (scoreLead({ ...rec, authorityStatus: rec.mcNumber ? 'active' : 'none' }).score < minScore) { stats.belowScore++; handled.add(rec.dotNumber); continue; }
+      if (have.dots.has(rec.dotNumber) || (rec.mcNumber && have.mcs.has(normMc(rec.mcNumber)))) { done([rec], 'skipped'); continue; }
+      if (have.team.has(rec.dotNumber)) { done([rec], 'teamClaimed'); continue; }
+      if ((rec.phone && have.dncPhones.has(normPhone(rec.phone))) || (rec.email && have.suppressedEmails.has(lower(rec.email)))) { done([rec], 'suppressed'); continue; }
+      const why = postFilter(rec, criteria, now);
+      if (why) { done([rec], why === 'unsafe' ? 'unsafe' : 'filtered'); continue; }
+      // The best score this record can reach (authority active, a brand-new MC, no shared contact): below the minimum
+      // it is not worth a lookup.
+      if (scoreLead(rec, { ...scoring, optimistic: true }).score < minScore) { done([rec], 'belowScore'); continue; }
       fresh.push(rec);
     }
     for (let i = 0; i < fresh.length && picked.length < want; i += VERIFY_BATCH) {
       if (i > 0 && Date.now() >= deadline) { timedOut = true; break; }
       const batch = fresh.slice(i, i + VERIFY_BATCH);
-      const verified = await verifyBatch(batch, criteria, stats, { cacheMs });
+      const shared = await sharedContactStep(batch, criteria, { cacheMs });
+      done(shared.excluded, 'sharedContact');
+      const verified = shared.kept.length ? await verifyBatch(shared.kept, criteria, stats, { cacheMs }) : [];
       const kept = new Set(verified.map((r) => r.dotNumber));
-      for (const rec of batch) if (!kept.has(rec.dotNumber)) handled.add(rec.dotNumber); // authority not active
-      for (const rec of verified) {
-        if (picked.length >= want) break; // verified but not picked: read again next run
-        handled.add(rec.dotNumber);
-        const s = scoreLead(rec);
-        if (s.score < minScore) { stats.belowScore++; continue; }
-        picked.push({ ...rec, score: s.score, scoreReasons: s.reasons });
+      for (const rec of shared.kept) if (!kept.has(rec.dotNumber)) handled.add(rec.dotNumber); // authority not active
+      const aged = await mcAgeStep(verified, criteria, { cacheMs, now });
+      done(aged.excluded, 'filtered');
+      const insured = await insurerStep(aged.kept, criteria, { cacheMs, now });
+      done(insured.excluded, 'filtered');
+      // Pick in crawl order; QCMobile checks each round of picks, and a dropped pick makes room for the next one.
+      let pool = insured.kept;
+      while (pool.length && picked.length < want) {
+        const round = [];
+        let k = 0;
+        for (; k < pool.length && picked.length + round.length < want; k++) {
+          if (scoreLead(pool[k], scoring).score < minScore) { done([pool[k]], 'belowScore'); continue; }
+          round.push(pool[k]);
+        }
+        pool = pool.slice(k);
+        if (!round.length) break;
+        const qc = await qcSafety(round, { max: qcLeft, deadline });
+        qcLeft = Math.max(0, qcLeft - round.length);
+        for (const r of round) {
+          handled.add(r.dotNumber);
+          const rec = withQc(r, qc.get(r.dotNumber));
+          if (qcBlocks(rec._lead.qc)) { stats.outOfService++; continue; }
+          const s = scoreLead(rec, scoring);
+          if (s.score < minScore) { stats.belowScore++; continue; }
+          picked.push({ ...rec, score: s.score, tier: s.tier, signals: s.signals, scoreReasons: s.reasons });
+        }
       }
     }
     // Move each state past the rows it handled. A page left part-way (enough leads, time limit) ends its crawl here.
@@ -383,9 +463,10 @@ const PREVIEW_CACHE_MS = 10 * 60_000;
 export async function previewLeads(user, criteria, minScore = 0, size = 25) {
   const base = { source: census.label, retrievedAt: new Date().toISOString() };
   try {
-    const { picked, stats, exhausted, note } = await collect(user.id, criteria, minScore, size, { pages: 1, cacheMs: PREVIEW_CACHE_MS, budgetMs: PREVIEW_BUDGET_MS });
+    const { picked, stats, exhausted, note } = await collect(user, criteria, minScore, size, { pages: 1, cacheMs: PREVIEW_CACHE_MS, budgetMs: PREVIEW_BUDGET_MS });
     return {
-      items: picked.map(({ _extra, ...r }) => ({ ...r, cargo: _extra?.cargo || [] })),
+      // Best leads first.
+      items: picked.map(leadView).sort((a, b) => b.score - a.score),
       ...stats,
       exhausted,
       note,
@@ -396,7 +477,8 @@ export async function previewLeads(user, criteria, minScore = 0, size = 25) {
     if (!(err instanceof AuthorityUnavailableError)) throw err;
     return {
       items: [],
-      scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, ...(err.stats || {}),
+      scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0, outOfService: 0,
+      ...(err.stats || {}),
       exhausted: false,
       note: null,
       authorityError: `${AUTHORITY_UNAVAILABLE} No carriers are shown until it can be checked; try the preview again in a few minutes.`,
@@ -427,7 +509,8 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
     const left = await remainingMany(user, ['leadGenMonth', 'carriers']);
     const budget = Math.min(gen.batchSize, left.leadGenMonth, left.carriers);
     const run = { trigger, status: 'ok', scanned: 0, created: 0, skipped: 0, belowScore: 0, message: null };
-    let inactiveAuthority = 0; // no LeadGenRun column: kept in the message (inactiveAuthorityText)
+    let inactiveAuthority = 0; // also kept in the message (inactiveAuthorityText) for runs stored before `exclusions`
+    let exclusions = null; // counts per reason without a column (EXCLUSION_KEYS)
     let cursor = null; // the crawl position to save; stays null when the run fails
     const ids = [];
     const createdCarriers = [];
@@ -439,23 +522,30 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
       run.message = `Your ${plan?.name || 'current'} plan's monthly lead limit is used up. Upgrade for more leads.`;
     } else {
       try {
-        const crawl = await collect(user.id, criteria, gen.minScore, budget, { cursor: readCursor(gen.cursor, hash), hash });
+        const crawl = await collect(user, criteria, gen.minScore, budget, { cursor: readCursor(gen.cursor, hash), hash, now });
         const { picked, stats, exhausted, note } = crawl;
         ({ inactiveAuthority } = stats);
+        exclusions = Object.fromEntries(EXCLUSION_KEYS.map((k) => [k, stats[k] || 0]));
         Object.assign(run, { scanned: stats.scanned, skipped: stats.skipped, belowScore: stats.belowScore });
         const stage = await stageByKey(gen.stageKey || 'lead');
         const list = gen.listId ? await prisma.prospectList.findFirst({ where: { id: gen.listId, ownerId: user.id } }) : null;
         for (const rec of picked) {
-          const { score, scoreReasons } = rec;
+          const { score, tier, signals } = rec;
           try {
             const c = await prisma.carrier.create({
               data: {
                 // authorityStatus/operatingStatus come from the FMCSA licensing check in collect().
                 ...census.carrierColumns(rec), ownerId: user.id, stageId: stage.id, source: 'lead_generator', sourceRef: `USDOT ${rec.dotNumber} · ${gen.name}`.slice(0, 190),
-                verifiedAt: now, priority: score >= 80 ? 2 : score >= 60 ? 1 : 0,
+                verifiedAt: now, priority: tierPriority(tier), leadScore: score, leadTier: tier, leadSignals: signalsJson(signals),
               },
             });
-            await prisma.carrierNote.create({ data: { carrierId: c.id, authorId: user.id, body: `Lead score ${score}/100 from "${gen.name}": ${scoreReasons.join(', ') || 'no signals'}.` } }).catch(() => {});
+            // The note names the source of each status: operating authority from FMCSA licensing, USDOT from the census.
+            const checked = [
+              rec.authorityStatus === 'active' && 'Authority active, insurance on file (FMCSA licensing)',
+              rec.usdotStatus === 'active' && 'USDOT registration active (census)',
+            ].filter(Boolean);
+            const body = `Lead score ${scoreText({ score, tier, signals })} from "${gen.name}".${checked.length ? ` Checked: ${checked.join('; ')}.` : ''}`;
+            await prisma.carrierNote.create({ data: { carrierId: c.id, authorId: user.id, body } }).catch(() => {});
             if (list) await prisma.prospectListItem.create({ data: { listId: list.id, carrierId: c.id } }).catch(() => {});
             ids.push(c.id);
             createdCarriers.push(c);
@@ -503,7 +593,7 @@ async function runGeneratorUnlocked(user, gen, { trigger = 'manual' } = {}) {
     // (FMCSA error, authority check unavailable, save error) leaves it where it was, so no census row is skipped.
     const [row] = await prisma.$transaction([
       prisma.leadGenRun.create({
-        data: { ...run, generatorId: gen.id, ownerId: user.id, carrierIds: JSON.stringify(ids) },
+        data: { ...run, generatorId: gen.id, ownerId: user.id, carrierIds: JSON.stringify(ids), exclusions: exclusions ? JSON.stringify(exclusions) : null },
       }),
       prisma.leadGenerator.update({
         where: { id: gen.id },

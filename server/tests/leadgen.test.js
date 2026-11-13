@@ -39,10 +39,13 @@ describe('lead generator', () => {
   afterAll(() => setFmcsaFetch(null));
   afterEach(() => { vi.unstubAllGlobals(); clearCensusCache(); clearAuthorityCache(); });
 
-  it('scores leads from real fields with reasons', () => {
-    const s = scoreLead({ phone: '1', email: 'a@b.c', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date(), fleetSize: 3 });
-    expect(s.score).toBe(100);
-    expect(s.reasons).toContain('Small fleet (1–10 trucks)');
+  it('scores leads from real fields with reasons (lead score v2: details in leadSignals.test.js)', () => {
+    const now = new Date('2026-11-13T12:00:00Z');
+    const s = scoreLead({ phone: '6145550101', email: 'owner@gmail.com', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date('2026-10-01T00:00:00Z'), fleetSize: 3, carrierOperation: 'Interstate' }, now);
+    // Need 20 (new MC, estimated from the registration date) + Fit 17 + Reach 15 + Quality 8.
+    expect(s).toMatchObject({ score: 60, tier: 'B' });
+    expect(s.reasons).toEqual(expect.arrayContaining(['New MC · ~43 days (est.)', 'Owner-operator · 3 trucks', 'Interstate for-hire', 'Phone', 'Email', 'Gmail · owner-run', 'Authority active · insurance on file']));
+    expect(s.signals.every((x) => typeof x.points === 'number' && x.key && x.label && x.group)).toBe(true);
     expect(scoreLead({}).score).toBe(0);
   });
 

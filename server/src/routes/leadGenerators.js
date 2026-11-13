@@ -6,14 +6,19 @@ import { requirePermission } from '../middleware/auth.js';
 import { assertLimit, effectivePlan, usage } from '../lib/plans.js';
 import { STAGE_KEYS } from '../lib/constants.js';
 import { CARGO_LABELS } from '../services/carriers/fmcsaCensus.js';
-import { parseCriteria, previewLeads, runGenerator, nextRunFrom, inactiveAuthorityFrom, criteriaHash, runMessageText } from '../services/leadgen.js';
+import {
+  leadFilterFields, withLeadFilterChecks, PLAYBOOKS, PLAYBOOK_KEYS, playbookView, EQUIPMENT_TYPES, COMMON_INSURERS,
+} from '../services/carriers/leadFilters.js';
+import {
+  parseCriteria, previewLeads, runGenerator, nextRunFrom, inactiveAuthorityFrom, criteriaHash, runMessageText, EXCLUSION_KEYS,
+} from '../services/leadgen.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
 
 const months = z.coerce.number().int().min(0).max(1200).nullable().optional();
 const units = z.coerce.number().int().min(0).max(100000).nullable().optional();
-const criteriaSchema = z.object({
+const criteriaBase = z.object({
   states: z.array(z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Use 2-letter state codes')).min(1, 'Pick at least one state').max(15),
   cargo: z.array(z.string().refine((k) => Object.hasOwn(CARGO_LABELS, k), 'Unknown cargo type')).max(12).default([]),
   minPowerUnits: units,
@@ -24,8 +29,12 @@ const criteriaSchema = z.object({
   requireEmail: z.boolean().default(false),
   requireMc: z.boolean().default(true),
   activeOnly: z.boolean().default(true),
+  // Shared with Find carriers (services/carriers/leadFilters.js).
+  ...leadFilterFields,
+  playbook: z.enum(PLAYBOOK_KEYS).nullable().optional(),
 }).refine((c) => c.minPowerUnits == null || c.maxPowerUnits == null || c.minPowerUnits <= c.maxPowerUnits, { message: 'Minimum fleet size is above the maximum', path: ['minPowerUnits'] })
   .refine((c) => c.authorityAgeMinMonths == null || c.authorityAgeMaxMonths == null || c.authorityAgeMinMonths <= c.authorityAgeMaxMonths, { message: 'Minimum authority age is above the maximum', path: ['authorityAgeMinMonths'] });
+const criteriaSchema = withLeadFilterChecks(criteriaBase);
 
 // Field shapes without defaults. Zod fills .default() values even inside .partial(), so defaults live only in the
 // create schema: a PATCH that sends { autoRun } must never reset batch size, stage, minimum score or frequency.
@@ -91,12 +100,20 @@ const shape = (g) => ({
   nextRunAt: g.nextRunAt, lastRunAt: g.lastRunAt, active: g.active, createdAt: g.createdAt,
   lastRun: g.runs?.[0] ? runShape(g.runs[0]) : null,
 });
-const runShape = (x) => ({
-  id: x.id, generatorId: x.generatorId, trigger: x.trigger, status: x.status, scanned: x.scanned, created: x.created,
-  skipped: x.skipped, belowScore: x.belowScore, message: runMessageText(x.message), createdAt: x.createdAt, carrierIds: JSON.parse(x.carrierIds || '[]'),
-  // Candidates dropped because FMCSA licensing does not show active authority (stored in the message, no column).
-  inactiveAuthority: x.inactiveAuthority ?? inactiveAuthorityFrom(x.message),
-});
+const parseJson = (v) => { try { return v ? JSON.parse(v) : null; } catch { return null; } };
+const runShape = (x) => {
+  const stored = parseJson(x.exclusions) || {};
+  // Candidates dropped because FMCSA licensing does not show active authority (runs stored before `exclusions` keep
+  // it only in the message).
+  const inactiveAuthority = x.inactiveAuthority ?? stored.inactiveAuthority ?? inactiveAuthorityFrom(x.message);
+  return {
+    id: x.id, generatorId: x.generatorId, trigger: x.trigger, status: x.status, scanned: x.scanned, created: x.created,
+    skipped: x.skipped, belowScore: x.belowScore, message: runMessageText(x.message), createdAt: x.createdAt, carrierIds: JSON.parse(x.carrierIds || '[]'),
+    inactiveAuthority,
+    // Left out per reason: shared contact, unsafe rating, out of service, outside the filters, teammates, do-not-contact.
+    exclusions: { ...Object.fromEntries(EXCLUSION_KEYS.map((k) => [k, Number(stored[k]) || 0])), inactiveAuthority },
+  };
+};
 
 async function withLists(userId, gens) {
   const ids = [...new Set(gens.map((g) => g.listId).filter(Boolean))];
@@ -123,6 +140,9 @@ r.get('/', ah(async (req, res) => {
     items: (await withLists(req.user.id, gens)).map(shape),
     entitlements: await entitlements(req.user),
     cargoOptions: Object.entries(CARGO_LABELS).map(([value, label]) => ({ value, label })),
+    playbooks: PLAYBOOKS.map(playbookView),
+    equipmentOptions: Object.entries(EQUIPMENT_TYPES).map(([value, label]) => ({ value, label })),
+    insurerSuggestions: COMMON_INSURERS,
   });
 }));
 
@@ -190,9 +210,13 @@ r.post('/:id/run', ah(async (req, res) => {
   const shaped = runShape(run);
   const carriers = shaped.carrierIds.length ? await prisma.carrier.findMany({
     where: { id: { in: shaped.carrierIds }, ownerId: req.user.id },
-    select: { id: true, companyName: true, dotNumber: true, mcNumber: true, state: true, city: true, phone: true, email: true, fleetSize: true, priority: true, authorityStatus: true, operatingStatus: true },
+    select: {
+      id: true, companyName: true, dotNumber: true, mcNumber: true, state: true, city: true, phone: true, email: true, fleetSize: true, priority: true,
+      authorityStatus: true, operatingStatus: true, leadScore: true, leadTier: true, leadSignals: true,
+    },
+    orderBy: [{ leadScore: { sort: 'desc', nulls: 'last' } }, { createdAt: 'asc' }],
   }) : [];
-  res.json({ run: shaped, carriers, entitlements: await entitlements(req.user) });
+  res.json({ run: shaped, carriers: carriers.map((c) => ({ ...c, leadSignals: parseJson(c.leadSignals) || [] })), entitlements: await entitlements(req.user) });
 }));
 
 r.get('/runs', ah(async (req, res) => {
