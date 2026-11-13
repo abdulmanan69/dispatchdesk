@@ -38,7 +38,7 @@ const BOX = {
   red: 'border-c-red/30 bg-c-red-soft',
   amber: 'border-c-amber/30 bg-c-amber-soft',
   green: 'border-c-green/30 bg-c-green-soft',
-  brand: 'border-brand-600/25 bg-brand-50 dark:bg-brand-950/40',
+  brand: 'border-brand-600/25 bg-brand-50 dark:bg-brand-900/40',
   gray: 'border-line bg-surface-2',
 };
 

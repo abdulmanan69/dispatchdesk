@@ -52,7 +52,7 @@ function Totals({ weeks }) {
         ['Rate per mile', rpm != null ? dollars(rpm) : '—', `${num(t.miles)} loaded miles`],
         ['Dispatch fee', money(t.fee), last ? `last load week net ${money(last.totals.netCents)}` : 'no loads yet'],
       ].map(([k, v, sub, lead]) => (
-        <div key={k} className={cx('rounded-2xl border px-4 py-3', lead ? 'border-brand-600/25 bg-brand-50 dark:bg-brand-950/40' : 'border-line bg-surface')}>
+        <div key={k} className={cx('rounded-2xl border px-4 py-3', lead ? 'border-brand-600/25 bg-brand-50 dark:bg-brand-900/40' : 'border-line bg-surface')}>
           <dt className="text-xs text-muted">{k}</dt>
           <dd className={cx('mt-0.5 font-medium tabular', lead ? 'text-2xl' : 'text-lg')}>{v}</dd>
           <dd className="text-xs text-muted">{sub}</dd>
