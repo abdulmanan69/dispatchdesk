@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Radar, Truck, Upload, KanbanSquare, PhoneCall, ListOrdered, CalendarClock, Handshake, BadgeCheck,
   Building2, Package, Calculator, Mail, Workflow, Bot, GraduationCap, Store, MessagesSquare, Users, CreditCard, Settings,
   Shield, Bell, Search, Menu, X, Sun, Moon, LogOut, ChevronDown, Monitor, PanelLeftClose, PanelLeftOpen, PhoneOutgoing, ScrollText, Wrench, Puzzle, Crosshair, Map as MapIcon, MapPinned,
-  Sun as SunIcon, Receipt, FileStack, BadgePlus, Megaphone, Download, Share, WifiOff, BarChart3,
+  Sun as SunIcon, ShieldCheck, Receipt, FileStack, BadgePlus, Megaphone, Download, Share, WifiOff, BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { applyTheme, storedTheme } from '../context/theme.js';
@@ -30,6 +30,7 @@ const NAV = [
   { hue: 'blue', group: 'Leads', items: [
     { to: '/app/lead-generator', label: 'Lead generator', icon: Crosshair },
     { to: '/app/discover', label: 'Find carriers', icon: Radar },
+    { to: '/app/carrier-check', label: 'Carrier check', icon: ShieldCheck },
     { to: '/app/carriers', label: 'Carrier list', icon: Truck },
     { to: '/app/market', label: 'Market', icon: MapIcon },
     { to: '/app/new-authority', label: 'New authority', icon: BadgePlus },

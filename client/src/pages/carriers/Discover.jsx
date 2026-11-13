@@ -96,7 +96,7 @@ export default function Discover() {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <span className="min-w-0 break-words font-medium">{r.companyName}</span>
-          <span className="flex shrink-0 items-center gap-1"><TierBadge tier={r.tier} score={r.score} /><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></span>
+          <span className="flex shrink-0 items-center gap-1"><TierBadge tier={r.tier} score={r.score} /><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /></span>
         </div>
         <div className="mt-0.5 text-xs text-muted tabular">DOT {r.dotNumber}{r.mcNumber && ` · MC ${r.mcNumber}`}</div>
         <div className="text-xs text-muted">
@@ -107,6 +107,7 @@ export default function Discover() {
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
           <SaveAndCall record={r} />
           {crmStatus(r)}
+          <FmcsaProfileButton dot={r.dotNumber} variant="ghost" className="ml-auto" />
         </div>
       </div>
     </div>
@@ -129,9 +130,9 @@ export default function Discover() {
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'equipment', header: 'Equipment*', render: (r) => <span className="text-[13px]">{equipmentLabel(r.equipment)}</span> },
     // Operating authority from FMCSA licensing (not the census USDOT status).
-    { key: 'authorityStatus', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
+    { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
     { key: 'authorityDate', header: 'Registered', render: (r) => <span className="whitespace-nowrap text-[13px]">{date(r.authorityDate)}</span> },
-    { key: 'crm', header: '', render: crmStatus },
+    { key: 'crm', header: <span className="sr-only">Actions</span>, className: 'text-right', render: (r) => <span className="flex items-center justify-end gap-2">{crmStatus(r)}<FmcsaProfileButton dot={r.dotNumber} /></span> },
   ];
 
   return (

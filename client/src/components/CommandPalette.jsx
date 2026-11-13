@@ -5,7 +5,7 @@ import {
   Search, CornerDownLeft, LayoutDashboard, Radar, Truck, Upload, KanbanSquare, PhoneCall, PhoneOutgoing, ScrollText, ListOrdered,
   CalendarClock, Handshake, BadgeCheck, Building2, Package, Calculator, Wrench, Mail, Workflow, Bot, GraduationCap, Store,
   MessagesSquare, Users, CreditCard, Settings, Puzzle, Plus, Shield, Bell,
-  Crosshair,
+  Crosshair, ShieldCheck,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { label as statusLabel } from '../lib/format.js';
@@ -37,7 +37,7 @@ const ACTIONS = [
 ];
 
 const PAGES = [
-  ['Dashboard', '/app', LayoutDashboard], ['Lead generator', '/app/lead-generator', Crosshair], ['Market', '/app/market', Radar], ['Fleet map', '/app/fleet', Truck], ['Today', '/app/today', CalendarClock], ['Invoices', '/app/invoices', Calculator], ['Templates', '/app/templates', Mail], ['New authority', '/app/new-authority', Radar], ['Post trucks', '/app/truck-posts', Truck], ['Find carriers', '/app/discover', Radar], ['Carrier list', '/app/carriers', Truck],
+  ['Dashboard', '/app', LayoutDashboard], ['Lead generator', '/app/lead-generator', Crosshair], ['Market', '/app/market', Radar], ['Fleet map', '/app/fleet', Truck], ['Today', '/app/today', CalendarClock], ['Invoices', '/app/invoices', Calculator], ['Templates', '/app/templates', Mail], ['New authority', '/app/new-authority', Radar], ['Post trucks', '/app/truck-posts', Truck], ['Find carriers', '/app/discover', Radar], ['Carrier check', '/app/carrier-check', ShieldCheck], ['Carrier list', '/app/carriers', Truck],
   ['Import CSV', '/app/import', Upload], ['Pipeline', '/app/pipeline', KanbanSquare], ['Prospecting', '/app/prospecting', PhoneCall],
   ['Power dialer', '/app/dialer', PhoneOutgoing], ['Call scripts', '/app/call-scripts', ScrollText], ['Sequences', '/app/sequences', ListOrdered],
   ['Follow-ups', '/app/follow-ups', CalendarClock], ['Opportunities', '/app/opportunities', Handshake], ['Customers', '/app/customers', BadgeCheck],

@@ -58,6 +58,7 @@ export const router = createBrowserRouter([
         { index: true, lazy: page(() => import('./pages/dashboard/Dashboard.jsx')) },
         // Leads & CRM
         { path: 'discover', lazy: page(() => import('./pages/carriers/Discover.jsx')) },
+        { path: 'carrier-check', lazy: page(() => import('./pages/carriers/CarrierCheck.jsx')) },
         { path: 'market', lazy: page(() => import('./pages/market/Market.jsx')) },
         { path: 'fleet', lazy: page(() => import('./pages/fleet/Fleet.jsx')) },
         { path: 'today', lazy: page(() => import('./pages/today/Today.jsx')) },

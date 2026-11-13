@@ -73,6 +73,43 @@ const LIVE = {
   sources: SOURCES.map((s) => ({ ...s, ok: true, status: 'ok' })),
 };
 
+const INSPECTIONS = {
+  dot: '3100001', windowMonths: 24, minForRate: 5, nationalAvgAsOf: '2026-01-31', complete: true, detailCount: 1,
+  summary: {
+    inspections: 700, withViolations: 300, oosInspections: 100,
+    driver: { inspections: 400, oos: 12, oosRate: 3, nationalAvg: 6.4 },
+    vehicle: { inspections: 300, oos: 90, oosRate: 30, nationalAvg: 23.2 },
+    hazmat: { inspections: 0, oos: 0, oosRate: null, nationalAvg: 4.4 },
+  },
+  byYear: [{ year: 2026, inspections: 400, oos: 60 }, { year: 2025, inspections: 300, oos: 40 }],
+  byState: [{ state: 'TX', inspections: 500 }, { state: 'OK', inspections: 200 }],
+  violationsByCategory: [{ key: 'vehicle_maintenance', label: 'Vehicle maintenance', violations: 20, oos: 5, inspections: 10 }],
+  records: [{
+    id: '88591735', date: '2026-07-31', reportNumber: 'PSC0881250', state: 'WV', location: 'Triadelphia WV', level: 2, levelLabel: 'Level II · walk-around',
+    facility: 'Roadside', violations: 1, oosViolations: 1, postCrash: false, hazmat: false,
+    units: [{ type: 'Truck tractor', make: 'Freightliner', license: 'ABC123', licenseState: 'TX', vin: '1FUJGLDR0CLBP8834' }],
+    violationList: [{ code: '393.75A', description: 'Tire - flat', category: 'vehicle_maintenance', categoryLabel: 'Vehicle maintenance', oos: true, citation: false, unit: 'Truck tractor' }],
+  }],
+  equipment: [{ type: 'Truck tractor', year: 2012, make: 'Freightliner', model: 'Cascadia', license: 'ABC123', licenseState: 'TX', vin: '1FUJGLDR0CLBP8834', inspections: 1, oosInspections: 1, lastSeen: '2026-07-31' }],
+  crashes: { total: 12, fatal: 1, injury: 4, tow: 7, records: [] },
+  flags: [
+    { level: 'amber', code: 'oos_vehicle', text: 'Vehicle out-of-service rate 30% vs 23.2% national average (300 inspections, 24 months)' },
+    { level: 'red', code: 'fatal_crash', text: '1 fatal crash in the last 24 months' },
+  ],
+  sources: [],
+};
+const RELATED = {
+  checked: ['phone', 'email', 'address'], total: 1, serviceShared: [],
+  carriers: [{ dot: '2000001', mc: null, name: 'MYRICK HAULING', city: 'Stone Mountain', state: 'GA', usdotStatus: 'inactive', registeredAt: '2015-01-01', priorRevoke: false, matches: ['phone'] }],
+  flags: [{ level: 'amber', code: 'related_inactive', text: 'Shares phone with 1 inactive or revoked carrier: check it is not a reincarnated carrier' }],
+};
+/** The profile answer for the profile URL; the inspection and related reports for theirs. */
+const answer = (profileBody) => async (url) => {
+  if (url.endsWith('/inspections')) return { report: INSPECTIONS };
+  if (url.endsWith('/related')) return { related: RELATED };
+  return profileBody;
+};
+
 function renderIt(ui) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={qc}><MemoryRouter>{ui}</MemoryRouter></QueryClientProvider>);
@@ -83,7 +120,7 @@ beforeEach(() => { get.mockReset(); });
 
 describe('FmcsaProfile', () => {
   it('shows the header with the authority badge, flags and data date, and every section', async () => {
-    get.mockResolvedValue({ profile: PROFILE, stored: true });
+    get.mockImplementation(answer({ profile: PROFILE, stored: true }));
     renderIt(<FmcsaProfile carrierId="c1" />);
     expect(await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' })).toBeInTheDocument();
     expect(get).toHaveBeenCalledWith('/api/carrier-profile/carrier/c1', undefined, expect.objectContaining({ timeoutMs: 90000 }));
@@ -91,14 +128,21 @@ describe('FmcsaProfile', () => {
     // MC age from the authority history, in the header.
     expect(screen.getByTestId('mc-age')).toHaveTextContent(/MC age\s*18\.3 years · granted Jul 17, 2008/);
     expect(screen.getAllByText('Authority inactive')[0]).toHaveClass('text-c-red');
-    const flags = screen.getByRole('list', { name: 'FMCSA flags' });
-    expect(within(flags).getByText('Operating authority inactive')).toHaveClass('text-c-red');
-    expect(within(flags).getByText('No liability (BIPD) insurance on file')).toBeInTheDocument();
-    expect(within(flags).getByText('Authority revoked before (Oct 20, 2025)')).toHaveClass('text-c-amber');
+    // Verdict and checklist: each FMCSA flag lands on its row, the worst first.
+    const vetting = screen.getByTestId('vetting');
+    expect(within(vetting).getByText('Do not book')).toBeInTheDocument();
+    const checklist = within(vetting).getByRole('list', { name: 'Vetting checklist' });
+    const authorityRow = within(checklist).getByText('Operating authority').closest('li');
+    expect(authorityRow).toHaveTextContent('Operating authority inactive');
+    expect(authorityRow).toHaveTextContent('Authority revoked before (Oct 20, 2025)');
+    expect(within(checklist).getByText('Insurance').closest('li')).toHaveTextContent('No liability (BIPD) insurance on file');
+    // Related carriers and inspections load after the profile and join the checklist.
+    expect(await within(checklist).findByText(/Shares phone with 1 inactive or revoked carrier/)).toBeInTheDocument();
+    expect(within(checklist).getByText('Inspections and crashes').closest('li')).toHaveTextContent('1 fatal crash in the last 24 months');
     expect(screen.getByText(/Data as of/)).toBeInTheDocument();
     expect(screen.getByText(/Some FMCSA sources did not answer/)).toBeInTheDocument();
 
-    for (const name of ['Company and contact', 'Authority', 'Insurance', 'Operation and cargo', 'Fleet and equipment', 'Drivers and mileage', 'Safety', 'Compliance', 'Sources']) {
+    for (const name of ['Company and contact', 'Authority', 'Insurance', 'Operation and cargo', 'Fleet and equipment', 'Drivers and mileage', 'Safety rating', 'Inspections and crashes (last 24 months)', 'Related carriers', 'Compliance', 'Sources']) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
     }
     const company = section('Company and contact');
@@ -126,7 +170,8 @@ describe('FmcsaProfile', () => {
     expect(within(tractors).getAllByRole('cell').map((c) => c.textContent)).toEqual(['Tractors', '0', '2', '0']);
     expect(within(section('Drivers and mileage')).getByText('50,000 miles in 2024')).toBeInTheDocument();
     expect(within(section('Operation and cargo')).getByText('Other: Appliances')).toBeInTheDocument();
-    expect(within(section('Safety')).getByText(/needs the free FMCSA web key/)).toBeInTheDocument();
+    expect(within(section('Safety rating')).getByText(/needs the free FMCSA web key/)).toBeInTheDocument();
+    expect(within(section('Related carriers')).getByText('MYRICK HAULING').closest('li')).toHaveTextContent('Same phone');
     expect(within(section('Compliance')).getByText('Nov 5, 2025')).toBeInTheDocument();
 
     const sources = section('Sources');
@@ -137,31 +182,38 @@ describe('FmcsaProfile', () => {
   });
 
   it('shows live safety data: crashes, inspections against the national average, BASIC alerts', async () => {
-    get.mockResolvedValue({ profile: LIVE });
+    get.mockImplementation(answer({ profile: LIVE }));
     renderIt(<FmcsaProfile dot="3100001" />);
     await screen.findByRole('heading', { name: 'PRAIRIE LINE TRANSPORT INC' });
     expect(get).toHaveBeenCalledWith('/api/carrier-profile/dot/3100001', undefined, expect.anything());
     expect(screen.getAllByText('Authority active')[0]).toHaveClass('text-c-green');
     expect(screen.getAllByText('Allowed to operate')[0]).toHaveClass('text-c-green');
-    expect(screen.getByText('Satisfactory rating')).toBeInTheDocument();
+    expect(screen.getAllByText('Satisfactory rating').length).toBeGreaterThan(0);
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/carrier-profile/dot/3100001/inspections', undefined, expect.anything()));
+    expect(get).toHaveBeenCalledWith('/api/carrier-profile/dot/3100001/related', undefined, expect.anything());
   });
 
   it('never shows a green "Allowed to operate" next to inactive authority', async () => {
-    get.mockResolvedValue({ profile: { ...PROFILE, safety: { ...PROFILE.safety, live: true, allowedToOperate: true } } });
+    get.mockImplementation(answer({ profile: { ...PROFILE, safety: { ...PROFILE.safety, live: true, allowedToOperate: true } } }));
     renderIt(<FmcsaProfile dot="1775913" />);
     await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' });
     expect(screen.getByText('USDOT not out of service')).not.toHaveClass('text-c-green');
     expect(screen.queryByText('Allowed to operate', { selector: '.text-c-green' })).toBeNull();
   });
 
-  it('keeps the live safety section working', async () => {
-    get.mockResolvedValue({ profile: LIVE });
+  it('shows inspections against the national average, vehicles and reports, and the live safety section', async () => {
+    get.mockImplementation(answer({ profile: LIVE }));
     renderIt(<FmcsaProfile dot="3100001" />);
     await screen.findByRole('heading', { name: 'PRAIRIE LINE TRANSPORT INC' });
-    const safety = section('Safety');
-    const vehicle = within(safety).getByText('Vehicle').closest('tr');
+    const inspections = (await screen.findByRole('button', { name: 'Inspections and crashes (last 24 months)' })).closest('section');
+    const vehicle = within(inspections).getByRole('cell', { name: 'Vehicle' }).closest('tr');
     expect(within(vehicle).getByText('30%')).toHaveClass('text-c-amber');
-    expect(within(within(safety).getByText('Driver').closest('tr')).getByText('3%')).not.toHaveClass('text-c-amber');
+    expect(within(within(inspections).getByRole('cell', { name: 'Driver' }).closest('tr')).getByText('3%')).toHaveClass('text-c-green');
+    expect(within(inspections).getByText('2012 Freightliner Cascadia')).toBeInTheDocument();
+    fireEvent.click(within(inspections).getByText(/Triadelphia WV/).closest('button'));
+    expect(within(inspections).getByText('Tire - flat')).toBeInTheDocument();
+    expect(screen.getByTestId('vetting')).toHaveTextContent('Do not book');
+    const safety = section('Safety rating');
     expect(within(safety).getByText('Unsafe Driving').closest('li')).toHaveTextContent('Alert');
     expect(within(safety).getByText('Crash Indicator').closest('li')).toHaveTextContent('Not public');
     const policy = within(section('Insurance')).getByText('BIPD (excess)').closest('li');
@@ -170,19 +222,21 @@ describe('FmcsaProfile', () => {
   });
 
   it('Refresh asks FMCSA again and shows the new copy', async () => {
-    get.mockResolvedValueOnce({ profile: PROFILE, stored: true });
+    get.mockImplementation(answer({ profile: PROFILE, stored: true }));
     renderIt(<FmcsaProfile carrierId="c1" />);
     await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' });
-    get.mockResolvedValueOnce({ profile: { ...PROFILE, identity: { ...PROFILE.identity, legalName: 'DAKOTA TRUCKING LLC' } } });
+    get.mockImplementation(answer({ profile: { ...PROFILE, identity: { ...PROFILE.identity, legalName: 'DAKOTA TRUCKING LLC' } } }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByRole('heading', { name: 'DAKOTA TRUCKING LLC' })).toBeInTheDocument();
-    expect(get).toHaveBeenLastCalledWith('/api/carrier-profile/carrier/c1', { refresh: 1 }, expect.objectContaining({ timeoutMs: 90000 }));
+    expect(get).toHaveBeenCalledWith('/api/carrier-profile/carrier/c1', { refresh: 1 }, expect.objectContaining({ timeoutMs: 90000 }));
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/api/carrier-profile/dot/1775913/inspections', { refresh: 1 }, expect.anything()));
   });
 
   it('says when a refresh failed and keeps the profile on screen', async () => {
-    get.mockResolvedValueOnce({ profile: PROFILE });
+    get.mockImplementation(answer({ profile: PROFILE }));
     renderIt(<FmcsaProfile carrierId="c1" />);
     await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
     get.mockRejectedValueOnce(Object.assign(new Error('Too many FMCSA profile lookups. Try again in a minute.'), { status: 429 }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Could not refresh: Too many FMCSA profile lookups. Try again in a minute.')).toBeInTheDocument();
@@ -190,7 +244,7 @@ describe('FmcsaProfile', () => {
   });
 
   it('marks a stored copy served while FMCSA was down', async () => {
-    get.mockResolvedValue({ profile: PROFILE, stored: true, stale: true, error: 'FMCSA census is not available right now' });
+    get.mockImplementation(answer({ profile: PROFILE, stored: true, stale: true, error: 'FMCSA census is not available right now' }));
     renderIt(<FmcsaProfile carrierId="c1" />);
     expect(await screen.findByText(/FMCSA did not answer just now/)).toBeInTheDocument();
   });
@@ -204,7 +258,7 @@ describe('FmcsaProfile', () => {
   });
 
   it('sections collapse on phones', async () => {
-    get.mockResolvedValue({ profile: PROFILE });
+    get.mockImplementation(answer({ profile: PROFILE }));
     renderIt(<FmcsaProfile carrierId="c1" />);
     await screen.findByRole('heading', { name: 'DERICK DORIAN MYRICK' });
     const toggle = screen.getByRole('button', { name: 'Company and contact' });
@@ -212,18 +266,19 @@ describe('FmcsaProfile', () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(document.getElementById(toggle.getAttribute('aria-controls'))).toHaveClass('hidden', 'sm:block');
-    expect(screen.getByRole('button', { name: 'Safety' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Fleet and equipment' })).toHaveAttribute('aria-expanded', 'false');
   });
 });
 
 describe('FmcsaProfileButton and FmcsaProfileTab', () => {
   it('opens the profile of an unsaved lead in a dialog', async () => {
-    get.mockResolvedValue({ profile: LIVE });
+    get.mockImplementation(answer({ profile: LIVE }));
     const onRow = vi.fn();
     renderIt(<div onClick={onRow}><FmcsaProfileButton dot="03100001" /></div>);
     expect(get).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'FMCSA profile' }));
-    const dialog = await screen.findByRole('dialog', { name: 'FMCSA profile · USDOT 3100001' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Carrier check · USDOT 3100001' });
+    expect(within(dialog).getByRole('link', { name: /Open full page/ })).toHaveAttribute('href', '/app/carrier-check?dot=3100001');
     expect(await within(dialog).findByRole('heading', { name: 'PRAIRIE LINE TRANSPORT INC' })).toBeInTheDocument();
     expect(get).toHaveBeenCalledWith('/api/carrier-profile/dot/3100001', undefined, expect.anything());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Authority' }));

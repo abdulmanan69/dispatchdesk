@@ -1,11 +1,14 @@
 import { useId, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleHelp, ExternalLink, Loader2, OctagonX, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { date, dateTime, nf, num, phoneFmt } from '../../lib/format.js';
+import { date, dateTime, num, phoneFmt } from '../../lib/format.js';
 import { Badge, Button, Card, EmptyState, ErrorState, Loading, cx } from '../ui.jsx';
 import { Modal } from '../Modal.jsx';
 import { PhoneLink } from './shared.jsx';
+import { vettingChecklist } from './vetting.js';
+import { UTC_DAY, day, usd, yesNo, addressText, Chip, Unavailable, Section, Rows, Row, Num, ShowMore } from './profileParts.jsx';
+import { InspectionsSection, RelatedSection } from './FmcsaInspections.jsx';
 
 /**
  * Full FMCSA carrier profile (GET /api/carrier-profile/...): authority, insurance, operation, fleet, drivers, safety
@@ -17,11 +20,6 @@ import { PhoneLink } from './shared.jsx';
  */
 const TIMEOUT_MS = 90_000; // a cold profile reads up to 15 FMCSA sources
 const digits = (v) => String(v ?? '').replace(/\D/g, '').replace(/^0+/, '');
-const UTC_DAY = { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' };
-const day = (d) => (d ? date(`${d}T00:00:00Z`, UTC_DAY) : '—');
-const usd = (n) => (n == null ? '—' : nf({ style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n));
-const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—');
-const addressText = (a) => (a ? [a.street, [a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join(', ') : null);
 
 function target(carrierId, dot) {
   if (carrierId) return { key: ['fmcsa-profile', 'carrier', carrierId], url: `/api/carrier-profile/carrier/${encodeURIComponent(carrierId)}` };
@@ -29,16 +27,6 @@ function target(carrierId, dot) {
   return { key: ['fmcsa-profile', 'dot', d], url: `/api/carrier-profile/dot/${d}` };
 }
 
-const TONE = {
-  red: 'bg-c-red-soft text-c-red border-c-red/30',
-  amber: 'bg-c-amber-soft text-c-amber border-c-amber/30',
-  green: 'bg-c-green-soft text-c-green border-c-green/30',
-  gray: 'bg-c-gray-soft text-fg-2 border-line',
-};
-/** A flag that may wrap on small screens (Badge stays on one line). */
-function Chip({ tone = 'gray', children, title, className }) {
-  return <span title={title} className={cx('inline-flex items-start rounded border px-1.5 py-0.5 text-[12px] font-medium leading-snug', TONE[tone], className)}>{children}</span>;
-}
 
 const AUTHORITY = { active: ['green', 'Authority active'], pending: ['amber', 'Authority pending'], inactive: ['red', 'Authority inactive'], unknown: ['gray', 'Authority not verified'] };
 const RATING_TONE = { Satisfactory: 'green', Conditional: 'amber', Unsatisfactory: 'red' };
@@ -61,61 +49,62 @@ export function AuthorityStatusBadge({ authority }) {
   return <Badge color={tone} title={authority?.label || undefined}>{text}</Badge>;
 }
 
-function Unavailable({ children = 'Not available right now' }) {
-  return <p className="text-sm text-muted">{children}</p>;
-}
-
-/** Collapsible on phones (tap the title); always open from the sm breakpoint up. */
-function Section({ title, children, defaultOpen = true, className }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const id = useId();
-  return (
-    <section className={cx('min-w-0 rounded-xl border border-line bg-surface', className)}>
-      <h3 className="text-sm font-medium">
-        <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left sm:pointer-events-none">
-          {title}
-          <ChevronDown className={cx('size-4 shrink-0 text-muted transition-transform sm:hidden', open && 'rotate-180')} aria-hidden />
-        </button>
-      </h3>
-      <div id={id} className={cx('space-y-3 border-t border-line px-4 py-3', open ? 'block' : 'hidden sm:block')}>{children}</div>
-    </section>
-  );
-}
-
-function Rows({ children }) {
-  return <dl className="grid grid-cols-[minmax(0,8.5rem)_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">{children}</dl>;
-}
-function Row({ k, children }) {
-  return (
-    <>
-      <dt className="text-muted">{k}</dt>
-      <dd className="min-w-0 break-words">{children ?? '—'}</dd>
-    </>
-  );
-}
-const Num = ({ children }) => <span className="tabular">{children}</span>;
-
-function ShowMore({ items, initial, render, noun }) {
-  const [all, setAll] = useState(false);
-  const shown = all ? items : items.slice(0, initial);
-  return (
-    <>
-      {shown.map(render)}
-      {items.length > initial && (
-        <li>
-          <button type="button" className="text-[13px] font-medium text-brand-700 hover:underline dark:text-brand-300" onClick={() => setAll(!all)}>
-            {all ? 'Show fewer' : `Show all ${items.length} ${noun}`}
-          </button>
-        </li>
-      )}
-    </>
-  );
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 
-function Header({ p, onRefresh, refreshing, stale, staleError, refreshError }) {
+const CHECK = {
+  fail: { icon: OctagonX, tone: 'text-c-red', chip: 'red' },
+  warn: { icon: AlertTriangle, tone: 'text-c-amber', chip: 'amber' },
+  pass: { icon: CheckCircle2, tone: 'text-c-green', chip: 'green' },
+  unknown: { icon: CircleHelp, tone: 'text-muted', chip: 'gray' },
+  pending: { icon: Loader2, tone: 'text-muted animate-spin', chip: 'gray' },
+};
+const VERDICT_BOX = {
+  fail: 'border-c-red/30 bg-c-red-soft',
+  warn: 'border-c-amber/30 bg-c-amber-soft',
+  pass: 'border-c-green/30 bg-c-green-soft',
+  pending: 'border-line bg-surface-2',
+};
+
+/**
+ * Verdict and checklist: one row per question (authority, insurance, safety, inspections, identity), each with its
+ * reason and a jump to the section holding the evidence.
+ */
+export function VettingChecklist({ check, onJump }) {
+  const v = check.verdict;
+  const VIcon = CHECK[v.level]?.icon || CircleHelp;
+  return (
+    <div className="space-y-2" data-testid="vetting">
+      <div className={cx('flex items-start gap-2.5 rounded-lg border px-3 py-2.5', VERDICT_BOX[v.level] || VERDICT_BOX.pending)}>
+        <VIcon className={cx('mt-0.5 size-5 shrink-0', CHECK[v.level]?.tone)} aria-hidden />
+        <div className="min-w-0">
+          <p className="font-medium">{v.label}</p>
+          <p className="text-[13px] text-fg-2">{v.reason}</p>
+        </div>
+      </div>
+      <ul className="divide-y divide-line rounded-lg border border-line" aria-label="Vetting checklist">
+        {check.rows.map((r) => {
+          const c = CHECK[r.level] || CHECK.unknown;
+          const Icon = c.icon;
+          return (
+            <li key={r.key}>
+              <button type="button" onClick={() => onJump?.(r.anchor)} className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-ui hover:bg-surface-2">
+                <Icon className={cx('mt-0.5 size-4 shrink-0', c.tone)} aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-medium">{r.label}</span>
+                  <span className="block text-[13px] text-fg-2">{r.text}</span>
+                  {r.items.slice(1).map((x) => <span key={x.code || x.text} className="block text-xs text-muted">{x.text}</span>)}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function Header({ p, check, onJump, actions, onRefresh, refreshing, stale, staleError, refreshError }) {
   const s = p.safety || {};
   return (
     <Card bodyClass="space-y-3 p-4 sm:p-5">
@@ -134,14 +123,18 @@ function Header({ p, onRefresh, refreshing, stale, staleError, refreshError }) {
             {s.available !== false && <Badge color={RATING_TONE[s.rating] || 'gray'}>{s.rating ? `${s.rating} rating` : 'Not rated'}</Badge>}
           </div>
         </div>
-        <div className="flex shrink-0 flex-row items-center gap-3 sm:flex-col sm:items-end sm:gap-1">
-          <Button size="sm" variant="secondary" icon={RefreshCw} loading={refreshing} onClick={onRefresh}>Refresh</Button>
-          <p className="text-xs text-muted">Data as of <span className="tabular">{dateTime(p.fetchedAt)}</span></p>
+        <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+          {actions && <div className="flex flex-wrap items-center gap-2 sm:justify-end">{actions}</div>}
+          <div className="flex flex-row items-center gap-3 sm:flex-col sm:items-end sm:gap-1">
+            <Button size="sm" variant="secondary" icon={RefreshCw} loading={refreshing} onClick={onRefresh}>Refresh</Button>
+            <p className="text-xs text-muted">Data as of <span className="tabular">{dateTime(p.fetchedAt)}</span></p>
+          </div>
         </div>
       </div>
-      {p.flags?.length > 0 && (
+      <VettingChecklist check={check} onJump={onJump} />
+      {p.flags?.some((f) => f.level === 'green') && (
         <ul className="flex flex-wrap gap-1.5" aria-label="FMCSA flags">
-          {p.flags.map((f) => <li key={f.code}><Chip tone={f.level}>{f.text}</Chip></li>)}
+          {p.flags.filter((f) => f.level === 'green').map((f) => <li key={f.code}><Chip tone="green">{f.text}</Chip></li>)}
         </ul>
       )}
       {(stale || refreshError) && (
@@ -155,12 +148,12 @@ function Header({ p, onRefresh, refreshing, stale, staleError, refreshError }) {
   );
 }
 
-function CompanySection({ p, carrierId }) {
+function CompanySection({ p, carrierId, anchor }) {
   const id = p.identity || {};
   const c = p.contact || {};
   const lic = c.licensing;
   return (
-    <Section title="Company and contact">
+    <Section title="Company and contact" anchor={anchor}>
       {!c.available && !id.legalName ? <Unavailable /> : (
         <Rows>
           <Row k="Legal name">{id.legalName}</Row>
@@ -198,11 +191,11 @@ function CompanySection({ p, carrierId }) {
   );
 }
 
-function AuthoritySection({ a }) {
-  if (!a?.available) return <Section title="Authority"><Unavailable /></Section>;
+function AuthoritySection({ a, anchor }) {
+  if (!a?.available) return <Section title="Authority" anchor={anchor}><Unavailable /></Section>;
   const history = a.history || [];
   return (
-    <Section title="Authority">
+    <Section title="Authority" anchor={anchor}>
       <Rows>
         <Row k="Status"><span className="inline-flex flex-wrap items-center gap-1.5"><AuthorityStatusBadge authority={a} /><span className="text-fg-2">{a.label}</span></span></Row>
         <Row k="MC age (authority since)">{a.since ? <Num>{day(a.since)} · {a.ageYears >= 1 ? `${num(a.ageYears, 1)} years` : `${num(a.ageDays)} days`}</Num> : (a.history ? 'No grant on record' : 'Not available right now')}</Row>
@@ -237,12 +230,12 @@ function AuthoritySection({ a }) {
   );
 }
 
-function InsuranceSection({ ins, a }) {
-  if (!ins?.available) return <Section title="Insurance"><Unavailable /></Section>;
+function InsuranceSection({ ins, a, anchor }) {
+  if (!ins?.available) return <Section title="Insurance" anchor={anchor}><Unavailable /></Section>;
   const req = ins.required;
   const filed = ins.filed;
   return (
-    <Section title="Insurance">
+    <Section title="Insurance" anchor={anchor}>
       <Rows>
         <Row k="BIPD required"><Num>{req?.bipd != null ? usd(req.bipd) : '—'}</Num></Row>
         <Row k="BIPD on file">{filed?.bipd != null ? <Num>{filed.bipd > 0 ? usd(filed.bipd) : 'None'}</Num> : a?.insuranceOnFile != null ? yesNo(a.insuranceOnFile) : '—'}</Row>
@@ -315,9 +308,9 @@ function OperationSection({ op, cargo }) {
   );
 }
 
-function FleetSection({ fleet, equipment }) {
+function FleetSection({ fleet, equipment, anchor }) {
   return (
-    <Section title="Fleet and equipment" defaultOpen={false}>
+    <Section title="Fleet and equipment" defaultOpen={false} anchor={anchor}>
       {!fleet?.available ? <Unavailable /> : (
         <Rows>
           <Row k="Power units"><Num>{num(fleet.powerUnits)}</Num></Row>
@@ -371,16 +364,15 @@ function DriversSection({ drivers: d, mileage: m }) {
 }
 
 const LIVE_NOTE = {
-  not_configured: 'Inspections, crashes and BASIC scores come from FMCSA QCMobile, which needs the free FMCSA web key. An admin can add it in Admin → Integrations.',
+  not_configured: 'BASIC percentiles and the live allowed-to-operate status come from FMCSA QCMobile, which needs the free FMCSA web key. An admin can add it in Admin → Integrations.',
   failed: 'Live safety data (FMCSA QCMobile) is not available right now.',
   not_found: 'FMCSA QCMobile has no safety record for this USDOT number.',
 };
 
-function SafetySection({ s }) {
-  if (!s?.available) return <Section title="Safety" defaultOpen={false}><Unavailable /></Section>;
-  const rows = s.inspections ? [['Driver', s.inspections.driver], ['Vehicle', s.inspections.vehicle], ['Hazmat', s.inspections.hazmat]] : [];
+function SafetySection({ s, anchor }) {
+  if (!s?.available) return <Section title="Safety rating" anchor={anchor}><Unavailable /></Section>;
   return (
-    <Section title="Safety" defaultOpen={false}>
+    <Section title="Safety rating" anchor={anchor}>
       <Rows>
         <Row k="Safety rating">{s.rating ? <><Badge color={RATING_TONE[s.rating]}>{s.rating}</Badge>{s.ratingDate && <span className="text-muted"> on <Num>{day(s.ratingDate)}</Num></span>}</> : 'Not rated'}</Row>
         {s.review && <Row k="Latest review">{s.review.type || '—'}{s.review.date && <span className="text-muted"> on <Num>{day(s.review.date)}</Num></span>}</Row>}
@@ -388,69 +380,25 @@ function SafetySection({ s }) {
         {s.live && <Row k="Allowed to operate">{yesNo(s.allowedToOperate)}</Row>}
         {s.oosDate && <Row k="Out of service"><Chip tone="red">Since {day(s.oosDate)}</Chip></Row>}
       </Rows>
+      {!s.rating && <p className="text-xs text-muted">Most small carriers are never rated: FMCSA rates a carrier only after an on-site compliance review.</p>}
       {!s.live ? <p className="text-xs text-muted">{LIVE_NOTE[s.liveStatus] || LIVE_NOTE.failed}</p> : (
-        <>
-          {s.crashes && (
-            <div>
-              <h4 className="mb-1.5 text-[13px] font-medium text-fg-2">Crashes (last 24 months)</h4>
-              <dl className="grid grid-cols-4 gap-2 text-center text-sm">
-                {[['Fatal', s.crashes.fatal], ['Injury', s.crashes.injury], ['Tow-away', s.crashes.tow], ['Total', s.crashes.total]].map(([k, v]) => (
-                  <div key={k} className="rounded-lg border border-line px-1 py-1.5">
-                    <dt className="text-xs text-muted">{k}</dt>
-                    <dd className={cx('font-medium tabular', k === 'Fatal' && v > 0 && 'text-c-red')}>{num(v)}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
+        <div>
+          <h4 className="mb-1.5 text-[13px] font-medium text-fg-2">BASIC percentiles (SMS)</h4>
+          {s.basics == null ? <Unavailable /> : !s.basics.length ? <p className="text-sm text-muted">No BASIC measures on record.</p> : (
+            <ul className="space-y-1.5 text-sm">
+              {s.basics.map((b) => (
+                <li key={b.name} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <span className="min-w-0">{b.name}</span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="tabular">{b.percentile != null ? `${b.percentile}%` : <span className="text-muted">Not public</span>}</span>
+                    {b.threshold != null && <span className="text-xs tabular text-muted">threshold {b.threshold}%</span>}
+                    {b.alert && <Badge color="amber">Alert</Badge>}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
-          {rows.length > 0 && (
-            <div className="overflow-x-auto">
-              <h4 className="mb-1.5 text-[13px] font-medium text-fg-2">Inspections (last 24 months)</h4>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-muted">
-                    <th className="py-1 pr-2 font-medium">Type</th>
-                    <th className="py-1 pr-2 text-right font-medium">Inspections</th>
-                    <th className="py-1 pr-2 text-right font-medium">Out of service</th>
-                    <th className="py-1 pr-2 text-right font-medium">OOS rate</th>
-                    <th className="py-1 text-right font-medium">National avg</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-line">
-                  {rows.map(([k, i]) => {
-                    const high = i.inspections >= 3 && i.oosRate != null && i.nationalAvg != null && i.oosRate > i.nationalAvg;
-                    return (
-                      <tr key={k}>
-                        <td className="py-1.5 pr-2">{k}</td>
-                        <td className="py-1.5 pr-2 text-right tabular">{num(i.inspections)}</td>
-                        <td className="py-1.5 pr-2 text-right tabular">{num(i.oos)}</td>
-                        <td className={cx('py-1.5 pr-2 text-right tabular', high && 'font-medium text-c-amber')}>{i.oosRate != null ? `${i.oosRate}%` : '—'}</td>
-                        <td className="py-1.5 text-right tabular text-muted">{i.nationalAvg != null ? `${i.nationalAvg}%` : '—'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div>
-            <h4 className="mb-1.5 text-[13px] font-medium text-fg-2">BASIC percentiles (SMS)</h4>
-            {s.basics == null ? <Unavailable /> : !s.basics.length ? <p className="text-sm text-muted">No BASIC measures on record.</p> : (
-              <ul className="space-y-1.5 text-sm">
-                {s.basics.map((b) => (
-                  <li key={b.name} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                    <span className="min-w-0">{b.name}</span>
-                    <span className="inline-flex items-center gap-2">
-                      <span className="tabular">{b.percentile != null ? `${b.percentile}%` : <span className="text-muted">Not public</span>}</span>
-                      {b.threshold != null && <span className="text-xs tabular text-muted">threshold {b.threshold}%</span>}
-                      {b.alert && <Badge color="amber">Alert</Badge>}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </>
+        </div>
       )}
     </Section>
   );
@@ -471,9 +419,9 @@ function ComplianceSection({ c, a }) {
 }
 
 const SOURCE_STATUS = { ok: ['green', 'OK'], failed: ['amber', 'Not available right now'], skipped: ['gray', 'Not set up'] };
-function SourcesSection({ p }) {
+function SourcesSection({ p, anchor }) {
   return (
-    <Section title="Sources" defaultOpen={false} className="lg:col-span-2">
+    <Section title="Sources" defaultOpen={false} className="lg:col-span-2" anchor={anchor}>
       <ul className="divide-y divide-line text-sm">
         {(p.sources || []).map((s) => {
           const [tone, text] = SOURCE_STATUS[s.status] || SOURCE_STATUS.failed;
@@ -502,8 +450,33 @@ function SourcesSection({ p }) {
 
 // ---------------------------------------------------------------------------------------------------------------
 
-export default function FmcsaProfile({ carrierId, dot }) {
+const NAV = [
+  ['summary', 'Summary'], ['authority', 'Authority'], ['insurance', 'Insurance'], ['safety', 'Safety'], ['inspections', 'Inspections'],
+  ['company', 'Company'], ['fleet', 'Fleet'], ['related', 'Related'], ['sources', 'Sources'],
+];
+
+/** Jump links to the profile's sections (stays at the top of the scroll area while reading). */
+function SectionNav({ ns, onJump }) {
+  return (
+    <nav aria-label="Profile sections" className="sticky top-0 z-10 -mx-1 overflow-x-auto bg-bg/95 px-1 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-bg/80">
+      <ul className="flex gap-1 whitespace-nowrap text-[13px]">
+        {NAV.map(([key, text]) => (
+          <li key={key}>
+            <a href={`#${ns}-${key}`} onClick={(e) => { e.preventDefault(); onJump(key); }} className="rounded-md px-2 py-1 text-fg-2 transition-ui hover:bg-surface-2 hover:text-fg">{text}</a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
+/**
+ * `actions`: buttons for the header (Carrier check page: save / open in CRM). `onOpenRelated(dot)`: open a related
+ * carrier in place (Carrier check page); without it the related carrier opens in a new tab.
+ */
+export default function FmcsaProfile({ carrierId, dot, actions, onOpenRelated }) {
   const qc = useQueryClient();
+  const ns = `fp${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
   const { key, url } = target(carrierId, dot);
   const enabled = !!(carrierId || digits(dot));
   const q = useQuery({
@@ -513,6 +486,22 @@ export default function FmcsaProfile({ carrierId, dot }) {
     staleTime: 5 * 60_000,
     retry: false,
   });
+  // Inspections and related carriers load after the profile names the USDOT number (a saved carrier may only have an MC).
+  const profileDot = q.data?.profile?.dot || null;
+  const insQ = useQuery({
+    queryKey: ['fmcsa-inspections', profileDot],
+    queryFn: ({ signal }) => api.get(`/api/carrier-profile/dot/${profileDot}/inspections`, undefined, { signal, timeoutMs: 60_000 }).then((r) => r.report),
+    enabled: !!profileDot,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  const relQ = useQuery({
+    queryKey: ['fmcsa-related', profileDot],
+    queryFn: ({ signal }) => api.get(`/api/carrier-profile/dot/${profileDot}/related`, undefined, { signal, timeoutMs: 60_000 }).then((r) => r.related),
+    enabled: !!profileDot,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(null);
   const refresh = async () => {
@@ -520,12 +509,17 @@ export default function FmcsaProfile({ carrierId, dot }) {
     setRefreshError(null);
     try {
       qc.setQueryData(key, await api.get(url, { refresh: 1 }, { timeoutMs: TIMEOUT_MS }));
+      if (profileDot) {
+        api.get(`/api/carrier-profile/dot/${profileDot}/inspections`, { refresh: 1 }, { timeoutMs: 60_000 })
+          .then((r) => qc.setQueryData(['fmcsa-inspections', profileDot], r.report), () => {});
+      }
     } catch (err) {
       setRefreshError(err?.message || 'FMCSA did not answer');
     } finally {
       setRefreshing(false);
     }
   };
+  const jump = (k) => document.getElementById(`${ns}-${k}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   if (!enabled) return <EmptyState icon={ShieldCheck} title="No USDOT number">Add a USDOT number to see the FMCSA profile.</EmptyState>;
   if (q.isLoading) return <Loading label="Loading the FMCSA profile…" />;
@@ -535,24 +529,32 @@ export default function FmcsaProfile({ carrierId, dot }) {
   }
   const p = q.data?.profile;
   if (!p) return <Loading label="Loading the FMCSA profile…" />;
+  const check = vettingChecklist({ profile: p, inspections: insQ, related: relQ });
   return (
     <div className="space-y-4">
-      <Header p={p} onRefresh={refresh} refreshing={refreshing} stale={q.data.stale} staleError={q.data.error} refreshError={refreshError} />
+      <SectionNav ns={ns} onJump={jump} />
+      <div id={`${ns}-summary`} className="scroll-mt-16">
+        <Header p={p} check={check} onJump={jump} actions={actions} onRefresh={refresh} refreshing={refreshing} stale={q.data.stale} staleError={q.data.error} refreshError={refreshError} />
+      </div>
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <AuthoritySection a={p.authority} anchor={`${ns}-authority`} />
+        <InsuranceSection ins={p.insurance} a={p.authority} anchor={`${ns}-insurance`} />
+      </div>
+      <SafetySection s={p.safety} anchor={`${ns}-safety`} />
+      <InspectionsSection q={insQ} anchor={`${ns}-inspections`} />
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <div className="min-w-0 space-y-4">
-          <CompanySection p={p} carrierId={carrierId} />
+          <CompanySection p={p} carrierId={carrierId} anchor={`${ns}-company`} />
           <OperationSection op={p.operation} cargo={p.cargo} />
-          <FleetSection fleet={p.fleet} equipment={p.equipment} />
-          <DriversSection drivers={p.drivers} mileage={p.mileage} />
         </div>
         <div className="min-w-0 space-y-4">
-          <AuthoritySection a={p.authority} />
-          <InsuranceSection ins={p.insurance} a={p.authority} />
-          <SafetySection s={p.safety} />
+          <FleetSection fleet={p.fleet} equipment={p.equipment} anchor={`${ns}-fleet`} />
+          <DriversSection drivers={p.drivers} mileage={p.mileage} />
           <ComplianceSection c={p.compliance} a={p.authority} />
         </div>
-        <SourcesSection p={p} />
       </div>
+      <RelatedSection q={relQ} anchor={`${ns}-related`} onOpen={onOpenRelated} />
+      <SourcesSection p={p} anchor={`${ns}-sources`} />
     </div>
   );
 }
@@ -569,8 +571,11 @@ export function FmcsaProfileTab({ carrier }) {
   return <FmcsaProfile carrierId={carrier.id} />;
 }
 
-/** Opens the FMCSA profile of any USDOT number in a wide dialog (lead lists, before saving). */
-export function FmcsaProfileButton({ dot, label = 'FMCSA profile', size = 'sm', variant = 'secondary', className }) {
+/**
+ * Opens the carrier check (FMCSA profile, inspections, related carriers) of any USDOT number in a wide dialog. Lists
+ * put it in the same place on every row: the last column, next to the row's other actions.
+ */
+export function FmcsaProfileButton({ dot, label = 'Check', size = 'sm', variant = 'secondary', className }) {
   const [open, setOpen] = useState(false);
   const d = digits(dot);
   if (!d) return null;
@@ -579,7 +584,8 @@ export function FmcsaProfileButton({ dot, label = 'FMCSA profile', size = 'sm', 
       <Button size={size} variant={variant} icon={ShieldCheck} className={className} onClick={(e) => { e.stopPropagation(); setOpen(true); }}>{label}</Button>
       {/* React events bubble through the portal: keep clicks in the dialog away from the row underneath. */}
       <span onClick={(e) => e.stopPropagation()} className="contents">
-        <Modal open={open} onClose={() => setOpen(false)} title={`FMCSA profile · USDOT ${d}`} size="xl">
+        <Modal open={open} onClose={() => setOpen(false)} title={`Carrier check · USDOT ${d}`} size="xl"
+          footer={<><Button variant="secondary" icon={ExternalLink} href={`/app/carrier-check?dot=${d}`} target="_blank" rel="noopener noreferrer">Open full page</Button><Button onClick={() => setOpen(false)}>Close</Button></>}>
           {open && <FmcsaProfile dot={d} />}
         </Modal>
       </span>

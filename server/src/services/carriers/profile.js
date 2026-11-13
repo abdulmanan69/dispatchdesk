@@ -117,15 +117,18 @@ const lastModified = (res) => {
   return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null;
 };
 
-async function socrata(dataset, { where, limit, order }) {
+/** One SODA query against a data.transportation.gov dataset. Exported for the inspection and related-carrier reports. */
+export async function socrata(dataset, { where, limit, order, select, group, timeoutMs = TIMEOUT_MS }) {
   const url = new URL(`${SOCRATA}/${dataset}.json`);
   url.searchParams.set('$where', where);
   url.searchParams.set('$limit', String(limit));
   if (order) url.searchParams.set('$order', order);
+  if (select) url.searchParams.set('$select', select);
+  if (group) url.searchParams.set('$group', group);
   const token = await getSetting('fmcsa.socrataAppToken');
   let res;
   try {
-    res = await doFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    res = await doFetch(url.toString(), { headers: { Accept: 'application/json', ...(token ? { 'X-App-Token': token } : {}) }, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     throw new Error(err?.name === 'TimeoutError' ? 'Timed out' : `Unreachable: ${errorText(err)}`);
   }
@@ -136,8 +139,14 @@ async function socrata(dataset, { where, limit, order }) {
   return { rows, asOf: lastModified(res) };
 }
 
+/** Any other public data call (NHTSA vPIC) through the same test hook: tests inject one fake fetch for everything. */
+export const publicFetch = (...args) => doFetch(...args);
+
+/** Raw census query (any SoQL params) through the same fetch hook; `cacheMs` uses the census module's shared cache. */
+export const censusRows = (params, { cacheMs = 0 } = {}) => censusQuery(params, (url, opts) => doFetch(url, opts), { cacheMs });
+
 /** Census rows through fmcsaCensus.query (admin census URL, shared 429 back-off). */
-async function census(where, limit = 5) {
+export async function census(where, limit = 5) {
   let asOf = null;
   const rows = await censusQuery({ $where: where, $limit: String(limit) }, async (url, opts) => {
     const res = await doFetch(url, opts);

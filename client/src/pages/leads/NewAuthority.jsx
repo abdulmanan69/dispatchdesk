@@ -104,12 +104,13 @@ export default function NewAuthority() {
     // Pending authority is expected here (new carriers), so calling a pending carrier saves it without asking.
     { key: 'phone', header: 'Phone', render: (r) => <SaveAndCall record={r} allowInactive={r.authorityStatus === 'pending'} /> },
     // Operating authority from FMCSA licensing. Shown, never filtered: new carriers are often still pending.
-    { key: 'authority', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
+    { key: 'authority', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.authority?.label} /> },
     { key: 'loc', header: 'Location', render: (r) => <span className="text-[13px]">{[r.city, r.state].filter(Boolean).join(', ')}</span> },
     { key: 'fleetSize', header: 'Trucks', className: 'text-right tabular', render: (r) => r.fleetSize ?? '—' },
     { key: 'crm', header: 'Status', render: status },
     { key: 'actions', header: <span className="sr-only">Actions</span>, render: (r) => (
       <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+        <FmcsaProfileButton dot={r.dotNumber} />
         <IconButton icon={ClipboardCheck} label={`Readiness report for ${r.companyName}`} onClick={() => setReadiness(r.dotNumber)} />
         {!r.existsInCrm && <IconButton icon={UserPlus} label={`Add ${r.companyName} to my list`} disabled={adding} onClick={() => claim([r.dotNumber])} className="disabled:opacity-50" />}
       </div>
@@ -189,6 +190,7 @@ export default function NewAuthority() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 pl-7 text-[13px]">
                     <SaveAndCall record={r} allowInactive={r.authorityStatus === 'pending'} />
+                    <FmcsaProfileButton dot={r.dotNumber} variant="ghost" />
                     <Button size="sm" variant="ghost" icon={ClipboardCheck} onClick={() => setReadiness(r.dotNumber)}>Readiness</Button>
                     {!r.existsInCrm && <Button size="sm" variant="secondary" icon={UserPlus} disabled={adding} onClick={() => claim([r.dotNumber])}>Add</Button>}
                   </div>

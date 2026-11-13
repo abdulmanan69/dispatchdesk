@@ -269,8 +269,9 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose, playb
                 ) },
                 { key: 'state', header: 'Location', render: (r) => [r.city, r.state].filter(Boolean).join(', ') },
                 { key: 'fleetSize', header: 'Trucks', render: (r) => <span className="tabular">{r.fleetSize ?? '—'}</span> },
-                { key: 'authorityStatus', header: 'Authority', render: (r) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /><FmcsaProfileButton dot={r.dotNumber} label="Profile" variant="ghost" /></div> },
+                { key: 'authorityStatus', header: 'Authority', render: (r) => <AuthorityBadge status={r.authorityStatus} detail={r.operatingStatus} /> },
                 { key: 'phone', header: 'Phone', render: (r) => (r.cellPhone || r.phone ? phoneFmt(r.cellPhone || r.phone) : '—') },
+                { key: 'check', header: <span className="sr-only">Carrier check</span>, className: 'text-right', render: (r) => <FmcsaProfileButton dot={r.dotNumber} /> },
               ]} />
           )}
         </div>
@@ -327,8 +328,9 @@ function RunResult({ result, onClose }) {
           { key: 'dotNumber', header: 'USDOT', render: (c) => <span className="font-mono text-xs">{c.dotNumber}</span> },
           { key: 'state', header: 'Location', render: (c) => [c.city, c.state].filter(Boolean).join(', ') },
           { key: 'fleetSize', header: 'Trucks', render: (c) => <span className="tabular">{c.fleetSize ?? '—'}</span> },
-          { key: 'authorityStatus', header: 'Authority', render: (c) => <div className="flex flex-wrap items-center gap-1.5"><AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /><FmcsaProfileButton dot={c.dotNumber} label="Profile" variant="ghost" /></div> },
+          { key: 'authorityStatus', header: 'Authority', render: (c) => <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} /> },
           { key: 'priority', header: 'Priority', render: (c) => (c.priority >= 2 ? <Badge color="brand">Hot</Badge> : c.priority === 1 ? <Badge color="green">High</Badge> : <span className="text-muted">Normal</span>) },
+          { key: 'check', header: <span className="sr-only">Carrier check</span>, className: 'text-right', render: (c) => <FmcsaProfileButton dot={c.dotNumber} /> },
         ]} />
       )}
     </Modal>
