@@ -10,6 +10,7 @@ import { normDot, normMc } from '../carriers/normalize.js';
 import { census, censusRows } from '../carriers/profile.js';
 import { sendSystemMail } from '../email/system.js';
 import { carrierCodeMessage } from '../email/platformTemplate.js';
+import { mailDomainOk } from '../email/mx.js';
 import { getSetting } from '../../lib/settings.js';
 
 /**
@@ -33,6 +34,9 @@ import { getSetting } from '../../lib/settings.js';
 export const CODE_TTL_MS = 10 * 60_000;
 export const CODE_TRIES = 5;
 export const CODES_PER_HOUR = 3;
+// A carrier who never asked must not get a stream of codes from someone typing their number (spam complaints hurt the
+// platform sender), so codes per USDOT are also capped per day.
+export const CODES_PER_DAY = 6;
 export const SESSION_DAYS = 30;
 export const SESSION_COOKIE = 'dd_carrier';
 export const VAULT_DIR = 'carrier-vault';
@@ -102,8 +106,16 @@ export async function startLogin({ number, ip }) {
   if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) {
     throw new HttpError(422, `FMCSA has no email address on file for USDOT ${dot}, so we cannot send you a code. Add your email to your MCS-150 with FMCSA, or ask your dispatcher for your portal link.`, { code: 'NO_FMCSA_EMAIL' });
   }
-  const recent = await prisma.carrierLoginCode.count({ where: { dotNumber: dot, createdAt: { gt: new Date(Date.now() - 3_600_000) } } });
+  const [recent, today] = await Promise.all([
+    prisma.carrierLoginCode.count({ where: { dotNumber: dot, createdAt: { gt: new Date(Date.now() - 3_600_000) } } }),
+    prisma.carrierLoginCode.count({ where: { dotNumber: dot, createdAt: { gt: new Date(Date.now() - 86_400_000) } } }),
+  ]);
+  if (today >= CODES_PER_DAY) throw new HttpError(429, 'Too many codes for this USDOT number today. Try again tomorrow, or use the last code we sent.');
   if (recent >= CODES_PER_HOUR) throw new HttpError(429, 'Too many codes for this USDOT number. Wait an hour, or use the last code we sent.');
+  // An address whose domain takes no mail would bounce, and bounces hurt the platform sender. DNS not answering is no reason to refuse.
+  if ((await mailDomainOk(email)) === false) {
+    throw new HttpError(422, `The email FMCSA has on file for USDOT ${dot} (${maskEmail(email)}) cannot receive mail, so we cannot send you a code. Update your email on your MCS-150 with FMCSA, or ask your dispatcher for your portal link.`, { code: 'EMAIL_UNREACHABLE' });
+  }
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   const row2 = await prisma.carrierLoginCode.create({ data: { dotNumber: dot, email, codeHash: codeHash(code), expiresAt: new Date(Date.now() + CODE_TTL_MS), ip: ip ? String(ip).slice(0, 64) : null } });
   const name = String(row.legal_name || `USDOT ${dot}`).trim();

@@ -12,10 +12,17 @@ const { app, agent, registerUser, prisma } = await import('./helpers.js');
 const { setProfileFetch, clearProfileCache } = await import('../src/services/carriers/profile.js');
 const { clearCensusCache } = await import('../src/services/carriers/fmcsaCensus.js');
 const { maskEmail, parseNumber } = await import('../src/services/carrierAccounts/index.js');
+const { mailDomainOk, setMxResolver } = await import('../src/services/email/mx.js');
+// No real DNS in tests: every domain takes mail except nomx.test.
+const fakeMx = async (domain) => {
+  if (domain === 'nomx.test') throw Object.assign(new Error('no data'), { code: 'ENODATA' });
+  return [{ exchange: `mx.${domain}`, priority: 10 }];
+};
 
 const DOT = '3636864';
 const CENSUS = { dot_number: DOT, legal_name: "DEAN'S LOGISTICS LLC", email_address: 'DeanGordon015@Gmail.com', docket1prefix: 'MC', docket1: '1248213', status_code: 'A' };
 const NO_EMAIL = { dot_number: '4000001', legal_name: 'NO MAIL TRUCKING', email_address: '', status_code: 'A' };
+const DEAD_DOMAIN = { dot_number: '4000002', legal_name: 'DEAD DOMAIN TRUCKING', email_address: 'owner@nomx.test', status_code: 'A' };
 const reply = (body) => ({ ok: true, status: 200, headers: new Headers(), json: async () => body });
 
 function fakeCensus() {
@@ -24,6 +31,7 @@ function fakeCensus() {
     const where = u.searchParams.get('$where') || '';
     if (where.includes(`'${DOT}'`) || where.includes("docket1='1248213'")) return reply([CENSUS]);
     if (where.includes("'4000001'")) return reply([NO_EMAIL]);
+    if (where.includes("'4000002'")) return reply([DEAD_DOMAIN]);
     return reply([]);
   }));
 }
@@ -45,9 +53,10 @@ let stageId;
 beforeAll(async () => {
   stageId = (await prisma.pipelineStage.findUnique({ where: { key: 'lead' } })).id;
 });
-afterAll(() => setProfileFetch(null));
+afterAll(() => { setProfileFetch(null); setMxResolver(null); });
 beforeEach(async () => {
   sent.length = 0;
+  setMxResolver(fakeMx);
   clearCensusCache();
   clearProfileCache();
   fakeCensus();
@@ -103,6 +112,36 @@ describe('carrier sign-in', () => {
     expect(noMail.body.error).toMatch(/no email address on file/);
     for (let i = 0; i < 3; i++) expect((await a.post('/api/public/carrier/login/start').send({ number: DOT })).status).toBe(200);
     expect((await a.post('/api/public/carrier/login/start').send({ number: DOT })).status).toBe(429);
+  });
+
+  it('caps codes per USDOT per day, and never mails an address whose domain takes no mail', async () => {
+    const a = await agent();
+    const old = (h) => new Date(Date.now() - h * 3_600_000);
+    await prisma.carrierLoginCode.createMany({ data: [2, 3, 5, 8, 13, 21].map((h) => ({ dotNumber: DOT, email: 'x@gmail.com', codeHash: `h${h}`, expiresAt: old(h), createdAt: old(h) })) });
+    const capped = await a.post('/api/public/carrier/login/start').send({ number: DOT });
+    expect(capped.status).toBe(429);
+    expect(capped.body.error).toMatch(/today/);
+    await prisma.carrierLoginCode.deleteMany({});
+
+    const dead = await a.post('/api/public/carrier/login/start').send({ number: '4000002' });
+    expect(dead.status).toBe(422);
+    expect(dead.body.error).toMatch(/cannot receive mail/);
+    expect(sent).toHaveLength(0);
+    expect(await prisma.carrierLoginCode.count()).toBe(0);
+  });
+
+  it('reads MX records: none, null MX and unknown', async () => {
+    setMxResolver(async (d) => {
+      if (d === 'nullmx.test') return [{ exchange: '.', priority: 0 }];
+      if (d === 'slow.test') throw Object.assign(new Error('timeout'), { code: 'ETIMEOUT' });
+      if (d === 'ok.test') return [{ exchange: 'mx.ok.test', priority: 10 }];
+      throw Object.assign(new Error('no data'), { code: 'ENODATA' });
+    });
+    expect(await mailDomainOk('a@ok.test')).toBe(true);
+    expect(await mailDomainOk('a@nullmx.test')).toBe(false);
+    expect(await mailDomainOk('a@nomx.test')).toBe(false);
+    expect(await mailDomainOk('a@slow.test')).toBeNull();
+    expect(await mailDomainOk('no-at-sign')).toBe(false);
   });
 
   it('locks a code after 5 wrong tries', async () => {
