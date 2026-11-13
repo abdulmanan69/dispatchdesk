@@ -29,6 +29,7 @@ import { sendCapacity, capacityMessage } from '../services/carriers/outreach.js'
 import { leftoverTokens } from '../services/carriers/truckPost.js';
 import { queueUserEmail } from '../services/email/compose.js';
 import { recordReply } from '../services/email/replies.js';
+import { shareForDispatcher } from '../services/carrierAccounts/index.js';
 import { pickAccount } from '../services/email/index.js';
 import { renderContent, renderPreview } from '../services/email/render.js';
 
@@ -477,7 +478,7 @@ export function verdictOfSnapshot(raw) {
 
 r.get('/:id', ah(async (req, res) => {
   const carrier = await loadCarrier(req.user, req.params.id, { include: DETAIL_INCLUDE });
-  const [access, pending, done, pendingTotal, sentEmails, texts, onboarding] = await Promise.all([
+  const [access, pending, done, pendingTotal, sentEmails, texts, onboarding, carrierProfile] = await Promise.all([
     accessChecker(req.user),
     prisma.followUp.findMany({ where: { carrierId: carrier.id, status: 'pending' }, orderBy: { dueAt: 'asc' }, take: DETAIL_LIMITS.pendingFollowUps, include: followUpUser }),
     prisma.followUp.findMany({ where: { carrierId: carrier.id, status: 'done' }, orderBy: [{ completedAt: 'desc' }, { dueAt: 'desc' }], take: DETAIL_LIMITS.doneFollowUps, include: followUpUser }),
@@ -488,6 +489,7 @@ r.get('/:id', ah(async (req, res) => {
       where: { carrierId: carrier.id }, orderBy: { createdAt: 'desc' },
       select: { id: true, status: true, createdAt: true, viewedAt: true, signedAt: true, expiresAt: true, revokedAt: true, requestedDocs: true },
     }),
+    shareForDispatcher(carrier.id),
   ]);
   const out = serializeCarrier(carrier);
   out.enrollments = carrier.enrollments.map((e) => ({
@@ -502,6 +504,8 @@ r.get('/:id', ah(async (req, res) => {
   out.fmcsaVerdict = verdictOfSnapshot(carrier.fmcsaSnapshot);
   delete out.fmcsaSnapshot;
   // Latest dispatch agreement link (the next step after an interested call is sending one).
+  // The carrier's own DispatchDesk profile, as far as it concerns this record: what it shares with this dispatcher.
+  out.carrierProfile = carrierProfile;
   out.onboarding = onboarding ? {
     id: onboarding.id, status: onboarding.revokedAt ? 'revoked' : onboarding.status === 'pending' && onboarding.expiresAt < new Date() ? 'expired' : onboarding.status,
     sentAt: onboarding.createdAt, viewedAt: onboarding.viewedAt, signedAt: onboarding.signedAt, expiresAt: onboarding.expiresAt,

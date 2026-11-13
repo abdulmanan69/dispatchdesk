@@ -31,6 +31,7 @@ import { nextStepFor } from '../../components/carriers/nextStep.js';
 import OnboardingLinkModal from '../../components/onboarding/OnboardingLinkModal.jsx';
 import OnboardingPanel from '../../components/onboarding/OnboardingPanel.jsx';
 
+const CARRIER_DOC = { w9: 'W-9', coi: 'insurance certificate', mc_authority: 'MC authority letter', noa: 'notice of assignment', voided_check: 'voided check', cdl: 'CDL', registration: 'registration', other: 'other documents' };
 const CARRIER_TABS = ['overview', 'fmcsa', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
 
 export default function CarrierDetail() {
@@ -168,6 +169,19 @@ export default function CarrierDetail() {
                 <p className="text-xs text-muted">Last contact {c.lastContactedAt ? relative(c.lastContactedAt) : 'never'} · next follow-up {c.nextFollowUpAt ? dateTime(c.nextFollowUpAt) : 'none'}</p>
               </div>
             </Card>
+            {c.carrierProfile && (
+              <Card title="Carrier's own profile">
+                <p className="flex items-start gap-2 text-sm">
+                  <ShieldCheck className={cx('mt-0.5 size-4 shrink-0', c.carrierProfile.active ? 'text-c-green' : 'text-muted')} aria-hidden />
+                  <span>
+                    {c.carrierProfile.active
+                      ? <>Shares {c.carrierProfile.docTypes.map((t) => CARRIER_DOC[t] || t).join(', ')} with you from their DispatchDesk carrier profile{c.carrierProfile.autoUpdate ? '; renewed documents arrive automatically' : ''}.</>
+                      : 'Stopped sharing documents with you. Files you already received stay in Documents.'}
+                    <span className="block text-xs text-muted">The carrier signed in with a code sent to their FMCSA email{c.carrierProfile.verifiedAt ? ` (${relative(c.carrierProfile.verifiedAt)})` : ''}.</span>
+                  </span>
+                </p>
+              </Card>
+            )}
             {(['opportunity', 'trial', 'customer'].includes(c.stage.key) || c.onboarding) && (
               <div id="agreement-panel" className="scroll-mt-20">
                 <OnboardingPanel carrier={{ id: c.id, companyName: c.companyName, email: c.email }} feePercent={c.customer?.dispatchFeePercent} showCreate={canWrite} />

@@ -114,6 +114,7 @@ model User {
   loadShares         LoadShare[]
   documents          Document[]            @relation("DocumentOwner")
   onboardingLinks    OnboardingLink[]
+  carrierShares      CarrierShare[]
   loadTemplates      LoadTemplate[]
   consolidations     Consolidation[]
   aiUsage            AiUsageEvent[]
@@ -397,6 +398,7 @@ model Carrier {
   loads           Load[]
   documents       Document[]
   onboardingLinks OnboardingLink[]
+  carrierShares   CarrierShare[]
   contactConsents ContactConsent[]
   negotiations    Negotiation[]
   listItems       ProspectListItem[]
@@ -515,40 +517,40 @@ model Opportunity {
 }
 
 model Customer {
-  id                 String         @id @default(cuid())
-  carrierId          String         @unique
-  ownerId            String
-  status             String         @default("active") // active | paused | churned
-  signedAt           DateTime       @default(now())
-  dispatchFeePercent Float?
-  minRatePerMile     Float?
-  maxDeadheadMiles   Int?
-  homeBase           String?
-  maxWeightLbs       Int?
-  trailerLengthFt    Int?
-  hazmat             Boolean        @default(false)
-  twic               Boolean        @default(false)
-  teamDrivers        Boolean        @default(false)
-  avoidStates        String? // comma-separated state codes
-  homeTimeDays       String? // e.g. 'Sat,Sun' (days the truck is home)
-  costPerMileCents   Int?
-  minHaulMiles       Int?
-  maxHaulMiles       Int?
-  portalTokenHash    String?        @unique // carrier statement/portal link (sha256)
-  portalExpiresAt    DateTime?
-  notes              String?
+  id                  String            @id @default(cuid())
+  carrierId           String            @unique
+  ownerId             String
+  status              String            @default("active") // active | paused | churned
+  signedAt            DateTime          @default(now())
+  dispatchFeePercent  Float?
+  minRatePerMile      Float?
+  maxDeadheadMiles    Int?
+  homeBase            String?
+  maxWeightLbs        Int?
+  trailerLengthFt     Int?
+  hazmat              Boolean           @default(false)
+  twic                Boolean           @default(false)
+  teamDrivers         Boolean           @default(false)
+  avoidStates         String? // comma-separated state codes
+  homeTimeDays        String? // e.g. 'Sat,Sun' (days the truck is home)
+  costPerMileCents    Int?
+  minHaulMiles        Int?
+  maxHaulMiles        Int?
+  portalTokenHash     String?           @unique // carrier statement/portal link (sha256)
+  portalExpiresAt     DateTime?
+  notes               String?
   // Factoring: who buys this carrier's invoices and on what terms (null company = the carrier does not factor).
   factoringCompanyId  String?
   factoringClientNo   String? // the carrier's account / client number at the factoring company
   factoringAdvancePct Float? // percent of the invoice advanced up front, e.g. 90
   factoringFeePct     Float? // factoring fee in percent of the invoice, e.g. 3
   factoringRecourse   Boolean? // true = recourse, false = non-recourse, null = not recorded
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  carrier            Carrier        @relation(fields: [carrierId], references: [id], onDelete: Cascade)
-  owner              User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  lanes              CustomerLane[]
-  factoringCompany   FactoringCompany? @relation(fields: [factoringCompanyId], references: [id], onDelete: SetNull)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  carrier             Carrier           @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner               User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  lanes               CustomerLane[]
+  factoringCompany    FactoringCompany? @relation(fields: [factoringCompanyId], references: [id], onDelete: SetNull)
 
   @@index([ownerId, status])
   @@index([factoringCompanyId])
@@ -917,7 +919,7 @@ model SequenceEnrollment {
 // ---------------------------------------------------------------------------
 
 model Broker {
-  id               String    @id @default(cuid())
+  id               String        @id @default(cuid())
   ownerId          String
   negotiations     Negotiation[]
   companyName      String
@@ -937,11 +939,11 @@ model Broker {
   fmcsaSnapshot    String? // JSON: authority, bond/insurance on file, contact info, added date
   fmcsaCheckedAt   DateTime?
   flags            String? // JSON array of red flags with reasons and sources
-  watch            Boolean   @default(false)
+  watch            Boolean       @default(false)
   notes            String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  owner            User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  owner            User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   loads            Load[]
   emails           Email[]
   invoices         Invoice[]
@@ -1028,24 +1030,25 @@ model Load {
 }
 
 model Document {
-  id           String    @id @default(cuid())
+  id           String           @id @default(cuid())
   ownerId      String
   uploadedById String
   carrierId    String?
   loadId       String?
   type         String // agreement | mc_authority | w9 | coi | permit | rate_confirmation | bol | pod | other
   originalName String
-  storedName   String    @unique
+  storedName   String           @unique
   mimeType     String
   sizeBytes    Int
   expiresAt    DateTime?
   source       String? // upload | driver_link | portal | email
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  owner        User      @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  uploadedBy   User      @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
-  carrier      Carrier?  @relation(fields: [carrierId], references: [id], onDelete: Cascade)
-  load         Load?     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  owner        User             @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  uploadedBy   User             @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+  carrier      Carrier?         @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  load         Load?            @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  sharedFrom   CarrierShareDoc?
 
   @@index([ownerId])
   @@index([carrierId])
@@ -1188,30 +1191,30 @@ model ContactConsent {
 
 /// AI-assisted rate negotiation with a broker by email. The dispatcher always approves the final agreement.
 model Negotiation {
-  id              String    @id @default(cuid())
-  ownerId         String
-  brokerId        String
-  carrierId       String?
-  loadId          String?
-  emailAccountId  String?
-  toEmail         String
-  status          String    @default("active") // draft | active | needs_review | agreed | walked_away | canceled
-  mode            String    @default("approve") // approve = every email waits for the dispatcher | auto = counters inside the limits go out automatically
-  lane            String // JSON { originCity, originState, destCity, destState, pickupDate, equipment, weightLbs, miles, reference }
-  offerCents      Int? // broker's latest offer
-  targetCents     Int // what the dispatcher wants
-  floorCents      Int // walk-away: never counter or accept below this
+  id               String   @id @default(cuid())
+  ownerId          String
+  brokerId         String
+  carrierId        String?
+  loadId           String?
+  emailAccountId   String?
+  toEmail          String
+  status           String   @default("active") // draft | active | needs_review | agreed | walked_away | canceled
+  mode             String   @default("approve") // approve = every email waits for the dispatcher | auto = counters inside the limits go out automatically
+  lane             String // JSON { originCity, originState, destCity, destState, pickupDate, equipment, weightLbs, miles, reference }
+  offerCents       Int? // broker's latest offer
+  targetCents      Int // what the dispatcher wants
+  floorCents       Int // walk-away: never counter or accept below this
   lastCounterCents Int?
-  agreedCents     Int?
-  rounds          Int       @default(0)
-  maxRounds       Int       @default(3)
-  history         String    @default("[]") // JSON [{ at, from: 'broker'|'ai'|'dispatcher', kind, cents, text, emailId }]
-  nextAction      String? // JSON proposal waiting for approval { kind: 'counter'|'accept'|'walk_away'|'ask', cents, subject, body }
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  owner           User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  broker          Broker    @relation(fields: [brokerId], references: [id], onDelete: Cascade)
-  carrier         Carrier?  @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  agreedCents      Int?
+  rounds           Int      @default(0)
+  maxRounds        Int      @default(3)
+  history          String   @default("[]") // JSON [{ at, from: 'broker'|'ai'|'dispatcher', kind, cents, text, emailId }]
+  nextAction       String? // JSON proposal waiting for approval { kind: 'counter'|'accept'|'walk_away'|'ask', cents, subject, body }
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  owner            User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  broker           Broker   @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+  carrier          Carrier? @relation(fields: [carrierId], references: [id], onDelete: SetNull)
 
   @@index([ownerId, status])
   @@index([brokerId])
@@ -1764,4 +1767,112 @@ model Invoice {
   @@index([carrierId])
   @@index([brokerId])
   @@index([ownerId, brokerId, paidAt])
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Carrier accounts: a profile owned by the carrier (one per USDOT number), not by any dispatcher. The carrier proves it
+// controls the USDOT number with a code sent to the email FMCSA has on file, keeps its documents once, and decides
+// per dispatcher what to share. A dispatcher sees only its own share; it never learns which other dispatchers the
+// carrier works with.
+// ---------------------------------------------------------------------------------------------------------------
+
+model CarrierAccount {
+  id            String                 @id @default(cuid())
+  dotNumber     String                 @unique
+  legalName     String?
+  verifiedEmail String? // the FMCSA-registered email the last sign-in code went to (lower case)
+  verifiedAt    DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  sessions      CarrierSession[]
+  documents     CarrierVaultDocument[]
+  shares        CarrierShare[]
+}
+
+model CarrierLoginCode {
+  id        String    @id @default(cuid())
+  dotNumber String
+  email     String
+  codeHash  String
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  @@index([dotNumber, createdAt])
+  @@index([expiresAt])
+}
+
+model CarrierSession {
+  id         String         @id @default(cuid())
+  accountId  String
+  tokenHash  String         @unique
+  expiresAt  DateTime
+  lastSeenAt DateTime       @default(now())
+  userAgent  String?
+  createdAt  DateTime       @default(now())
+  account    CarrierAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+}
+
+model CarrierVaultDocument {
+  id           String            @id @default(cuid())
+  accountId    String
+  type         String // w9 | coi | mc_authority | noa | voided_check | cdl | registration | other
+  originalName String
+  storedName   String            @unique
+  mimeType     String
+  sizeBytes    Int
+  expiresAt    DateTime? // insurance certificates, CDL, registrations
+  replacedAt   DateTime? // a newer upload of the same type took its place
+  createdAt    DateTime          @default(now())
+  account      CarrierAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sharedCopies CarrierShareDoc[]
+
+  @@index([accountId, type])
+}
+
+/**
+ * What one carrier shares with one dispatcher (the dispatcher's own carrier record).
+ */
+model CarrierShare {
+  id         String            @id @default(cuid())
+  accountId  String
+  carrierId  String // the dispatcher's Carrier row
+  ownerId    String // the dispatcher who owns that row
+  docTypes   String            @default("") // comma list of document types the carrier shares
+  autoUpdate Boolean           @default(true) // newer uploads of those types go to this dispatcher too
+  hidden     Boolean           @default(false) // the carrier says it does not work with this dispatcher
+  revokedAt  DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  account    CarrierAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  carrier    Carrier           @relation(fields: [carrierId], references: [id], onDelete: Cascade)
+  owner      User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  files      CarrierShareDoc[]
+
+  @@unique([accountId, carrierId])
+  @@index([ownerId])
+  @@index([carrierId])
+}
+
+/**
+ * A vault document copied into a dispatcher's documents through a share (one copy per share and document).
+ */
+model CarrierShareDoc {
+  id              String               @id @default(cuid())
+  shareId         String
+  vaultDocumentId String
+  documentId      String               @unique
+  createdAt       DateTime             @default(now())
+  share           CarrierShare         @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  vaultDocument   CarrierVaultDocument @relation(fields: [vaultDocumentId], references: [id], onDelete: Cascade)
+  document        Document             @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([shareId, vaultDocumentId])
+  @@index([vaultDocumentId])
 }

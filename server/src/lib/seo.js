@@ -28,6 +28,7 @@ const PAGES = [
   { match: /^\/t\/.+/, title: `Load tracking · ${SITE}`, description: 'Live status and estimated arrival for one load, shared by the dispatcher.', image: IMG.load, noindex: true, alt: 'Load tracking link' },
   { match: /^\/onboard\/.+/, title: `Carrier onboarding · ${SITE}`, description: 'Review and sign your dispatch agreement and send your carrier documents.', noindex: true },
   { match: /^\/portal\/.+/, title: `Carrier portal · ${SITE}`, description: 'Statements and documents from your dispatcher.', noindex: true },
+  { match: /^\/carrier\/?$/, title: `Carrier profile · ${SITE}`, description: 'Keep your W-9, insurance and authority in one place and share them with the dispatchers you choose. Sign in with your USDOT number.', noindex: true },
   { match: /^\/invite\/.+/, title: `You are invited to a dispatch team · ${SITE}`, description: 'Join your team on DispatchDesk: shared pipeline, call queue, team board and leaderboard.', image: IMG.invite, noindex: true, alt: 'Invitation to a DispatchDesk team' },
   { match: /^\/(forgot-password|reset-password|verify-email|unsubscribe)\/?/, title: SITE, description: DEFAULT_DESC, noindex: true },
   { match: /^\/app(\/|$)/, title: SITE, description: DEFAULT_DESC, noindex: true },

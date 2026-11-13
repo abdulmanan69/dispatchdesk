@@ -439,6 +439,7 @@ function DocsStep({ token, data, onChange, onDone }) {
           <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />Agreement signed{data.signedAt ? ` ${when(data.signedAt)}` : ''}. Now upload your documents.
         </p>
       )}
+      <ProfileHint dispatcher={data.dispatcher} />
       <section className="rounded-2xl border border-line bg-surface">
         <header className="border-b border-line px-4 py-3">
           <h2 className="font-medium">Upload your documents</h2>
@@ -476,6 +477,16 @@ function DocsStep({ token, data, onChange, onDone }) {
   );
 }
 
+/** For carriers that already keep their documents in a DispatchDesk carrier profile: share from there instead. */
+function ProfileHint({ dispatcher }) {
+  return (
+    <p className="flex flex-col gap-2 rounded-2xl border border-line bg-surface-2 px-4 py-3 text-sm text-fg-2 sm:flex-row sm:items-center sm:justify-between">
+      <span>Already keep your documents in a DispatchDesk carrier profile? Share them with {dispatcher.company || dispatcher.name} from there instead of uploading again.</span>
+      <a href="/carrier" className="shrink-0 font-medium text-brand-700 hover:underline dark:text-brand-300">Open my profile</a>
+    </p>
+  );
+}
+
 function DoneStep({ data, onUpload }) {
   const [show, setShow] = useState(false);
   const missing = data.requestedDocs.filter((d) => !d.uploaded);
@@ -500,6 +511,11 @@ function DoneStep({ data, onUpload }) {
           {canUpload && <Button variant="secondary" icon={Upload} onClick={onUpload}>{missing.length ? 'Upload documents' : 'Upload another document'}</Button>}
           <Button variant="ghost" icon={FileText} onClick={() => setShow((v) => !v)} aria-expanded={show}>{show ? 'Hide the agreement' : 'Read the signed agreement'}</Button>
         </div>
+      </section>
+      <section className="rounded-2xl border border-line bg-surface p-4">
+        <h2 className="font-medium">Keep your documents in one place</h2>
+        <p className="mt-1 text-sm text-fg-2">Your free DispatchDesk carrier profile holds your W-9, insurance and authority. When a dispatcher asks, share them in one tap; a renewed insurance certificate goes to the dispatchers you choose. You sign in with a code sent to the email FMCSA has for your USDOT number.</p>
+        <Button className="mt-3" variant="secondary" icon={ShieldCheck} href="/carrier">Open my carrier profile</Button>
       </section>
       {show && <AgreementText data={data} />}
       {data.uploads.open && <p className="text-center text-xs text-muted">This page stays available until {day(data.uploads.closesAt)}. Save or print it if you want a copy.</p>}

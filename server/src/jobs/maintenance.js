@@ -64,7 +64,12 @@ async function documentExpiry(now) {
 export const JOBS = [
   {
     name: 'expired-sessions', label: 'Remove expired sign-in sessions', everyMs: 6 * HOUR,
-    run: async (now) => ({ deleted: await deleteInBatches('session', { expiresAt: { lt: now } }) }),
+    run: async (now) => ({
+      deleted: await deleteInBatches('session', { expiresAt: { lt: now } }),
+      carrierSessions: await deleteInBatches('carrierSession', { expiresAt: { lt: now } }),
+      // Codes stay an hour after they expire: the "3 codes an hour" limit counts them.
+      carrierCodes: await deleteInBatches('carrierLoginCode', { expiresAt: { lt: new Date(now.getTime() - HOUR) } }),
+    }),
   },
   {
     name: 'expired-tokens', label: 'Remove used or expired email/password tokens and old invitations', everyMs: 6 * HOUR,

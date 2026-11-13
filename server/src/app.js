@@ -75,6 +75,7 @@ import negotiationRoutes from './routes/negotiations.js';
 import publicOnboardingRoutes from './routes/publicOnboarding.js';
 import planEtaRoutes from './routes/planEta.js';
 import onboardingRoutes from './routes/onboarding.js';
+import carrierAccountRoutes from './routes/carrierAccount.js';
 import factoringCompanyRoutes from './routes/factoringCompanies.js';
 import carrierProfileRoutes from './routes/carrierProfile.js';
 
@@ -215,6 +216,7 @@ export function createApp() {
   app.use('/api/public/portal', portalRoutes); // carrier portal links (token in URL, no session)
   app.use('/api/public/calendar', calendarFeedRoutes); // private iCalendar feeds (token in URL, no session)
   app.use('/api/public/onboarding', publicOnboardingRoutes); // carrier onboarding + e-signature links (token in URL, no session)
+  app.use('/api/public/carrier', carrierAccountRoutes); // carrier accounts (sign-in by FMCSA email code, dd_carrier cookie)
   // Privacy policy and terms as HTML for the React pages (the same text the server writes into the page for crawlers).
   app.get('/api/public/legal/:doc', async (req, res, next) => {
     try {
