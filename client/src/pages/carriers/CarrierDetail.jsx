@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Phone, Mail, Pencil, Trash2, RefreshCw, CalendarPlus, ListOrdered, Plus, Pin, PinOff, ShieldCheck, X, ArrowLeft, ChevronLeft, ChevronRight, MessageSquare, Copy, Reply } from 'lucide-react';
+import { Phone, Mail, Pencil, Trash2, RefreshCw, CalendarPlus, ListOrdered, Plus, Pin, PinOff, ShieldCheck, X, ArrowLeft, ChevronLeft, ChevronRight, MessageSquare, Copy, Reply, FileSignature, Archive, AlertTriangle, CheckCircle2, OctagonX } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { date, dateTime, label, relative, money, PRESETS } from '../../lib/format.js';
@@ -25,6 +25,11 @@ import ComposeModal from '../../components/email/ComposeModal.jsx';
 import ContactConsentCard, { ConsentBadge } from '../../components/consent/ContactConsentCard.jsx';
 import { FmcsaProfileTab } from '../../components/carriers/FmcsaProfile.jsx';
 import { TierBadge, topReasons } from '../../components/carriers/LeadScore.jsx';
+import { MenuButton } from '../../components/Menu.jsx';
+import { NextStepBar, StageBar } from '../../components/carriers/NextStep.jsx';
+import { nextStepFor } from '../../components/carriers/nextStep.js';
+import OnboardingLinkModal from '../../components/onboarding/OnboardingLinkModal.jsx';
+import OnboardingPanel from '../../components/onboarding/OnboardingPanel.jsx';
 
 const CARRIER_TABS = ['overview', 'fmcsa', 'contacts', 'notes', 'calls', 'emails', 'followups', 'documents', 'sequences', 'activity'];
 
@@ -37,7 +42,7 @@ export default function CarrierDetail() {
   const urlTab = sp.get('doc') ? 'documents' : CARRIER_TABS.includes(sp.get('tab')) ? sp.get('tab') : null;
   const [tab, setTab] = useState(urlTab || 'overview');
   useEffect(() => { if (urlTab) setTab(urlTab); }, [urlTab, id]);
-  const [modal, setModal] = useState(null); // edit | call | followup | enroll | compose | text | enrich
+  const [modal, setModal] = useState(null); // edit | call | followup | enroll | compose | text | enrich | onboarding
   const toast = useToast();
   const q = useQuery({ queryKey: ['carrier', id], queryFn: () => api.get(`/api/carriers/${id}`) });
   const inv = [['carrier', id], ['carriers'], ['pipeline']];
@@ -89,10 +94,24 @@ export default function CarrierDetail() {
     <div>
       <RefreshError query={q} />
       <CarrierHeader carrier={c} callWindow={callWindow} canWrite={canWrite} nav={nav} navigate={navigate}
-        onStage={(k) => stage.mutate(k)} stagePending={stage.isPending} onModal={setModal} toast={toast}
+        onStage={(k) => stage.mutate(k)} stagePending={stage.isPending} onModal={setModal} toast={toast} onTab={setTab}
         onDelete={async () => { if (await confirm({ title: 'Delete carrier?', message: `${c.companyName} and all its notes, calls, follow-ups and documents will be permanently deleted.`, danger: true })) del.mutate(); }} />
 
       {!canWrite && <p className="mb-4 rounded-md border border-line bg-surface-2 px-3 py-2 text-sm text-muted">Read-only: this carrier belongs to {c.owner?.name}.</p>}
+
+      <div className="mb-5 space-y-3">
+        <StageBar stage={c.stage.key} canWrite={canWrite} pending={stage.isPending} onStage={(k) => stage.mutate(k)} />
+        <NextStepBar step={nextStepFor(c, { callWindow })} carrier={c} canWrite={canWrite} onAction={(kind) => {
+          if (kind === 'check') setTab('fmcsa');
+          else if (kind === 'email') setModal('compose');
+          else if (kind === 'followup') setModal('followup');
+          else if (kind === 'onboarding') setModal('onboarding');
+          else if (kind === 'agreement') { setTab('overview'); setTimeout(() => document.getElementById('agreement-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50); }
+          else if (kind === 'convert') stage.mutate('customer');
+          else if (kind === 'customer' && c.customer) navigate(`/app/customers/${c.customer.id}`);
+          else if (kind === 'sequence') setTab('sequences');
+        }} />
+      </div>
 
       <Tabs tabs={tabs} value={tab} onChange={setTab} className="mb-4" />
 
@@ -149,6 +168,11 @@ export default function CarrierDetail() {
                 <p className="text-xs text-muted">Last contact {c.lastContactedAt ? relative(c.lastContactedAt) : 'never'} · next follow-up {c.nextFollowUpAt ? dateTime(c.nextFollowUpAt) : 'none'}</p>
               </div>
             </Card>
+            {(['opportunity', 'trial', 'customer'].includes(c.stage.key) || c.onboarding) && (
+              <div id="agreement-panel" className="scroll-mt-20">
+                <OnboardingPanel carrier={{ id: c.id, companyName: c.companyName, email: c.email }} feePercent={c.customer?.dispatchFeePercent} showCreate={canWrite} />
+              </div>
+            )}
             <ContactConsentCard carrier={c} canWrite={canWrite} />
             {c.lists.length > 0 && <Card title="Prospect lists"><ul className="space-y-1 text-sm">{c.lists.map((l) => <li key={l.id}>{l.name}</li>)}</ul></Card>}
           </div>
@@ -192,6 +216,7 @@ export default function CarrierDetail() {
       {modal === 'compose' && <ComposeModal open carrierId={c.id} toEmail={c.email} onClose={() => setModal(null)} />}
       {modal === 'text' && <TextLogModal carrier={c} onClose={() => setModal(null)} />}
       {modal === 'enrich' && <EnrichModal carrier={c} onClose={() => setModal(null)} />}
+      <OnboardingLinkModal open={modal === 'onboarding'} onClose={() => setModal(null)} carrier={c} feePercent={c.customer?.dispatchFeePercent} />
     </div>
   );
 }
@@ -212,13 +237,54 @@ function CopyBadge({ label: text, value, toast }) {
   );
 }
 
-/** Profile header: who this is, where they are and their local time, stage, and the actions you take on a call. */
-function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStage, stagePending, onModal, onDelete, toast }) {
+const VERDICT = {
+  fail: { icon: OctagonX, cls: 'border-c-red/30 bg-c-red-soft text-c-red' },
+  warn: { icon: AlertTriangle, cls: 'border-c-amber/30 bg-c-amber-soft text-c-amber' },
+  pass: { icon: CheckCircle2, cls: 'border-c-green/30 bg-c-green-soft text-c-green' },
+};
+
+/** FMCSA verdict chip (from the stored profile): opens the carrier check tab. */
+function VerdictChip({ verdict, onOpen }) {
+  const v = verdict && VERDICT[verdict.level];
+  if (!v) {
+    return (
+      <button type="button" onClick={onOpen} className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg-2 transition-ui hover:border-line-strong">
+        <ShieldCheck className="size-3.5" aria-hidden />Run carrier check
+      </button>
+    );
+  }
+  const Icon = v.icon;
+  return (
+    <button type="button" onClick={onOpen} title={`${verdict.text}. Open the carrier check.`}
+      className={cx('inline-flex max-w-[22rem] items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-ui hover:opacity-90', v.cls)}>
+      <Icon className="size-3.5 shrink-0" aria-hidden /><span className="truncate">{verdict.label}{verdict.level !== 'pass' ? `: ${verdict.text}` : ''}</span>
+    </button>
+  );
+}
+
+/**
+ * Profile header: who this is, where they are, their local time and FMCSA verdict, and the actions of a call. Call is
+ * the primary action; Email and Log call sit next to it; everything else is in More, so the header stays one row.
+ */
+function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStage, onModal, onDelete, onTab, toast }) {
   const primary = c.contacts.find((ct) => ct.isPrimary) || c.contacts[0];
   const place = [c.city, c.state].filter(Boolean).join(', ');
   const tz = callWindow?.timezone;
+  const more = [
+    { label: 'Log a text', icon: MessageSquare, onClick: () => onModal('text'), disabled: !c.phone },
+    { label: 'Schedule follow-up', icon: CalendarPlus, onClick: () => onModal('followup') },
+    { label: 'Enroll in sequence', icon: ListOrdered, onClick: () => onModal('enroll') },
+    { label: 'Send agreement link', icon: FileSignature, onClick: () => onModal('onboarding') },
+    { divider: true },
+    { label: 'Carrier check', icon: ShieldCheck, onClick: () => onTab('fmcsa'), hidden: !c.dotNumber },
+    { label: 'Update from FMCSA', icon: RefreshCw, onClick: () => onModal('enrich'), hidden: !(c.dotNumber || c.mcNumber) },
+    { label: 'Edit details', icon: Pencil, onClick: () => onModal('edit') },
+    { label: c.stage.key === 'archived' ? 'Move back to leads' : 'Archive', icon: Archive, onClick: () => onStage(c.stage.key === 'archived' ? 'lead' : 'archived') },
+    { divider: true },
+    { label: 'Delete carrier', icon: Trash2, onClick: onDelete, danger: true },
+  ];
   return (
-    <div className="mb-5">
+    <div className="mb-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[13px]">
         <Link to={nav?.back || '/app/carriers'} className="inline-flex items-center gap-1.5 text-fg-2 transition-ui hover:text-fg"><ArrowLeft className="size-4" aria-hidden />Carrier list</Link>
         {nav && (
@@ -229,7 +295,7 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-medium tracking-[-0.01em]">{c.companyName}</h1>
           <p className="mt-1 text-sm text-fg-2">
@@ -244,18 +310,17 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
                 {tzShort(tz)} <LocalClock timezone={tz} />
               </span>
             )}
-            <Select aria-label="Stage" value={c.stage.key} disabled={!canWrite || stagePending} onChange={(e) => onStage(e.target.value)} className="h-7! w-40 text-xs">
-              {STAGES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
-            </Select>
+            {(c.dotNumber || c.fmcsaVerdict) && <VerdictChip verdict={c.fmcsaVerdict} onOpen={() => onTab('fmcsa')} />}
+            {authorityProblem(c.authorityStatus) && c.fmcsaVerdict?.level !== 'fail' && <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} />}
             {c.customer?.factoringCompany && (
               <span className="inline-flex max-w-[16rem] items-center rounded-md border border-line bg-surface px-2 py-1 text-xs text-muted" title="Factoring company, from the customer profile">
                 <span className="truncate">Factors with {c.customer.factoringCompany.name}</span>
               </span>
             )}
-            {authorityProblem(c.authorityStatus) && <AuthorityBadge status={c.authorityStatus} detail={c.operatingStatus} />}
             {c.priority > 0 && <Badge color="amber">{c.priority === 2 ? 'Hot' : 'High priority'}</Badge>}
             {c.doNotCall && <Badge color="red">Do not call</Badge>}
             {c.doNotEmail && <Badge color="red">Do not email</Badge>}
+            {c.stage.key === 'archived' && <Badge color="gray">Archived</Badge>}
             <ConsentBadge carrierId={c.id} />
           </div>
           {c.leadTier && (
@@ -266,16 +331,11 @@ function CarrierHeader({ carrier: c, callWindow, canWrite, nav, navigate, onStag
           )}
         </div>
         {canWrite && (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
             {c.phone && !c.doNotCall && <CallButton variant="button" phone={c.phone} carrierId={c.id} label={`Call ${prettyPhone(c.phone)}`} />}
-            <Button variant="secondary" icon={Phone} onClick={() => onModal('call')}>Log call</Button>
             <Button variant="secondary" icon={Mail} disabled={!c.email || c.doNotEmail} title={!c.email ? 'No email on file' : c.doNotEmail ? 'Do-not-email is on' : undefined} onClick={() => onModal('compose')}>Email</Button>
-            <Button variant="secondary" icon={MessageSquare} disabled={!c.phone} onClick={() => onModal('text')}>Text</Button>
-            <Button variant="secondary" icon={CalendarPlus} onClick={() => onModal('followup')}>Follow-up</Button>
-            <Button variant="secondary" icon={ListOrdered} onClick={() => onModal('enroll')}>Sequence</Button>
-            {(c.dotNumber || c.mcNumber) && <Button variant="secondary" icon={RefreshCw} onClick={() => onModal('enrich')}>Enrich</Button>}
-            <IconButton icon={Pencil} label="Edit carrier" onClick={() => onModal('edit')} />
-            <IconButton icon={Trash2} label="Delete carrier" onClick={onDelete} />
+            <Button variant="secondary" icon={Phone} onClick={() => onModal('call')}>Log call</Button>
+            <MenuButton label="More" items={more} />
           </div>
         )}
       </div>

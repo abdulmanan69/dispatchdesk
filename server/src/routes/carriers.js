@@ -458,15 +458,36 @@ const DETAIL_INCLUDE = {
 };
 const followUpUser = { user: { select: { id: true, name: true } } };
 
+/**
+ * The verdict of the FMCSA profile stored on a carrier (Carrier.fmcsaSnapshot.profile): its worst flag, or null when
+ * no profile was ever opened. Same wording as the carrier check page; inspections and related carriers are not part
+ * of the stored copy, so the chip says it is the profile's verdict and links to the full check.
+ */
+export function verdictOfSnapshot(raw) {
+  let profile = null;
+  try { profile = raw ? JSON.parse(raw)?.profile : null; } catch { profile = null; }
+  if (!profile || !Array.isArray(profile.flags)) return null;
+  const red = profile.flags.filter((f) => f.level === 'red');
+  const amber = profile.flags.filter((f) => f.level === 'amber');
+  const base = { checkedAt: profile.fetchedAt || null };
+  if (red.length) return { ...base, level: 'fail', label: 'Do not book', text: red[0].text, count: red.length + amber.length };
+  if (amber.length) return { ...base, level: 'warn', label: 'Review before booking', text: amber[0].text, count: amber.length };
+  return { ...base, level: 'pass', label: 'No red flags', text: 'FMCSA authority, insurance and safety checks found nothing to review', count: 0 };
+}
+
 r.get('/:id', ah(async (req, res) => {
   const carrier = await loadCarrier(req.user, req.params.id, { include: DETAIL_INCLUDE });
-  const [access, pending, done, pendingTotal, sentEmails, texts] = await Promise.all([
+  const [access, pending, done, pendingTotal, sentEmails, texts, onboarding] = await Promise.all([
     accessChecker(req.user),
     prisma.followUp.findMany({ where: { carrierId: carrier.id, status: 'pending' }, orderBy: { dueAt: 'asc' }, take: DETAIL_LIMITS.pendingFollowUps, include: followUpUser }),
     prisma.followUp.findMany({ where: { carrierId: carrier.id, status: 'done' }, orderBy: [{ completedAt: 'desc' }, { dueAt: 'desc' }], take: DETAIL_LIMITS.doneFollowUps, include: followUpUser }),
     prisma.followUp.count({ where: { carrierId: carrier.id, status: 'pending' } }),
     prisma.email.count({ where: { carrierId: carrier.id, status: { in: ['sent', 'sending'] } } }),
     prisma.activity.count({ where: { carrierId: carrier.id, type: 'text' } }),
+    prisma.onboardingLink.findFirst({
+      where: { carrierId: carrier.id }, orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true, createdAt: true, viewedAt: true, signedAt: true, expiresAt: true, revokedAt: true, requestedDocs: true },
+    }),
   ]);
   const out = serializeCarrier(carrier);
   out.enrollments = carrier.enrollments.map((e) => ({
@@ -477,7 +498,15 @@ r.get('/:id', ah(async (req, res) => {
   out.lists = carrier.listItems.map((li) => li.list);
   delete out.listItems;
   // The stored FMCSA profile (10-25 KB) has its own endpoint (/api/carrier-profile/carrier/:id); keep it off this payload.
+  // Only its verdict travels here, for the header chip and the next step.
+  out.fmcsaVerdict = verdictOfSnapshot(carrier.fmcsaSnapshot);
   delete out.fmcsaSnapshot;
+  // Latest dispatch agreement link (the next step after an interested call is sending one).
+  out.onboarding = onboarding ? {
+    id: onboarding.id, status: onboarding.revokedAt ? 'revoked' : onboarding.status === 'pending' && onboarding.expiresAt < new Date() ? 'expired' : onboarding.status,
+    sentAt: onboarding.createdAt, viewedAt: onboarding.viewedAt, signedAt: onboarding.signedAt, expiresAt: onboarding.expiresAt,
+    requestedDocs: (onboarding.requestedDocs || '').split(',').filter(Boolean),
+  } : null;
   // Pending follow-ups first (soonest due), then the most recent completed ones; counts are real totals.
   out.followUps = [...pending, ...done];
   out.followUpCounts = { pending: pendingTotal };
