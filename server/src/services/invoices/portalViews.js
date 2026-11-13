@@ -17,7 +17,7 @@ const DAY = 86_400_000;
 export const zoneOf = (customer) => customer.owner?.timezone || 'America/Chicago';
 export const dispatcherOf = (customer) => ({
   name: customer.owner?.name || null,
-  company: customer.owner?.teamMembership?.team?.name || null,
+  company: customer.owner?.teamMembership?.team?.name || customer.owner?.companyName || null,
   email: customer.owner?.email || null,
   phone: customer.owner?.phone || null,
 });

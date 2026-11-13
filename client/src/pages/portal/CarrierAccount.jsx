@@ -124,7 +124,12 @@ function SignIn({ onSignedIn }) {
           </form>
         ) : (
           <form onSubmit={verify} className="space-y-3">
-            <p className="flex items-start gap-2 text-sm text-fg-2"><Mail className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />We sent a code to <span className="font-medium text-fg">{sent.maskedEmail}</span>, the email FMCSA has for USDOT {sent.dot}. It works for {sent.expiresInMinutes} minutes.</p>
+            {sent.devCode ? (
+              // Local development only (EXPOSE_DEV_TOKENS): the server emails nothing and returns the code.
+              <p className="rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-sm text-fg-2">Local test server: no email was sent to {sent.maskedEmail}. Your code is <button type="button" className="font-mono font-medium text-fg underline" onClick={() => setCode(sent.devCode)}>{sent.devCode}</button>.</p>
+            ) : (
+              <p className="flex items-start gap-2 text-sm text-fg-2"><Mail className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />We sent a code to <span className="font-medium text-fg">{sent.maskedEmail}</span>, the email FMCSA has for USDOT {sent.dot}. It works for {sent.expiresInMinutes} minutes.</p>
+            )}
             <Field label="6-digit code">
               <Input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" autoFocus className="text-center font-mono text-lg tracking-[0.3em]" />
             </Field>

@@ -10,6 +10,7 @@ import { createSession, destroySession, requireAuth, publicUser, invalidateUserS
 import { authLimiter, registerLimiter, mailLimiter, makeLimiter, ipOnlyKey } from '../middleware/security.js';
 import { hashPassword, verifyPassword } from '../middleware/passwordHash.js';
 import { sendSystemMail } from '../services/email/system.js';
+import { verifyEmailMessage, resetPasswordMessage } from '../services/email/platformTemplate.js';
 import {
   GoogleSignInError, FLOW_TTL_MS, googleCredentials, googleSignInAvailable, safeNextPath, newFlow, sealFlow, openFlow,
   googleAuthUrl, exchangeGoogleCode, verifyGoogleIdToken, nameFromClaims, unusablePasswordHash, hasUsablePassword,
@@ -42,11 +43,7 @@ async function sendVerification(user) {
   const token = await issueToken(user.id, 'verify_email', 48 * 3600 * 1000);
   const link = `${config.appUrl}/verify-email?token=${token}`;
   const appName = await getSetting('app.name');
-  const mail = await sendSystemMail({
-    to: user.email,
-    subject: `Verify your ${appName} email`,
-    text: `Hi ${user.name},\n\nConfirm your email address by opening this link:\n${link}\n\nThe link expires in 48 hours.`,
-  });
+  const mail = await sendSystemMail({ to: user.email, ...verifyEmailMessage({ appName, name: user.name, email: user.email, link }) });
   return { token, mail };
 }
 
@@ -129,10 +126,9 @@ r.post('/forgot-password', mailLimiter, ah(async (req, res) => {
   if (user && user.status === 'active') {
     const token = await issueToken(user.id, 'reset_password', 3600 * 1000);
     const link = `${config.appUrl}/reset-password?token=${token}`;
-    const mail = await sendSystemMail({
-      to: user.email, subject: 'Reset your password',
-      text: `Hi ${user.name},\n\nReset your password with this link (valid for 1 hour):\n${link}\n\nIf you did not request this, ignore this email.`,
-    }).catch((err) => ({ sent: false, reason: err.message }));
+    const appName = await getSetting('app.name');
+    const mail = await sendSystemMail({ to: user.email, ...resetPasswordMessage({ appName, name: user.name, link }) })
+      .catch((err) => ({ sent: false, reason: err.message }));
     // The response stays the same either way (no account enumeration); a failed send is logged and audited so an
     // admin can see it (Admin → Audit log, and the platform email card in Admin → Setup).
     if (!mail.sent) console.warn(`[auth] password reset email for user ${user.id} not sent: ${mail.reason}`);

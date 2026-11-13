@@ -9,6 +9,8 @@ import { filePath, removeFile } from '../../middleware/upload.js';
 import { normDot, normMc } from '../carriers/normalize.js';
 import { census, censusRows } from '../carriers/profile.js';
 import { sendSystemMail } from '../email/system.js';
+import { carrierCodeMessage } from '../email/platformTemplate.js';
+import { getSetting } from '../../lib/settings.js';
 
 /**
  * Carrier accounts (see the CarrierAccount models in prisma/schema.prisma).
@@ -105,17 +107,20 @@ export async function startLogin({ number, ip }) {
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   const row2 = await prisma.carrierLoginCode.create({ data: { dotNumber: dot, email, codeHash: codeHash(code), expiresAt: new Date(Date.now() + CODE_TTL_MS), ip: ip ? String(ip).slice(0, 64) : null } });
   const name = String(row.legal_name || `USDOT ${dot}`).trim();
-  const mail = await sendSystemMail({
-    to: email,
-    category: 'auth',
-    subject: `${code} is your DispatchDesk carrier sign-in code`,
-    text: `${code} is your sign-in code for the DispatchDesk carrier profile of ${name} (USDOT ${dot}).\n\nIt works for 10 minutes. We sent it to the email address FMCSA has on file for this USDOT number.\n\nIf you did not ask for it, ignore this email: nobody can sign in without the code.\n\n${config.appUrl}/carrier`,
-  });
-  if (!mail.sent) {
-    await prisma.carrierLoginCode.delete({ where: { id: row2.id } }).catch(() => {});
-    throw new HttpError(503, 'We could not send the code right now. Try again in a few minutes.', { code: 'MAIL_FAILED' });
+  // Local development (EXPOSE_DEV_TOKENS=true, never set in production): the address is a real trucker's FMCSA email,
+  // so nothing is sent; the code comes back in the response (devCode) and the sign-in page shows it.
+  const local = config.exposeDevTokens && !config.isTest;
+  if (local) {
+    console.log(`[carrier] local sign-in code for USDOT ${dot}: ${code} (not emailed)`);
+  } else {
+    const appName = await getSetting('app.name');
+    const mail = await sendSystemMail({ to: email, category: 'auth', ...carrierCodeMessage({ appName, code, name, dot, signInUrl: `${config.appUrl}/carrier` }) });
+    if (!mail.sent) {
+      await prisma.carrierLoginCode.delete({ where: { id: row2.id } }).catch(() => {});
+      throw new HttpError(503, 'We could not send the code right now. Try again in a few minutes.', { code: 'MAIL_FAILED' });
+    }
   }
-  return { dot, maskedEmail: maskEmail(email), expiresInMinutes: CODE_TTL_MS / 60_000 };
+  return { dot, maskedEmail: maskEmail(email), expiresInMinutes: CODE_TTL_MS / 60_000, ...(local ? { devCode: code } : {}) };
 }
 
 /** Step 2: check the code, create (or update) the account and a session. Returns { account, token }. */
@@ -179,7 +184,7 @@ export async function connectionsFor(account) {
     where: { dotNumber: account.dotNumber, OR: [{ onboardingLinks: { some: {} } }, { customer: { isNot: null } }] },
     select: {
       id: true, companyName: true, ownerId: true,
-      owner: { select: { name: true, email: true, phone: true, teamMembership: { select: { team: { select: { name: true } } } } } },
+      owner: { select: { name: true, companyName: true, email: true, phone: true, teamMembership: { select: { team: { select: { name: true } } } } } },
       customer: { select: { id: true, status: true, signedAt: true, portalTokenHash: true, portalExpiresAt: true } },
       onboardingLinks: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true, createdAt: true, signedAt: true, expiresAt: true, revokedAt: true } },
       carrierShares: { where: { accountId: account.id }, select: { id: true, docTypes: true, autoUpdate: true, hidden: true, revokedAt: true, updatedAt: true, _count: { select: { files: true } } } },
@@ -195,7 +200,7 @@ export async function connectionsFor(account) {
       id: c.id,
       dispatcher: {
         name: c.owner?.name || null,
-        company: c.owner?.teamMembership?.team?.name || null,
+        company: c.owner?.teamMembership?.team?.name || c.owner?.companyName || null,
         email: c.owner?.email || null,
         phone: c.owner?.phone || null,
       },

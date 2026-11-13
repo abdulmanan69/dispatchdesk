@@ -156,6 +156,11 @@ export function StatementsView({ base, docBase, get, summary, queryKey }) {
   const [week, setWeek] = useState(null);
   const tz = summary.timezone;
   if (week) return <Week base={base} docBase={docBase} get={get} week={week} tz={tz} onBack={() => setWeek(null)} queryKey={queryKey} />;
+  // Weeks are newest first. Older weeks before the first load are left out of the list (the chart still shows them).
+  let lastWithLoads = -1;
+  summary.weeks.forEach((w, i) => { if (w.totals.loads) lastWithLoads = i; });
+  const listed = summary.weeks.slice(0, Math.max(1, lastWithLoads + 1));
+  const hidden = summary.weeks.length - listed.length;
   return (
     <div className="space-y-3">
       <Totals weeks={summary.weeks} />
@@ -163,7 +168,7 @@ export function StatementsView({ base, docBase, get, summary, queryKey }) {
       <section className="rounded-2xl border border-line bg-surface">
         <header className="border-b border-line px-4 py-3"><h2 className="font-medium">Weekly statements</h2></header>
         <ul className="divide-y divide-line">
-          {summary.weeks.map((w) => (
+          {listed.map((w) => (
             <li key={w.weekStart}>
               <button type="button" disabled={!w.totals.loads} onClick={() => setWeek(w)}
                 className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-ui hover:bg-surface-2 disabled:cursor-default disabled:hover:bg-transparent">
@@ -179,6 +184,7 @@ export function StatementsView({ base, docBase, get, summary, queryKey }) {
             </li>
           ))}
         </ul>
+        {hidden > 0 && <p className="border-t border-line px-4 py-3 text-xs text-muted">No loads in the {hidden} week{hidden === 1 ? '' : 's'} before this.</p>}
       </section>
     </div>
   );

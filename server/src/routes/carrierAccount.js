@@ -186,7 +186,7 @@ async function statementCustomer(account, carrierId) {
     where: { carrierId: String(carrierId), carrier: { dotNumber: account.dotNumber } },
     include: {
       carrier: { select: { id: true, companyName: true, mcNumber: true, dotNumber: true } },
-      owner: { select: { id: true, name: true, email: true, phone: true, timezone: true, status: true, teamMembership: { select: { team: { select: { name: true } } } } } },
+      owner: { select: { id: true, name: true, companyName: true, email: true, phone: true, timezone: true, status: true, teamMembership: { select: { team: { select: { name: true } } } } } },
     },
   });
   const now = new Date();

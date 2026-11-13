@@ -34,7 +34,7 @@ export async function customerForToken(token, now = new Date()) {
     where: { portalTokenHash: hashToken(token) },
     include: {
       carrier: { select: { id: true, companyName: true, mcNumber: true, dotNumber: true } },
-      owner: { select: { id: true, name: true, email: true, phone: true, timezone: true, status: true, teamMembership: { select: { team: { select: { name: true } } } } } },
+      owner: { select: { id: true, name: true, companyName: true, email: true, phone: true, timezone: true, status: true, teamMembership: { select: { team: { select: { name: true } } } } } },
     },
   });
   if (!customer || !customer.portalExpiresAt || customer.portalExpiresAt <= now || customer.status === 'churned') return null;

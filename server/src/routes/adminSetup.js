@@ -105,6 +105,7 @@ export async function buildChecklist(req) {
         { label: 'DKIM', value: 'Copy the DKIM record(s) your provider shows after you add the domain', copy: false },
       ],
       links: [
+        { label: 'Preview platform emails', url: '/api/admin/email-previews' },
         { label: 'Brevo SMTP keys', url: 'https://app.brevo.com/settings/keys/smtp' },
         { label: 'Resend domains', url: 'https://resend.com/domains' },
         { label: 'Google app passwords', url: 'https://myaccount.google.com/apppasswords' },

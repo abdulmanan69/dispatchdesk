@@ -57,6 +57,17 @@ describe('CarrierAccount', () => {
     expect(screen.getByText('Blue Line Dispatch')).toBeInTheDocument();
   });
 
+  it('shows the code on a local test server, where nothing is emailed', async () => {
+    routes['GET /api/public/carrier/me'] = () => json(401, { error: 'Sign in' });
+    routes['POST /api/public/carrier/login/start'] = () => json(200, { dot: '3636864', maskedEmail: 'de***@gmail.com', expiresInMinutes: 10, devCode: '482913' });
+    renderIt();
+    fireEvent.change(await screen.findByLabelText('USDOT number (or MC number)'), { target: { value: '3636864' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send my code' }));
+    expect(await screen.findByText(/no email was sent to de\*\*\*@gmail\.com/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '482913' }));
+    expect(screen.getByLabelText('6-digit code')).toHaveValue('482913');
+  });
+
   it('shares documents with one dispatcher', async () => {
     routes['GET /api/public/carrier/me'] = () => json(200, ME);
     routes['PUT /api/public/carrier/connections/c1/share'] = (opts) => {

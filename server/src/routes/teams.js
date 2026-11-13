@@ -10,6 +10,7 @@ import { canViewTeam } from '../lib/access.js';
 import { requireAuth, requirePermission, invalidateUserSessions, avatarUrl } from '../middleware/auth.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { sendSystemMail } from '../services/email/system.js';
+import { inviteMessage } from '../services/email/platformTemplate.js';
 import { getSetting } from '../lib/settings.js';
 import { invalidateQueueCount } from '../services/sequenceEngine.js';
 import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
@@ -223,11 +224,7 @@ r.post('/invitations', ah(async (req, res) => {
   });
   const link = `${config.appUrl}/invite/${token}`;
   const appName = await getSetting('app.name');
-  const mail = await sendSystemMail({
-    to: body.email,
-    subject: `${req.user.name} invited you to ${m.team.name} on ${appName}`,
-    text: `${req.user.name} invited you to join the team "${m.team.name}" as ${body.role}.\n\nAccept the invitation:\n${link}\n\nThe link expires in 7 days.`,
-  });
+  const mail = await sendSystemMail({ to: body.email, ...inviteMessage({ appName, inviter: req.user.name, team: m.team.name, role: body.role, link }) });
   await audit(req, 'team.invitation_sent', { entityType: 'invitation', entityId: inv.id, details: { email: body.email, role: body.role, emailSent: mail.sent } });
   res.status(201).json({
     invitation: { id: inv.id, email: inv.email, role: inv.role, expiresAt: inv.expiresAt },

@@ -9,13 +9,15 @@ import { requirePermission, invalidateUserSessions } from '../middleware/auth.js
 import { hashPassword } from '../middleware/passwordHash.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { LockBusyError } from '../lib/locks.js';
-import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSettings } from '../lib/settings.js';
+import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
 import { assertAccountDeletable, deleteAccount } from './settings.js';
 import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
 import { testPlatformAi } from '../services/ai/llm.js';
 import { config } from '../config.js';
+import { escHtml, verifyEmailMessage, resetPasswordMessage, inviteMessage, carrierCodeMessage } from '../services/email/platformTemplate.js';
+import { digestLayout } from '../services/email/digest.js';
 
 const r = Router();
 r.use(requirePermission('admin.access'));
@@ -441,6 +443,71 @@ r.post('/settings/test/:service', requirePermission('admin.settings'), ah(async 
   }
   await audit(req, 'admin.integration_tested', { details: { service: req.params.service, ok: result.ok } });
   res.json({ service: req.params.service, testedAt: new Date(), ...result });
+}));
+
+// ---------------------------------------------------------------------------
+// Platform email previews: exactly what DispatchDesk itself sends, with sample data. Nothing is sent.
+// GET /email-previews (all of them, side by side with the plain-text part) and GET /email-previews/:kind (one, as HTML).
+// ---------------------------------------------------------------------------
+async function previewSamples() {
+  const appName = await getSetting('app.name');
+  const url = (p) => `${config.appUrl}${p}`;
+  const sample = 'sample-token-not-valid';
+  const first = { first: 'Tina', queueUrl: url('/app/prospecting'), settingsUrl: url('/app/settings?tab=notifications') };
+  const digest = digestLayout({
+    ...first,
+    list: [
+      { title: 'Overdue follow-ups (1)', count: 1, lines: ['Blue Line Trucking: call, was due Tue 10:00 AM. Call back about reefer lanes'] },
+      { title: 'Follow-ups due today (2)', count: 2, lines: ['Cedar Creek Carriers: email at 11:30 AM', 'Lone Star Haulers: call at 2:00 PM'] },
+      { title: 'Sequence steps due today (1)', count: 1, lines: ['Prairie Wind Freight: call, step 2 of "New authority outreach"'] },
+    ],
+  });
+  return {
+    verify: { label: 'Verify email', when: 'A dispatcher signs up or asks for a new link', ...verifyEmailMessage({ appName, name: 'Tina Ramirez', email: 'tina@bluelinedispatch.com', link: url(`/verify-email?token=${sample}`) }) },
+    reset: { label: 'Password reset', when: 'Someone uses "Forgot password"', ...resetPasswordMessage({ appName, name: 'Tina Ramirez', link: url(`/reset-password?token=${sample}`) }) },
+    invite: { label: 'Team invitation', when: 'A team owner invites a dispatcher', ...inviteMessage({ appName, inviter: 'Tina Ramirez', team: 'Blue Line Dispatch', role: 'member', link: url(`/invite/${sample}`) }) },
+    carrier_code: { label: 'Carrier sign-in code', when: 'A trucker signs in at /carrier (sent to the FMCSA email of the USDOT number)', ...carrierCodeMessage({ appName, code: '482913', name: "DEAN'S LOGISTICS LLC", dot: '3636864', signInUrl: url('/carrier') }) },
+    digest: { label: 'Daily digest', when: '7 AM in the dispatcher\'s time zone when something is due (sent from their own mailbox when one is connected)', subject: 'Your day: 2 follow-ups due today, 1 overdue, 1 sequence step', text: '(The plain-text part lists the same items.)', html: digest.html },
+  };
+}
+
+const PREVIEW_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+
+r.get('/email-previews/:kind', requirePermission('admin.settings'), ah(async (req, res) => {
+  const m = (await previewSamples())[req.params.kind];
+  if (!m) throw notFound('Unknown email');
+  res.set({ 'Content-Security-Policy': PREVIEW_CSP, 'Cache-Control': 'no-store' });
+  res.type('html').send(m.html);
+}));
+
+r.get('/email-previews', requirePermission('admin.settings'), ah(async (req, res) => {
+  const samples = await previewSamples();
+  const from = (await getSetting('smtp.from')) || '(From address not set)';
+  const cards = Object.entries(samples).map(([kind, m]) => `
+    <section>
+      <h2>${escHtml(m.label)}</h2>
+      <p class="meta">${escHtml(m.when)}</p>
+      <dl><dt>From</dt><dd>${escHtml(from)}</dd><dt>Subject</dt><dd>${escHtml(m.subject)}</dd></dl>
+      <iframe src="email-previews/${kind}" title="${escHtml(m.label)}" loading="lazy"></iframe>
+      <details><summary>Plain-text part</summary><pre>${escHtml(m.text)}</pre></details>
+    </section>`).join('');
+  res.set({ 'Content-Security-Policy': `${PREVIEW_CSP}; frame-src 'self'`, 'Cache-Control': 'no-store' });
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platform email previews</title>
+<style>
+  body{margin:0;background:#f8f8f7;color:#111827;font:14px/1.5 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:720px;margin:0 auto;padding:32px 16px 64px}
+  h1{font-size:22px;font-weight:600;margin:0 0 4px} .lead{color:#4b5563;margin:0 0 24px}
+  section{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin:0 0 24px}
+  h2{font-size:16px;font-weight:600;margin:0} .meta{color:#6b7280;margin:2px 0 12px}
+  dl{display:grid;grid-template-columns:72px 1fr;gap:2px 12px;margin:0 0 12px} dt{color:#6b7280} dd{margin:0;word-break:break-word}
+  iframe{width:100%;height:640px;border:1px solid #e5e7eb;border-radius:8px;background:#f4f5f4}
+  details{margin-top:8px} summary{cursor:pointer;color:#0f766e} pre{white-space:pre-wrap;background:#f8f8f7;border-radius:8px;padding:12px;font-size:13px}
+</style></head><body><main>
+<h1>Platform email previews</h1>
+<p class="lead">What ${escHtml(await getSetting('app.name'))} itself sends, shown with sample data. Nothing is sent from this page. Mail from dispatchers to carriers goes out from their own connected mailbox and is written by them, so it is not listed here.</p>
+${cards}
+</main></body></html>`);
 }));
 
 // ---------------------------------------------------------------------------

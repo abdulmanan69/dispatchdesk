@@ -59,7 +59,8 @@ describe('daily digest', () => {
     expect(d.text).toContain('Blue Line Trucking: call, was due Tue 10:00 AM. Call back about reefer lanes');
     expect(d.text).toContain('Sequence steps due today (1)');
     expect(d.text).toContain('step 1 of "Outreach"');
-    expect(d.html).toContain('<li>');
+    expect(d.html).toContain('<li style=');
+    expect(d.html).toContain('Open your queue');
   });
 
   it('sends from the user\'s own mailbox without creating an email record', async () => {

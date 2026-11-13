@@ -3,6 +3,7 @@ import { config } from '../../config.js';
 import { DEFAULT_TZ, endOfUserDay, localDayKey, localParts } from '../../lib/timezones.js';
 import { pickAccount, sendWithAccount, recordMailboxSend, syncMailboxDay } from './index.js';
 import { sendSystemMail } from './system.js';
+import { platformEmail } from './platformTemplate.js';
 
 /**
  * One morning digest email per user (User.notifyDigest + notifyFollowUps), at DIGEST_HOUR in the user's time zone,
@@ -116,12 +117,24 @@ export async function buildDigest(user, now = new Date()) {
     `Open your queue: ${queueUrl}`, '',
     `You get this email because the daily digest is on. Turn it off in Settings, Notifications: ${settingsUrl}`,
   ].join('\n');
-  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2937">`
-    + `<p>Good morning ${esc(first)},</p>`
-    + list.map((s) => `<p style="margin:16px 0 4px;font-weight:bold">${esc(s.title)}</p><ul style="margin:0;padding-left:18px">${s.lines.map((l) => `<li>${esc(l)}</li>`).join('')}${more(s).map((l) => `<li style="color:#6b7280">${esc(l)}</li>`).join('')}</ul>`).join('')
-    + `<p style="margin-top:20px"><a href="${esc(queueUrl)}">Open your queue</a></p>`
-    + `<p style="margin-top:24px;font-size:12px;color:#6b7280">You get this email because the daily digest is on. <a href="${esc(settingsUrl)}">Turn it off</a></p></div>`;
+  const { html } = digestLayout({ first, list, more, queueUrl, settingsUrl });
   return { subject, text, html, sections: list.map((s) => ({ key: s.key, count: s.count })) };
+}
+
+/** The digest's HTML in the platform email layout. Exported for the admin preview page. */
+export function digestLayout({ first, list, more = (s) => (s.count > s.lines.length ? [`and ${s.count - s.lines.length} more`] : []), queueUrl, settingsUrl }) {
+  const bodyHtml = list.map((s) => `<p style="margin:8px 0 4px;font-size:15px;font-weight:600;color:#111827">${esc(s.title)}</p>`
+    + `<ul style="margin:0 0 12px;padding-left:20px">${s.lines.map((l) => `<li style="margin:0 0 4px">${esc(l)}</li>`).join('')}`
+    + `${more(s).map((l) => `<li style="margin:0 0 4px;color:#6b7280">${esc(l)}</li>`).join('')}</ul>`).join('');
+  return platformEmail({
+    preheader: list.map((s) => s.title).join(', '),
+    heading: 'Your day',
+    paragraphs: [`Good morning ${first},`],
+    bodyHtml,
+    button: { label: 'Open your queue', url: queueUrl },
+    footer: 'You get this email because the daily digest is on.',
+    footerLink: { label: 'Turn it off', url: settingsUrl },
+  });
 }
 
 /** Send today's digest to one user. Returns { sent: 'mailbox'|'platform' } or { skipped: reason }. */
