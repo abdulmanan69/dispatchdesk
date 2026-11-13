@@ -120,7 +120,10 @@ export async function startLogin({ number, ip }) {
       throw new HttpError(503, 'We could not send the code right now. Try again in a few minutes.', { code: 'MAIL_FAILED' });
     }
   }
-  return { dot, maskedEmail: maskEmail(email), expiresInMinutes: CODE_TTL_MS / 60_000, ...(local ? { devCode: code } : {}) };
+  // name: FMCSA legal name, so a carrier who typed the wrong number sees it before entering the code (public data).
+  // sender: the platform From address the code comes from (never a dispatcher's mailbox), so they know what to look for.
+  const sender = String((await getSetting('smtp.from')) || '').trim() || null;
+  return { dot, name, maskedEmail: maskEmail(email), sender, expiresInMinutes: CODE_TTL_MS / 60_000, ...(local ? { devCode: code } : {}) };
 }
 
 /** Step 2: check the code, create (or update) the account and a session. Returns { account, token }. */

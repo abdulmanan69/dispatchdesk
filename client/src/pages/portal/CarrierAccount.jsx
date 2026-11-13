@@ -74,7 +74,21 @@ export default function CarrierAccount() {
 
 // ---------------------------------------------------------------------------------------------------------------
 
+/** "DispatchDesk <no-reply@x.com>" -> { name: 'DispatchDesk', address: 'no-reply@x.com' }; null when unknown. */
+function senderParts(sender) {
+  if (!sender) return null;
+  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(sender);
+  return m ? { name: m[1].trim() || null, address: m[2].trim() } : { name: null, address: sender.trim() };
+}
+
+/** A bare number in MC mode is sent as "MC 123"; anything the carrier typed with a prefix goes as typed. */
+export const signInNumber = (kind, raw) => {
+  const v = String(raw || '').trim();
+  return kind === 'mc' && /^\d+$/.test(v) ? `MC ${v}` : v;
+};
+
 function SignIn({ onSignedIn }) {
+  const [kind, setKind] = useState('dot');
   const [number, setNumber] = useState('');
   const [sent, setSent] = useState(null);
   const [code, setCode] = useState('');
@@ -85,7 +99,7 @@ function SignIn({ onSignedIn }) {
     setBusy(true);
     setError(null);
     try {
-      setSent(await carrierCall('POST', '/login/start', { number }));
+      setSent(await carrierCall('POST', '/login/start', { number: signInNumber(kind, number) }));
       setCode('');
     } catch (err) {
       setError(err.message);
@@ -115,31 +129,48 @@ function SignIn({ onSignedIn }) {
       <section className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
         {!sent ? (
           <form onSubmit={start} className="space-y-3">
-            <Field label="USDOT number (or MC number)">
-              <Input value={number} onChange={(e) => setNumber(e.target.value)} inputMode="text" autoComplete="off" placeholder="3636864" autoFocus />
+            <div className="inline-flex rounded-lg border border-line p-0.5" role="group" aria-label="Number type">
+              {[['dot', 'USDOT'], ['mc', 'MC']].map(([k, label]) => (
+                <button key={k} type="button" aria-pressed={kind === k} onClick={() => { setKind(k); setError(null); }}
+                  className={cx('h-8 rounded-md px-4 text-sm transition-ui', kind === k ? 'bg-surface-2 font-medium text-fg shadow-[inset_0_0_0_1px_var(--color-line)]' : 'text-fg-2 hover:text-fg')}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <Field label={kind === 'mc' ? 'MC number' : 'USDOT number'}>
+              <Input value={number} onChange={(e) => setNumber(e.target.value)} inputMode="numeric" autoComplete="off" placeholder={kind === 'mc' ? '1248213' : '3636864'} autoFocus />
             </Field>
-            <p className="text-xs text-muted">We send a 6-digit code to the email address FMCSA has on file for this number. Only the person who reads that email can sign in.</p>
+            <p className="text-xs text-muted">We email a 6-digit code to the address FMCSA has on file for this number. Only the person who reads that email can sign in.</p>
             {error && <p role="alert" className="text-sm text-c-red">{error}</p>}
             <Button type="submit" size="lg" className="w-full" loading={busy} disabled={!number.trim()}>Send my code</Button>
           </form>
         ) : (
           <form onSubmit={verify} className="space-y-3">
+            <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
+              <p className="font-medium">{sent.name || `USDOT ${sent.dot}`}</p>
+              <p className="text-xs text-muted tabular">USDOT {sent.dot} · not you? <button type="button" className="text-brand-700 hover:underline dark:text-brand-300" onClick={() => { setSent(null); setError(null); }}>Change the number</button></p>
+            </div>
             {sent.devCode ? (
               // Local development only (EXPOSE_DEV_TOKENS): the server emails nothing and returns the code.
-              <p className="rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-sm text-fg-2">Local test server: no email was sent to {sent.maskedEmail}. Your code is <button type="button" className="font-mono font-medium text-fg underline" onClick={() => setCode(sent.devCode)}>{sent.devCode}</button>.</p>
+              <p className="rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-sm text-fg-2">Local test server: no email was sent to {sent.maskedEmail}. Your code is <button type="button" className="font-mono font-medium text-fg underline" onClick={() => setCode(sent.devCode)}>{sent.devCode}</button>. On the live site this code is emailed from {senderParts(sent.sender)?.address || 'the DispatchDesk platform address'}, never from a dispatcher's mailbox.</p>
             ) : (
-              <p className="flex items-start gap-2 text-sm text-fg-2"><Mail className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />We sent a code to <span className="font-medium text-fg">{sent.maskedEmail}</span>, the email FMCSA has for USDOT {sent.dot}. It works for {sent.expiresInMinutes} minutes.</p>
+              <div className="flex items-start gap-2 text-sm text-fg-2">
+                <Mail className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                <p>
+                  We emailed a code to <span className="font-medium text-fg">{sent.maskedEmail}</span>, the address FMCSA has for this USDOT. It works for {sent.expiresInMinutes} minutes.
+                  {' '}Look for an email from <span className="font-medium text-fg">{senderParts(sent.sender)?.name || 'DispatchDesk'}</span>{senderParts(sent.sender)?.address ? <> (<span className="font-mono text-xs">{senderParts(sent.sender).address}</span>)</> : null}.
+                </p>
+              </div>
             )}
             <Field label="6-digit code">
               <Input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" autoFocus className="text-center font-mono text-lg tracking-[0.3em]" />
             </Field>
             {error && <p role="alert" className="text-sm text-c-red">{error}</p>}
             <Button type="submit" size="lg" className="w-full" loading={busy} disabled={code.length !== 6}>Sign in</Button>
-            <div className="flex flex-wrap justify-between gap-2 text-sm">
-              <button type="button" className="text-brand-700 hover:underline dark:text-brand-300" onClick={() => { setSent(null); setError(null); }}>Use another number</button>
+            <div className="flex flex-wrap justify-end gap-2 text-sm">
               <button type="button" className="text-brand-700 hover:underline dark:text-brand-300" disabled={busy} onClick={start}>Send a new code</button>
             </div>
-            <p className="text-xs text-muted">No email? Check spam. If that address is old, update your MCS-150 with FMCSA first.</p>
+            <p className="text-xs text-muted">No email? Check spam and promotions. If that address is old, update your MCS-150 with FMCSA first.</p>
           </form>
         )}
       </section>

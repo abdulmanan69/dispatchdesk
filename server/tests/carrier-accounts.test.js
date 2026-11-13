@@ -74,7 +74,7 @@ describe('carrier sign-in', () => {
     const a = await agent();
     const start = await a.post('/api/public/carrier/login/start').send({ number: 'MC 1248213' });
     expect(start.status).toBe(200);
-    expect(start.body).toEqual({ dot: DOT, maskedEmail: 'de***********@gmail.com', expiresInMinutes: 10 });
+    expect(start.body).toEqual({ dot: DOT, name: "DEAN'S LOGISTICS LLC", maskedEmail: 'de***********@gmail.com', sender: null, expiresInMinutes: 10 });
     expect(sent).toHaveLength(1);
     expect(sent[0].to).toBe('deangordon015@gmail.com');
     expect(sent[0].text).toContain("DEAN'S LOGISTICS LLC (USDOT 3636864)");
