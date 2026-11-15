@@ -1,6 +1,6 @@
-import { Component, forwardRef, memo, useId, useMemo, isValidElement, cloneElement } from 'react';
+import { Component, forwardRef, memo, useId, useMemo, useState, isValidElement, cloneElement } from 'react';
 import { Link } from 'react-router';
-import { Loader2, AlertTriangle, Inbox, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, RefreshCw } from 'lucide-react';
+import { Loader2, AlertTriangle, AlertCircle, Inbox, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, RefreshCw, Eye, EyeOff } from 'lucide-react';
 import { initials, zoneClock } from '../lib/format.js';
 
 export const cx = (...c) => c.filter(Boolean).join(' ');
@@ -53,10 +53,34 @@ export function IconButton({ icon: Icon, label, className, ...props }) {
   );
 }
 
-const inputBase = 'w-full rounded-lg border border-line-strong bg-surface px-3 text-sm text-fg placeholder:text-muted transition-ui focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15 disabled:opacity-60';
+const inputBase = 'w-full rounded-lg border border-line-strong bg-surface px-3 text-sm text-fg placeholder:text-muted transition-ui focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15 disabled:opacity-60 aria-invalid:border-red-500 aria-invalid:focus:border-red-500 aria-invalid:focus:ring-red-500/15 dark:aria-invalid:border-red-400';
 
 export const Input = forwardRef(function Input({ className, ...props }, ref) {
   return <input ref={ref} className={sized(`${inputBase} h-9`, className)} {...props} />;
+});
+
+/** Password field with a show/hide button and a Caps Lock warning. Takes the same props as Input. */
+export const PasswordInput = forwardRef(function PasswordInput({ className, onKeyDown, onKeyUp, onBlur, ...props }, ref) {
+  const [shown, setShown] = useState(false);
+  const [caps, setCaps] = useState(false);
+  const capsCheck = (e) => { if (typeof e.getModifierState === 'function') setCaps(e.getModifierState('CapsLock')); };
+  return (
+    <div>
+      <div className="relative">
+        <Input ref={ref} type={shown ? 'text' : 'password'} autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          className={cx('pr-10', className)} {...props}
+          onKeyDown={(e) => { capsCheck(e); onKeyDown?.(e); }} onKeyUp={(e) => { capsCheck(e); onKeyUp?.(e); }}
+          onBlur={(e) => { setCaps(false); onBlur?.(e); }} />
+        {/* The name is screen-reader text, not aria-label, so label lookups for "Password" find only the field. */}
+        <button type="button" onClick={() => setShown((s) => !s)} aria-pressed={shown}
+          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-lg text-muted transition-ui hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40">
+          {shown ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
+          <span className="sr-only">{shown ? 'Hide password' : 'Show password'}</span>
+        </button>
+      </div>
+      {caps && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300" role="status">Caps Lock is on</p>}
+    </div>
+  );
 });
 export const Textarea = forwardRef(function Textarea({ className, rows = 4, ...props }, ref) {
   return <textarea ref={ref} rows={rows} className={sized(`${inputBase} py-2`, className)} {...props} />;
@@ -65,17 +89,30 @@ export const Textarea = forwardRef(function Textarea({ className, rows = 4, ...p
 export { Select, ComboInput } from './controls.jsx';
 
 /** Label + control + hint/error, with ids wired for accessibility. */
-export function Field({ label, hint, error, children, className, required }) {
+// `aside` sits at the right of the label row (e.g. a "Forgot password?" link).
+export function Field({ label, hint, error, children, className, required, aside }) {
   const autoId = useId();
   const id = isValidElement(children) && children.props.id ? children.props.id : autoId;
+  const noteId = `${id}-note`;
+  const note = error || hint;
   const child = typeof children === 'function'
     ? children(id)
-    : isValidElement(children) ? cloneElement(children, { id, 'aria-invalid': error ? true : undefined, required: children.props.required ?? required }) : children;
+    : isValidElement(children) ? cloneElement(children, {
+      id, 'aria-invalid': error ? true : undefined, required: children.props.required ?? required,
+      'aria-describedby': cx(children.props['aria-describedby'], note && noteId) || undefined,
+    }) : children;
   return (
     <div className={cx('space-y-1', className)}>
-      {label && <label htmlFor={id} className="block text-[13px] font-medium text-fg">{label}{required && <span className="text-red-600"> *</span>}</label>}
+      {(label || aside) && (
+        <div className="flex items-baseline justify-between gap-3">
+          {label && <label htmlFor={id} className="block text-[13px] font-medium text-fg">{label}{required && <span className="text-red-600 dark:text-red-400" aria-hidden> *</span>}</label>}
+          {aside}
+        </div>
+      )}
       {child}
-      {error ? <p className="text-xs text-red-600">{error}</p> : hint ? <p className="text-xs text-muted">{hint}</p> : null}
+      {error
+        ? <p id={noteId} className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400"><AlertCircle className="mt-px size-3.5 shrink-0" aria-hidden /><span>{error}</span></p>
+        : hint ? <p id={noteId} className="text-xs text-muted">{hint}</p> : null}
     </div>
   );
 }

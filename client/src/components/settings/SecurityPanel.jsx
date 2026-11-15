@@ -2,9 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Monitor, KeyRound } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { useApiMutation } from '../../lib/hooks.js';
+import { useApiMutation, errorToast } from '../../lib/hooks.js';
+import { useToast } from '../Toast.jsx';
+import { fieldErrorsFrom, newPasswordError } from '../../lib/validation.js';
+import PasswordChecklist from '../account/PasswordChecklist.jsx';
 import { relative, dateTime } from '../../lib/format.js';
-import { Card, Field, Input, Button, Badge, QueryState, IconButton } from '../ui.jsx';
+import { Card, Field, Button, Badge, QueryState, IconButton, PasswordInput } from '../ui.jsx';
 import { X } from 'lucide-react';
 import GoogleLink from '../account/GoogleLink.jsx';
 
@@ -25,20 +28,41 @@ function osName(ua = '') {
 }
 
 export default function SecurityPanel() {
+  const toast = useToast();
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '', confirm: '' });
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState({});
+  const [submitted, setSubmitted] = useState(false);
   const sessions = useQuery({ queryKey: ['sessions'], queryFn: () => api.get('/api/auth/sessions') });
   const change = useApiMutation((body) => api.post('/api/auth/change-password', body), {
     success: 'Password changed. Other sessions were signed out.', invalidate: [['sessions']],
-    onSuccess: () => setPw({ currentPassword: '', newPassword: '', confirm: '' }),
+    onSuccess: () => { setPw({ currentPassword: '', newPassword: '', confirm: '' }); setErrors({}); setSubmitted(false); },
+    // A wrong current password or a weak new one is shown next to its field; anything else as a toast.
+    onError: (err) => {
+      const fields = fieldErrorsFrom(err);
+      if (/current password is incorrect/i.test(err?.message || '')) setErrors({ currentPassword: 'That is not your current password' });
+      else if (Object.keys(fields).length) setErrors(fields);
+      else errorToast(toast, err);
+    },
   });
   const revoke = useApiMutation((id) => api.del(`/api/auth/sessions/${id}`), { success: 'Session signed out', invalidate: [['sessions']] });
   const revokeOthers = useApiMutation(() => api.post('/api/auth/sessions/revoke-others'), { success: (d) => `Signed out ${d.revoked} other session(s)`, invalidate: [['sessions']] });
 
+  const validate = (v) => ({
+    currentPassword: v.currentPassword ? '' : 'Enter your current password',
+    newPassword: newPasswordError(v.newPassword),
+    confirm: !v.confirm ? 'Type the new password again' : v.confirm !== v.newPassword ? 'The passwords do not match' : '',
+  });
+  const setField = (k) => (e) => {
+    const v = { ...pw, [k]: e.target.value };
+    setPw(v);
+    if (submitted) setErrors(validate(v));
+  };
   const submit = (e) => {
     e.preventDefault();
-    setError('');
-    if (pw.newPassword !== pw.confirm) return setError('New passwords do not match');
+    setSubmitted(true);
+    const found = validate(pw);
+    setErrors(found);
+    if (Object.values(found).some(Boolean)) return;
     change.mutate({ currentPassword: pw.currentPassword, newPassword: pw.newPassword });
   };
 
@@ -53,10 +77,11 @@ export default function SecurityPanel() {
         </Card>
       ) : (
       <Card title="Change password">
-        <form className="space-y-3" onSubmit={submit}>
-          <Field label="Current password" required><Input type="password" autoComplete="current-password" value={pw.currentPassword} onChange={(e) => setPw({ ...pw, currentPassword: e.target.value })} required /></Field>
-          <Field label="New password" hint="At least 8 characters with a letter and a number" required><Input type="password" autoComplete="new-password" minLength={8} value={pw.newPassword} onChange={(e) => setPw({ ...pw, newPassword: e.target.value })} required /></Field>
-          <Field label="Confirm new password" error={error} required><Input type="password" autoComplete="new-password" value={pw.confirm} onChange={(e) => setPw({ ...pw, confirm: e.target.value })} required /></Field>
+        <form className="space-y-3" onSubmit={submit} noValidate>
+          <Field label="Current password" required error={errors.currentPassword}><PasswordInput autoComplete="current-password" value={pw.currentPassword} onChange={setField('currentPassword')} /></Field>
+          <Field label="New password" required error={errors.newPassword}><PasswordInput autoComplete="new-password" aria-describedby="password-rules" value={pw.newPassword} onChange={setField('newPassword')} /></Field>
+          <PasswordChecklist id="password-rules" password={pw.newPassword} className="-mt-1" />
+          <Field label="Confirm new password" required error={errors.confirm}><PasswordInput autoComplete="new-password" value={pw.confirm} onChange={setField('confirm')} /></Field>
           <Button type="submit" icon={KeyRound} loading={change.isPending}>Update password</Button>
         </form>
       </Card>

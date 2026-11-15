@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Crosshair, PhoneOutgoing, CalendarClock, MapPinned, Check } from 'lucide-react';
+import { Crosshair, PhoneOutgoing, CalendarClock, MapPinned, Check, AlertCircle } from 'lucide-react';
 import ShaderBackground from '../../components/ShaderBackground.jsx';
 import { Button } from '../../components/ui.jsx';
 import { api } from '../../lib/api.js';
@@ -54,9 +54,18 @@ export default function AuthShell({ title, subtitle, children, footer }) {
   );
 }
 
-export function FormError({ error }) {
+/** Error for the whole form (wrong password, network, rate limit), with an optional follow-up link or action. */
+export function FormError({ error, children }) {
   if (!error) return null;
-  return <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{error}</p>;
+  return (
+    <div role="alert" className="flex gap-2.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+      <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <div className="min-w-0">
+        <p>{error}</p>
+        {children && <div className="mt-1">{children}</div>}
+      </div>
+    </div>
+  );
 }
 
 /** Only allow same-site relative redirects after login (no protocol-relative, backslash or control-character tricks). */

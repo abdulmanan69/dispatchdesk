@@ -22,8 +22,9 @@ const r = Router();
 const googleLimiter = makeLimiter('googleauth', 15 * 60_000, Math.max(1, Number(process.env.RATE_LIMIT_GOOGLE_IP) || 60),
   'Too many sign-in attempts from this network. Try again in 15 minutes.', { key: ipOnlyKey });
 
-const password = z.string().min(8, 'Use at least 8 characters').max(200)
-  .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p), 'Include at least one letter and one number');
+const password = z.string({ error: 'Enter a password' }).min(8, 'Password must be at least 8 characters')
+  .max(200, 'Password must be 200 characters or fewer')
+  .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p), 'Password must include at least one letter and one number');
 
 async function issueToken(userId, type, ttlMs) {
   const token = randomToken(32);
@@ -68,7 +69,7 @@ r.post('/register', registerLimiter, ah(async (req, res) => {
   if (!(await getBool('app.registrationOpen'))) throw forbidden('Registration is currently closed');
   const body = parse(z.object({
     name: reqStr(120), email: reqEmail, password, phone: z.string().trim().max(40).optional(),
-    acceptTerms: z.literal(true, { message: 'You must accept the terms' }),
+    acceptTerms: z.literal(true, { message: 'Accept the Terms and Privacy Policy to continue' }),
   }), req.body);
   if (await prisma.user.findUnique({ where: { email: body.email } })) throw conflict('An account with this email already exists');
   const role = await prisma.role.findUnique({ where: { key: 'dispatcher' } });
@@ -82,7 +83,7 @@ r.post('/register', registerLimiter, ah(async (req, res) => {
 }));
 
 r.post('/login', authLimiter, ah(async (req, res) => {
-  const body = parse(z.object({ email: reqEmail, password: z.string().min(1).max(200) }), req.body);
+  const body = parse(z.object({ email: reqEmail, password: z.string({ error: 'Enter your password' }).min(1, 'Enter your password').max(200, 'Incorrect email or password') }), req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email } });
   // Unknown emails are compared against a dummy hash of the same cost, so timing does not reveal which accounts exist.
   // The comparison runs on a worker thread (middleware/passwordHash.js), not on the request thread.
@@ -153,7 +154,7 @@ r.post('/reset-password', authLimiter, ah(async (req, res) => {
 }));
 
 r.post('/change-password', requireAuth, ah(async (req, res) => {
-  const body = parse(z.object({ currentPassword: z.string().min(1), newPassword: password }), req.body);
+  const body = parse(z.object({ currentPassword: z.string({ error: 'Enter your current password' }).min(1, 'Enter your current password'), newPassword: password }), req.body);
   if (!(await verifyPassword(body.currentPassword, req.user.passwordHash))) throw badRequest('Current password is incorrect');
   await prisma.user.update({ where: { id: req.user.id }, data: { passwordHash: await hashPassword(body.newPassword) } });
   await prisma.session.deleteMany({ where: { userId: req.user.id, NOT: { id: req.sessionId } } });
