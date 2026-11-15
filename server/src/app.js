@@ -78,6 +78,7 @@ import onboardingRoutes from './routes/onboarding.js';
 import carrierAccountRoutes from './routes/carrierAccount.js';
 import factoringCompanyRoutes from './routes/factoringCompanies.js';
 import carrierProfileRoutes from './routes/carrierProfile.js';
+import { hostRedirect } from './middleware/hostRedirect.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = process.env.CLIENT_DIST || path.resolve(__dirname, '../../client/dist');
@@ -113,6 +114,8 @@ export function createApp() {
   // path-based checks (CSRF exemptions, API-token blocklist) compared the raw path. Make mounts case-sensitive.
   app.set('case sensitive routing', true);
   app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1));
+  // Old domains forward to APP_URL (see middleware/hostRedirect.js); a no-op unless REDIRECT_HOSTS is set.
+  app.use(hostRedirect());
 
   app.use(helmet({
     contentSecurityPolicy: {
