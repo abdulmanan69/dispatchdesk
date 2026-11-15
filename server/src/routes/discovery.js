@@ -12,6 +12,7 @@ import {
   leadFilterFields, withLeadFilterChecks, censusLeadFilters, postFilter, EQUIPMENT_TYPES, COMMON_INSURERS,
 } from '../services/carriers/leadFilters.js';
 import { scoreLead, sharedContactStep, mcAgeStep, insurerStep, leadView } from '../services/carriers/leadSignals.js';
+import { trustStep } from '../services/carriers/leadTrust.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -58,7 +59,7 @@ r.get('/filter-options', ah(async (req, res) => {
  * number stays only when the search does not require one. Paging (`hasMore`) follows the census page, so hidden rows
  * never stop "Next".
  * The lead filters the census can answer are in the census query; the rest run on the page, as in the lead generator
- * (shared filters, shared contacts, MC age, insurer: the lookups are batched and fail-soft) and hide rows with a count
+ * (shared filters, shared contacts, authenticity, MC age, insurer: the lookups are batched and fail-soft) and hide rows with a count
  * (`hiddenByFilters`, per reason in `hiddenReasons`). Every row shown carries its lead score, tier and signals.
  */
 r.get('/search', ah(async (req, res) => {
@@ -85,7 +86,7 @@ r.get('/search', ah(async (req, res) => {
     else hiddenInactive++;
     return false;
   }) : checked;
-  const hiddenReasons = { unsafe: 0, filtered: 0, sharedContact: 0 };
+  const hiddenReasons = { unsafe: 0, filtered: 0, sharedContact: 0, addressMill: 0, linkedInactive: 0 };
   const passed = visible.filter((rec) => {
     const why = postFilter(rec, f, now);
     if (why) hiddenReasons[why === 'unsafe' ? 'unsafe' : 'filtered']++;
@@ -93,7 +94,10 @@ r.get('/search', ah(async (req, res) => {
   });
   const shared = await sharedContactStep(passed, f, { cacheMs: SEARCH_CACHE_MS });
   hiddenReasons.sharedContact += shared.excluded.length;
-  const aged = await mcAgeStep(shared.kept, f, { cacheMs: SEARCH_CACHE_MS, now });
+  const trusted = await trustStep(shared.kept, f, { cacheMs: SEARCH_CACHE_MS, now });
+  hiddenReasons.addressMill += trusted.excluded.addressMill.length;
+  hiddenReasons.linkedInactive += trusted.excluded.linkedInactive.length;
+  const aged = await mcAgeStep(trusted.kept, f, { cacheMs: SEARCH_CACHE_MS, now });
   hiddenReasons.filtered += aged.excluded.length;
   const insured = await insurerStep(aged.kept, f, { cacheMs: SEARCH_CACHE_MS, now });
   hiddenReasons.filtered += insured.excluded.length;
@@ -106,7 +110,7 @@ r.get('/search', ah(async (req, res) => {
   res.json({
     ...result, items, offset: f.offset, limit: f.limit, hasMore: result.items.length === f.limit,
     hiddenInactive, hiddenUnverified,
-    hiddenByFilters: hiddenReasons.unsafe + hiddenReasons.filtered + hiddenReasons.sharedContact, hiddenReasons,
+    hiddenByFilters: Object.values(hiddenReasons).reduce((a, b) => a + b, 0), hiddenReasons,
     authorityError: answered ? null : `${AUTHORITY_UNAVAILABLE} ${activeOnly ? 'Carriers that could not be checked are hidden; search again in a few minutes.' : 'Their authority shows as not verified.'}`,
   });
 }));

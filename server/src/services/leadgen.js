@@ -11,6 +11,7 @@ import * as census from './carriers/fmcsaCensus.js';
 import { AUTHORITY_UNAVAILABLE, annotateAuthority } from './carriers/authority.js';
 import { teamClaims, matchFor } from './carriers/collisions.js';
 import { normalizeLeadFilters, censusLeadFilters, postFilter, weightsFor } from './carriers/leadFilters.js';
+import { trustStep } from './carriers/leadTrust.js';
 import {
   scoreLead as scoreLeadV2, sharedContactStep, mcAgeStep, insurerStep, qcSafety, qcBlocks, withQc, tierPriority, scoreText, signalsJson,
   QC_MAX_PER_RUN, leadView,
@@ -28,7 +29,8 @@ import { withLock, LockBusyError } from '../lib/locks.js';
  * Each page goes through the cheapest checks first (see collect()): de-duplication (own CRM, teammates, do-not-call
  * and email suppression lists), the shared filters (services/carriers/leadFilters.js), the best score the carrier
  * could reach, then the batched lookups of services/carriers/leadSignals.js (shared contacts, operating authority,
- * MC age, insurer), the lead score v2, and QCMobile live safety for the picks only.
+ * MC age, insurer), the authenticity checks of services/carriers/leadTrust.js (address mills, links to inactive
+ * carriers, road activity), the lead score v2, and QCMobile live safety for the picks only.
  * Usage counts against the plan's monthlyLeadGenLimit (and maxCarriers).
  */
 
@@ -84,11 +86,13 @@ export const EXCLUSION_REASONS = Object.freeze([
   ['filtered', 'outside your filters'],
   ['sharedContact', 'share a phone or email with other carriers (likely have a dispatcher)'],
   ['inactiveAuthority', 'authority not active'],
+  ['addressMill', 'registered at an address many carriers share (virtual office or agent)'],
+  ['linkedInactive', 'linked to inactive or revoked carriers'],
   ['outOfService', 'out of service'],
   ['belowScore', 'below your minimum score'],
 ]);
 /** Counts LeadGenRun stores in its `exclusions` JSON (the ones without a column of their own). */
-export const EXCLUSION_KEYS = Object.freeze(['teamClaimed', 'suppressed', 'unsafe', 'filtered', 'sharedContact', 'inactiveAuthority', 'outOfService']);
+export const EXCLUSION_KEYS = Object.freeze(['teamClaimed', 'suppressed', 'unsafe', 'filtered', 'sharedContact', 'inactiveAuthority', 'addressMill', 'linkedInactive', 'outOfService']);
 
 /**
  * Message for a run whose crawl reached the end of the census list in every state.
@@ -151,10 +155,21 @@ export function criteriaHash(criteria, minScore = 0) {
     authorityAgeMinMonths: n(c.authorityAgeMinMonths), authorityAgeMaxMonths: n(c.authorityAgeMaxMonths),
     requirePhone: !!c.requirePhone, requireEmail: !!c.requireEmail, requireMc: !!c.requireMc, activeOnly: c.activeOnly !== false,
     minScore: Number(minScore) || 0,
-    leadFilters: normalizeLeadFilters(c),
+    leadFilters: stableLeadFilters(c),
     playbook: c.playbook || null,
   };
   return createHash('sha256').update(JSON.stringify(norm)).digest('hex').slice(0, 16);
+}
+
+/**
+ * The shared filters for the hash. Filters added after crawl cursors existed (authenticity, 2026-11) only join the hash
+ * when set away from their default, so adding them did not send every saved generator back to the top of the census.
+ */
+const LATER_DEFAULTS = { excludeAddressMills: true, excludeLinkedInactive: false };
+function stableLeadFilters(c) {
+  const f = normalizeLeadFilters(c);
+  for (const [k, def] of Object.entries(LATER_DEFAULTS)) if (f[k] === def) delete f[k];
+  return f;
 }
 
 /** The stored cursor when it was saved for these filters (same criteriaHash), otherwise null (start from the top). */
@@ -311,16 +326,21 @@ function nextCursor(crawl, hash, now = new Date()) {
  *   4. shared-contact counts (sharedContact; fail-soft);
  *   5. operating authority (inactiveAuthority; a batch the licensing dataset did not answer throws
  *      AuthorityUnavailableError: fail closed);
- *   6. MC age from authority history, then the insurer (filtered; both fail-soft);
- *   7. the lead score (belowScore), picked in crawl order;
- *   8. QCMobile live safety for the picks only, at most `qcMax` per crawl (outOfService; fail-open).
+ *   6. authenticity (leadTrust.js): address mills (addressMill) and links to inactive or revoked carriers
+ *      (linkedInactive), then road activity from roadside inspections (all fail-soft);
+ *   7. MC age from authority history, then the insurer (filtered; both fail-soft);
+ *   8. the lead score (belowScore), picked in crawl order;
+ *   9. QCMobile live safety for the picks only, at most `qcMax` per crawl (outOfService; fail-open).
  * Returns the next cursor too; the caller decides whether to save it.
  */
 async function collect(user, criteria, minScore, want, {
   pages = PAGES_PER_STATE, cacheMs = 0, budgetMs = RUN_BUDGET_MS, cursor = null, hash = null, qcMax = QC_MAX_PER_RUN, now = new Date(),
 } = {}) {
   const crawl = (criteria.states || []).map((s) => startCrawl(s, cursor?.states?.[s]));
-  const stats = { scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0, outOfService: 0 };
+  const stats = {
+    scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0,
+    addressMill: 0, linkedInactive: 0, outOfService: 0,
+  };
   const scoring = { now, timezone: user.timezone || null, weights: weightsFor(criteria) };
   const picked = [];
   const seen = new Set();
@@ -394,7 +414,11 @@ async function collect(user, criteria, minScore, want, {
       const verified = shared.kept.length ? await verifyBatch(shared.kept, criteria, stats, { cacheMs }) : [];
       const kept = new Set(verified.map((r) => r.dotNumber));
       for (const rec of shared.kept) if (!kept.has(rec.dotNumber)) handled.add(rec.dotNumber); // authority not active
-      const aged = await mcAgeStep(verified, criteria, { cacheMs, now });
+      // Authenticity: address mills and links to inactive carriers (leadTrust.js), then road activity for the rest.
+      const trusted = await trustStep(verified, criteria, { cacheMs, now });
+      done(trusted.excluded.addressMill, 'addressMill');
+      done(trusted.excluded.linkedInactive, 'linkedInactive');
+      const aged = await mcAgeStep(trusted.kept, criteria, { cacheMs, now });
       done(aged.excluded, 'filtered');
       const insured = await insurerStep(aged.kept, criteria, { cacheMs, now });
       done(insured.excluded, 'filtered');
@@ -477,7 +501,8 @@ export async function previewLeads(user, criteria, minScore = 0, size = 25) {
     if (!(err instanceof AuthorityUnavailableError)) throw err;
     return {
       items: [],
-      scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0, outOfService: 0,
+      scanned: 0, skipped: 0, belowScore: 0, inactiveAuthority: 0, teamClaimed: 0, suppressed: 0, unsafe: 0, filtered: 0, sharedContact: 0,
+      addressMill: 0, linkedInactive: 0, outOfService: 0,
       ...(err.stats || {}),
       exhausted: false,
       note: null,

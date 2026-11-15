@@ -1,4 +1,5 @@
 import { z } from '../../lib/validate.js';
+import { phoneQuality } from './leadTrust.js';
 
 /**
  * Lead filters shared by the lead generator (criteria JSON) and Find carriers (query string), so the two never drift
@@ -10,7 +11,8 @@ import { z } from '../../lib/validate.js';
  *   cargo-based equipment.
  * Page-side: miles per truck, equipment inferred from vehicle counts (hotshot, box truck), free-mail / company email,
  *   and (re-checked) every census-side filter, so a census answer that ignored part of the query never leaks through.
- * Lookups (leadSignals.js): shared contacts, MC age from authority history, insurer of the current BIPD policy.
+ * Lookups (leadSignals.js): shared contacts, MC age from authority history, insurer of the current BIPD policy;
+ *   (leadTrust.js): address mills, links to inactive or revoked carriers, road activity.
  */
 
 export const EQUIPMENT_TYPES = Object.freeze({
@@ -54,6 +56,10 @@ export const leadFilterFields = {
   requireCell: bool(false),
   requireCellOrEmail: bool(false),
   excludeSharedContacts: bool(true),
+  // Authenticity (leadTrust.js): addresses many carriers share (virtual offices, agents), and links to inactive or
+  // revoked carriers (possible reincarnations).
+  excludeAddressMills: bool(true),
+  excludeLinkedInactive: bool(false),
   excludeEmail: z.preprocess((v) => (v === '' || v == null ? undefined : v), z.enum(['none', 'free', 'corporate']).optional()).transform((v) => v ?? 'none'),
   equipment: list(z.enum(Object.keys(EQUIPMENT_TYPES)), 7).transform((v) => v ?? []),
   insurers: list(z.string().max(60), 20).transform((v) => (v ?? []).map((s) => s.trim()).filter(Boolean)),
@@ -95,6 +101,8 @@ export function normalizeLeadFilters(c = {}) {
     requireCell: !!c.requireCell,
     requireCellOrEmail: !!c.requireCellOrEmail,
     excludeSharedContacts: c.excludeSharedContacts !== false,
+    excludeAddressMills: c.excludeAddressMills !== false,
+    excludeLinkedInactive: !!c.excludeLinkedInactive,
     excludeEmail: c.excludeEmail === 'free' || c.excludeEmail === 'corporate' ? c.excludeEmail : 'none',
     equipment: sorted(c.equipment),
     insurers: sorted((c.insurers || []).map((s) => String(s).trim().toLowerCase()).filter(Boolean)),
@@ -205,6 +213,8 @@ export function postFilter(rec, c, now = new Date()) {
     const mpt = milesPerTruck(x, now);
     if (mpt == null || mpt > f.maxMilesPerTruck) return 'filtered';
   }
+  // "Phone required" means a number that can be real (not 555-01xx, not one digit repeated...).
+  if (c.requirePhone && phoneQuality(rec.phone) !== 'ok' && phoneQuality(rec.phone) !== 'toll_free' && phoneQuality(x.cellPhone) !== 'ok') return 'filtered';
   if (f.requireCell && !x.cellPhone) return 'filtered';
   if (f.requireCellOrEmail && !x.cellPhone && !rec.email) return 'filtered';
   if (f.equipment.length && !f.equipment.some((e) => (x.equipment || []).includes(e))) return 'filtered';
@@ -295,7 +305,7 @@ export const PLAYBOOK_RESET = Object.freeze({
   requirePhone: false, requireEmail: false, requireMc: true, activeOnly: true,
   zipPrefixes: [], counties: [], interstateOnly: false, forHireOnly: false, hazmat: 'any', minDrivers: null, maxDrivers: null, minCdlDrivers: null,
   maxMilesPerTruck: null, mcs150WithinMonths: null, excludeRatings: ['U'], mcAgeMinDays: null, mcAgeMaxDays: null, requireCell: false,
-  requireCellOrEmail: false, excludeSharedContacts: true, excludeEmail: 'none', equipment: [], insurers: [], insurerMode: 'include',
+  requireCellOrEmail: false, excludeSharedContacts: true, excludeAddressMills: true, excludeLinkedInactive: false, excludeEmail: 'none', equipment: [], insurers: [], insurerMode: 'include',
 });
 /** Criteria a playbook produces on top of `base` (states and anything outside the filters stay). */
 export function applyPlaybook(key, base = {}) {

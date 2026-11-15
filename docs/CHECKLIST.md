@@ -74,6 +74,7 @@ Legend:
 
 ## Phase 10 — Lead generator
 - [x] Saved lead-generator profiles: states, cargo, fleet size, authority age, contact requirements, minimum lead score, stage and prospect list.
+- [x] Lead authenticity: address mills (virtual offices, registration agents) left out, links to inactive or revoked carriers flagged, roadside inspections show "Verified on the road", fake or toll-free phones and dispatch-service emails scored down (server/src/services/carriers/leadTrust.js).
 - [x] Each run pulls live FMCSA Census records, skips carriers already in the CRM, scores leads 0–100 with reasons, and saves them with a score note and priority.
 - [x] Preview matches without using quota.
 - [x] Plan gating: `monthlyLeadGenLimit`, `maxLeadGenerators` and `leadGenAutoRun` per plan, editable in Admin → Plans. Shown on Pricing and Billing.

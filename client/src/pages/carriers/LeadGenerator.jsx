@@ -27,6 +27,8 @@ const num = (v) => Number(v || 0).toLocaleString('en-US');
 /** Why candidates were left out, besides the CRM, the score and authority (run.exclusions, preview counts). */
 const EXCLUSION_TEXT = [
   ['sharedContact', 'shared contact (likely has a dispatcher)'],
+  ['addressMill', 'shared address (virtual office or agent)'],
+  ['linkedInactive', 'linked to inactive or revoked carriers'],
   ['unsafe', 'unsafe safety rating'],
   ['outOfService', 'out of service'],
   ['filtered', 'outside your filters'],
@@ -209,7 +211,7 @@ function GeneratorEditor({ generator, cargoOptions, entitlements, onClose, playb
         </div>
 
         <fieldset className="space-y-2">
-          <legend className="text-[13px] font-medium">More filters <span className="font-normal text-muted">location, operation, drivers, MC age, safety, contact quality, insurer</span></legend>
+          <legend className="text-[13px] font-medium">More filters <span className="font-normal text-muted">location, operation, drivers, MC age, safety, contact quality, authenticity, insurer</span></legend>
           <LeadFilters value={f.lead} onChange={(lead) => setF((x) => ({ ...x, lead }))} columns={2} idPrefix="lg"
             equipmentOptions={equipmentOptions} insurerSuggestions={insurerSuggestions} />
         </fieldset>

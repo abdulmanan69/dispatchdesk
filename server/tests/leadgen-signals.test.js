@@ -19,7 +19,7 @@ const DAY = 86400000;
 const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
 const ago = (n) => new Date(Date.now() - n * DAY);
 const row = (dot, extra = {}) => ({
-  dot_number: String(dot), legal_name: `CARRIER ${dot} LLC`, phone: `713${String(dot).padStart(7, '0').slice(-7)}`, cell_phone: `832${String(dot).padStart(7, '0').slice(-7)}`,
+  dot_number: String(dot), legal_name: `CARRIER ${dot} LLC`, phone: `713${2000000 + (Number(dot) % 1000000)}`, cell_phone: `832${3000000 + (Number(dot) % 1000000)}`,
   email_address: `owner${dot}@gmail.com`, phy_street: '1 MAIN ST', phy_city: 'HOUSTON', phy_state: 'TX', phy_zip: '77001', phy_cnty: '201',
   power_units: '1', total_drivers: '1', total_cdl: '1', status_code: 'A', add_date: ymd(ago(75)), mcs150_date: ymd(ago(75)), carrier_operation: 'A',
   classdef: 'AUTHORIZED FOR HIRE', hm_ind: 'N', docket1prefix: 'MC', docket1: String(60000000 + Number(dot) % 1000000), crgo_genfreight: 'X', owntract: '1', owntrail: '1',
@@ -341,7 +341,7 @@ describe('find carriers: the same filters, scores and signals', () => {
     const res = await U.agent.get('/api/discovery/search?state=TX&order=score');
     expect(res.body.items.map((i) => i.dotNumber)).toEqual(['7102', '7101']);
     expect(res.body.items[0].score).toBeGreaterThan(res.body.items[1].score);
-    expect(res.body.hiddenReasons).toEqual({ unsafe: 1, filtered: 0, sharedContact: 0 });
+    expect(res.body.hiddenReasons).toEqual({ unsafe: 1, filtered: 0, sharedContact: 0, addressMill: 0, linkedInactive: 0 });
     clearCensusCache();
     mockCensus([weak, strong, unsat]);
     const all = await U.agent.get('/api/discovery/search?state=TX&excludeRatings=none');

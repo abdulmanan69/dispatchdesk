@@ -10,8 +10,14 @@
  * Lead-signal datasets (answered with no rows unless set; `fake.signalsDown` fails them all):
  *   - Motus / legacy authority history (yu5v-wbh6 / 9mw4-x3tu): `motusHistory` / `history` (MC -> array of rows).
  *   - Motus / legacy insurance (c5y8-a4uz / qh9u-swkp): `motusInsurance` / `insurance` (MC -> array of rows).
- *   - Census count(*) grouped by phone or email (az4n-8mr2 with $group): `sharedPhones` / `sharedEmails`
- *     (value -> count). `fake.signalCalls` lists { dataset, values } for each of these requests (values = the in() list).
+ *   - Census counts grouped by phone or email (az4n-8mr2 with $group): `sharedPhones` / `sharedEmails`
+ *     (value -> active count, or { n, r } with r = inactive or revoked carriers). `fake.signalCalls` lists
+ *     { dataset, values } for each of these requests (values = the in() list).
+ *   - Census counts grouped by street (az4n-8mr2, $group phy_street): `sharedAddresses` ("STREET|ZIP5" -> active count
+ *     or { n, r }); answered for every key whose street starts with a requested street at the same ZIP.
+ *     Logged as { dataset: 'sharedAddresses', values: ['STREET|ZIP5', ...] }.
+ *   - MCMIS inspection file (fx4q-ay7w): `inspections` (USDOT -> { n12, n24, last: 'YYYYMMDD' }); logged as
+ *     { dataset: 'inspections', values: [USDOT, ...] } (plain numbers).
  *   - QCMobile carriers/{dot} (needs the fmcsa.webKey setting): `qc` (USDOT -> carrier record; missing = 404).
  *     `fake.qcCalls` lists the USDOT numbers asked, `fake.qcPeak` the most QCMobile calls in flight at once.
  */
@@ -38,7 +44,7 @@ const asArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
 export function licensingFake({
   rows = {}, fallback = ACTIVE_ROW, byDot = {}, motus = {}, motusByDot = {}, motusHistory = {}, history = {}, motusInsurance = {}, insurance = {},
-  sharedPhones = {}, sharedEmails = {}, qc = {},
+  sharedPhones = {}, sharedEmails = {}, sharedAddresses = {}, inspections = {}, qc = {},
 } = {}) {
   const fake = {
     motusHistory: { ...motusHistory },
@@ -47,6 +53,8 @@ export function licensingFake({
     insurance: { ...insurance },
     sharedPhones: { ...sharedPhones },
     sharedEmails: { ...sharedEmails },
+    sharedAddresses: { ...sharedAddresses },
+    inspections: { ...inspections },
     signalsDown: false,
     signalCalls: [],
     qc: { ...qc },
@@ -87,13 +95,31 @@ export function licensingFake({
       if (u.pathname.includes('9mw4-x3tu')) return byDocket('history', fake.history);
       if (u.pathname.includes('c5y8-a4uz')) return byDocket('motusInsurance', fake.motusInsurance);
       if (u.pathname.includes('qh9u-swkp')) return byDocket('insurance', fake.insurance);
+      const counts = (v) => (typeof v === 'object' && v ? { n: String(v.n ?? 0), r: String(v.r ?? 0) } : { n: String(v) });
+      if (u.pathname.includes('az4n-8mr2') && /phy_street/.test(u.searchParams.get('$group') || '')) {
+        const asked = [...where.matchAll(/starts_with\(phy_street,'((?:[^']|'')*)'\) AND starts_with\(phy_zip,'(\d+)'\)/g)].map((m) => [m[1].replace(/''/g, "'"), m[2]]);
+        fake.signalCalls.push({ dataset: 'sharedAddresses', values: asked.map(([st, z]) => `${st}|${z}`) });
+        if (fake.signalsDown) throw new Error('census timeout');
+        const out = [];
+        for (const [key, v] of Object.entries(fake.sharedAddresses)) {
+          const [street, zip] = key.split('|');
+          if (asked.some(([st, z]) => street.startsWith(st) && zip === z)) out.push({ s: street, z: zip, ...counts(v) });
+        }
+        return ok(out);
+      }
+      if (u.pathname.includes('fx4q-ay7w')) {
+        const dots = [...new Set(list(where, 'dot_number').map((d) => d.replace(/^0+/, '')))];
+        fake.signalCalls.push({ dataset: 'inspections', values: dots });
+        if (fake.signalsDown) throw new Error('inspection file timeout');
+        return ok(dots.filter((d) => fake.inspections[d]).map((d) => ({ dot_number: d, n12: String(fake.inspections[d].n12 ?? 0), n24: String(fake.inspections[d].n24 ?? 0), last: fake.inspections[d].last || null })));
+      }
       if (u.pathname.includes('az4n-8mr2') && u.searchParams.get('$group')) {
         const email = /email/.test(u.searchParams.get('$group'));
         const values = /in\(([^)]*)\)/.exec(where)?.[1].split(',').map((x) => x.trim().replace(/^'|'$/g, '')) || [];
         fake.signalCalls.push({ dataset: email ? 'sharedEmails' : 'sharedPhones', values });
         if (fake.signalsDown) throw new Error('census timeout');
         const map = email ? fake.sharedEmails : fake.sharedPhones;
-        return ok(values.filter((v) => map[v]).map((v) => ({ v, n: String(map[v]) })));
+        return ok(values.filter((v) => map[v]).map((v) => ({ v, ...counts(map[v]) })));
       }
       if (u.pathname.includes('6eyk-hxee')) {
         fake.calls.push(dockets);

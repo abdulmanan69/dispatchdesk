@@ -16,7 +16,10 @@ import { SignalChips, TierBadge } from '../../components/carriers/LeadScore.jsx'
 
 const INITIAL = { state: '', city: '', name: '', dot: '', mc: '', minPowerUnits: '', maxPowerUnits: '', authorityAgeMinMonths: '', authorityAgeMaxMonths: '', activeOnly: true, hasMc: true, hasEmail: false, order: 'newest' };
 const LIMIT = 50;
-const HIDDEN_REASONS = [['sharedContact', 'shared contact'], ['unsafe', 'unsafe safety rating'], ['filtered', 'outside the filters']];
+const HIDDEN_REASONS = [
+  ['sharedContact', 'shared contact'], ['addressMill', 'shared address (virtual office or agent)'], ['linkedInactive', 'linked to inactive carriers'],
+  ['unsafe', 'unsafe safety rating'], ['filtered', 'outside the filters'],
+];
 /** "2 shared contact, 1 outside the filters" from the search's hiddenReasons. */
 const hiddenReasonText = (r) => HIDDEN_REASONS.filter(([k]) => r?.[k] > 0).map(([k, t]) => `${r[k]} ${t}`).join(', ');
 

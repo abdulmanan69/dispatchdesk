@@ -23,7 +23,7 @@ describe('lead filter helpers', () => {
     expect(leadFiltersToCriteria(LEAD_FILTER_DEFAULTS)).toEqual({
       zipPrefixes: [], counties: [], interstateOnly: false, forHireOnly: false, hazmat: 'any',
       minDrivers: null, maxDrivers: null, minCdlDrivers: null, maxMilesPerTruck: null, mcAgeMinDays: null, mcAgeMaxDays: null, mcs150WithinMonths: null,
-      excludeRatings: ['U'], requireCell: false, requireCellOrEmail: false, excludeSharedContacts: true, excludeEmail: 'none',
+      excludeRatings: ['U'], requireCell: false, requireCellOrEmail: false, excludeSharedContacts: true, excludeAddressMills: true, excludeLinkedInactive: false, excludeEmail: 'none',
       equipment: [], insurers: [], insurerMode: 'include',
     });
     expect(leadFiltersToQuery(LEAD_FILTER_DEFAULTS)).toEqual({});
@@ -34,7 +34,7 @@ describe('lead filter helpers', () => {
     const criteria = {
       zipPrefixes: ['773', '750'], counties: ['201'], interstateOnly: true, forHireOnly: false, hazmat: 'no',
       minDrivers: 1, maxDrivers: 4, minCdlDrivers: 1, maxMilesPerTruck: 60000, mcAgeMinDays: 30, mcAgeMaxDays: 120, mcs150WithinMonths: 6,
-      excludeRatings: ['C', 'U'], requireCell: true, requireCellOrEmail: false, excludeSharedContacts: false, excludeEmail: 'corporate',
+      excludeRatings: ['C', 'U'], requireCell: true, requireCellOrEmail: false, excludeSharedContacts: false, excludeAddressMills: true, excludeLinkedInactive: false, excludeEmail: 'corporate',
       equipment: ['reefer', 'hotshot'], insurers: ['Progressive'], insurerMode: 'exclude',
     };
     const form = leadFiltersFromCriteria({ ...criteria, states: ['TX'], playbook: 'new_mc_launch' });
@@ -54,6 +54,10 @@ describe('lead filter helpers', () => {
       excludeSharedContacts: 'false', excludeEmail: 'free', equipment: 'reefer,flatbed', insurers: 'Progressive,Canal', insurerMode: 'exclude',
     });
     expect(leadFiltersToQuery({ ...LEAD_FILTER_DEFAULTS, excludeRatings: ['U', 'C'] })).toEqual({ excludeRatings: 'C,U' });
+    // Authenticity: shared addresses are left out by default; links to inactive carriers only when asked.
+    expect(leadFiltersToQuery({ ...LEAD_FILTER_DEFAULTS, excludeAddressMills: false, excludeLinkedInactive: true }))
+      .toEqual({ excludeAddressMills: 'false', excludeLinkedInactive: 'true' });
+    expect(activeLeadFilters({ ...LEAD_FILTER_DEFAULTS, excludeLinkedInactive: true }, 'trust')).toBe(1);
   });
 });
 

@@ -7,6 +7,7 @@ import { day } from './profile.js';
 import {
   DEFAULT_WEIGHTS, EQUIPMENT_TYPES, emailKind, freeMailName, milesPerTruck, normalizeLeadFilters,
 } from './leadFilters.js';
+import { phoneQuality, isDispatchEmail, isAddressMill, linkedInactive } from './leadTrust.js';
 
 /**
  * Lead signals and lead score v2 for dispatch prospects. A great dispatch lead NEEDS a dispatcher now, FITS the
@@ -80,11 +81,14 @@ export function clearLeadSignalCaches() { ageCache.clear(); insurerCache.clear()
 // agent or consultant listed as the contact, so the carrier most likely has a dispatcher already.
 // ---------------------------------------------------------------------------------------------------------------
 
-/** count(*) of active census carriers per value of `expr`, one request; null when the census did not answer. */
+/**
+ * Census carriers per value of `expr`, one request: n = active carriers, r = inactive carriers or ones with a revoked
+ * USDOT number (leadTrust.js "linked inactive"). null when the census did not answer.
+ */
 async function censusCounts(expr, values, cacheMs) {
   const params = {
-    $select: `${expr} as v, count(*) as n`,
-    $where: `status_code='A' AND ${expr} in(${values.map((v) => `'${esc(v)}'`).join(',')})`,
+    $select: `${expr} as v, sum(case(status_code='A',1,true,0)) as n, sum(case(status_code!='A' OR prior_revoke_flag='Y',1,true,0)) as r`,
+    $where: `${expr} in(${values.map((v) => `'${esc(v)}'`).join(',')})`,
     $group: expr,
     $limit: String(values.length + 10),
   };
@@ -96,33 +100,48 @@ async function censusCounts(expr, values, cacheMs) {
 }
 
 /**
- * Carriers sharing each record's phone and email. Returns Map(dotNumber -> { count, by, checked }): count = the most
- * active census carriers sharing its phone or email (itself included), by = 'phone' | 'email' | null, checked = false
- * when a lookup it needed did not answer. Phones and emails go out in batches of at most 200 values, sequentially.
+ * Carriers sharing each record's phone and email. Returns Map(dotNumber -> { count, by, checked, risky, riskyBy }):
+ * count = the most active census carriers sharing its phone or email (itself included), by = 'phone' | 'email' | null,
+ * risky = the most inactive or revoked carriers sharing them (itself not counted), riskyBy = 'phone' | 'email' | null,
+ * checked = false when a lookup it needed did not answer. Phones and emails go out in batches of at most 200 values,
+ * sequentially.
  */
 export async function sharedContactCounts(recs, { cacheMs = 0 } = {}) {
   const phoneOf = (r) => { const p = normPhone(r.phone); return p && p.length === 10 ? p : null; };
   const emailOf = (r) => { const e = String(r.email || '').trim().toLowerCase(); return e.includes('@') ? e : null; };
-  const phones = new Map(); // value -> n | null (no answer)
+  const phones = new Map(); // value -> { n, r } | null (no answer)
   const emails = new Map();
-  for (const part of chunks(uniq(recs.map(phoneOf).filter(Boolean)))) {
-    const rows = await censusCounts('phone', part, cacheMs);
-    for (const p of part) phones.set(p, rows ? 0 : null);
-    for (const r of rows || []) if (phones.has(String(r.v)) && Number.isFinite(Number(r.n))) phones.set(String(r.v), Number(r.n));
-  }
-  for (const part of chunks(uniq(recs.map(emailOf).filter(Boolean)))) {
-    const rows = await censusCounts('lower(email_address)', part, cacheMs);
-    for (const e of part) emails.set(e, rows ? 0 : null);
-    for (const r of rows || []) if (emails.has(String(r.v)) && Number.isFinite(Number(r.n))) emails.set(String(r.v), Number(r.n));
-  }
+  const fill = (map, part, rows) => {
+    for (const v of part) map.set(v, rows ? { n: 0, r: 0 } : null);
+    for (const row of rows || []) {
+      const v = String(row.v);
+      if (!map.has(v) || !Number.isFinite(Number(row.n))) continue;
+      map.set(v, { n: Number(row.n), r: Number.isFinite(Number(row.r)) ? Number(row.r) : 0 });
+    }
+  };
+  for (const part of chunks(uniq(recs.map(phoneOf).filter(Boolean)))) fill(phones, part, await censusCounts('phone', part, cacheMs));
+  for (const part of chunks(uniq(recs.map(emailOf).filter(Boolean)))) fill(emails, part, await censusCounts('lower(email_address)', part, cacheMs));
   const out = new Map();
   for (const r of recs) {
     const p = phoneOf(r);
     const e = emailOf(r);
-    const pn = p ? phones.get(p) : 0;
-    const en = e ? emails.get(e) : 0;
-    const count = Math.max(pn || 0, en || 0);
-    out.set(r.dotNumber, { count, by: count >= SHARED_THRESHOLD ? ((pn || 0) >= (en || 0) ? 'phone' : 'email') : null, checked: pn !== null && en !== null });
+    const ph = p ? phones.get(p) : { n: 0, r: 0 };
+    const em = e ? emails.get(e) : { n: 0, r: 0 };
+    const pn = ph?.n || 0;
+    const en = em?.n || 0;
+    const count = Math.max(pn, en);
+    // A carrier whose own USDOT was revoked before counts itself in r.
+    const self = r._extra?.facts?.priorRevoke ? 1 : 0;
+    const pr = Math.max(0, (ph?.r || 0) - self);
+    const er = Math.max(0, (em?.r || 0) - self);
+    const risky = Math.max(pr, er);
+    out.set(r.dotNumber, {
+      count,
+      by: count >= SHARED_THRESHOLD ? (pn >= en ? 'phone' : 'email') : null,
+      checked: ph !== null && em !== null,
+      risky,
+      riskyBy: risky > 0 ? (pr >= er ? 'phone' : 'email') : null,
+    });
   }
   return out;
 }
@@ -408,6 +427,8 @@ export function scoreLead(rec, { now = new Date(), timezone = null, weights = DE
     if (lead.shared.count >= SHARED_THRESHOLD) add('need', 'shared_contact', `Shared contact · ${lead.shared.count} carriers`, -20);
     else if (!lead.shared.checked) add('need', 'shared_unchecked', 'Shared-contact check unavailable', 0);
   }
+  // "dispatch@…" or a dispatching-service domain: someone already dispatches for them.
+  if (rec.email && isDispatchEmail(rec.email)) add('need', 'dispatch_email', 'Dispatch email · may already have a dispatcher', -12);
 
   // Fit
   const pu = x.powerUnits ?? rec.fleetSize ?? null;
@@ -425,10 +446,18 @@ export function scoreLead(rec, { now = new Date(), timezone = null, weights = DE
   if (x.hazmat) add('fit', 'hazmat', 'Hazmat', 0);
   if (timezone && rec.timezone && rec.timezone === timezone) add('fit', 'your_time_zone', 'Your time zone', 3);
 
-  // Reachability
-  const phone = normPhone(rec.phone);
-  if (x.cellPhone) add('reach', 'cell_phone', 'Cell phone', 14);
-  else if (phone) add('reach', 'phone', 'Phone', 8);
+  // Reachability: only numbers that can be real count (phoneQuality in leadTrust.js).
+  const phoneQ = phoneQuality(rec.phone);
+  const cellQ = phoneQuality(x.cellPhone);
+  if (cellQ === 'ok') add('reach', 'cell_phone', 'Cell phone', 14);
+  else if (phoneQ === 'ok') add('reach', 'phone', 'Phone', 8);
+  else if (phoneQ === 'toll_free' || cellQ === 'toll_free') add('reach', 'toll_free', 'Toll-free number · office or answering service', 3, 'warn');
+  if ((phoneQ === 'invalid' || cellQ === 'invalid') && cellQ !== 'ok' && phoneQ !== 'ok') add('reach', 'phone_invalid', 'Phone number looks invalid', 0, 'warn');
+  if (x.mcs150Date) {
+    const years = (now - new Date(`${x.mcs150Date}T00:00:00Z`)) / (365.25 * DAY);
+    // FMCSA wants the MCS-150 updated every two years; older contact details are often out of date.
+    if (years > 2.1) add('reach', 'mcs150_stale', `MCS-150 last updated ${x.mcs150Date.slice(0, 4)} · contact may be out of date`, -3, 'warn');
+  }
   if (rec.email) {
     add('reach', 'email', 'Email', 5);
     if (emailKind(rec.email) === 'free') add('reach', 'free_mail', `${freeMailName(rec.email)} · owner-run`, 2);
@@ -465,6 +494,28 @@ export function scoreLead(rec, { now = new Date(), timezone = null, weights = DE
   if (!optimistic && lead.insurer) {
     if (lead.insurer.names?.length) add('quality', 'insurer', `Insurer: ${titleCase(lead.insurer.names[0])}`, 0);
     else if (lead.insurer.checked === false) add('quality', 'insurer_unchecked', 'Insurer not checked', 0);
+  }
+
+  // Authenticity (leadTrust.js): a real carrier running its own trucks from its own address.
+  if (!optimistic) {
+    const addr = lead.address;
+    if (addr?.checked && isAddressMill(addr)) {
+      add('quality', 'address_mill', `Shared address · ${Math.max(addr.exact, addr.base)} carriers (virtual office or agent)`, -10);
+    } else if (addr && !addr.checked) add('quality', 'address_unchecked', 'Address check unavailable', 0);
+    const linked = linkedInactive(rec);
+    if (linked.count > 0) add('quality', 'linked_inactive', `Linked to ${plural(linked.count, 'inactive or revoked carrier')} by ${linked.by.join(' and ')}`, -6, 'warn');
+    const act = lead.activity;
+    if (act?.checked) {
+      if (act.n12 > 0) add('quality', 'on_the_road', `Verified on the road · ${plural(act.n12, 'inspection')} in 12 mo`, 0, 'good');
+      else if (act.n24 > 0) add('quality', 'on_the_road', `Verified on the road · ${plural(act.n24, 'inspection')} in 2 years`, 0, 'good');
+      else if (age && !age.estimated && age.days > 548) add('quality', 'no_road_activity', 'No roadside inspections in 2 years', -4, 'warn');
+    } else if (act) add('quality', 'activity_unchecked', 'Road activity not checked', 0);
+    // Every identity check answered and none raised a flag.
+    const reachable = cellQ === 'ok' || phoneQ === 'ok';
+    if (addr?.checked && !isAddressMill(addr) && lead.shared?.checked && lead.shared.count < SHARED_THRESHOLD && linked.count === 0 && reachable
+      && !(rec.email && isDispatchEmail(rec.email))) {
+      add('quality', 'identity_ok', 'Identity checks passed', 0, 'good');
+    }
   }
 
   // Weights: a playbook moves weight between the groups; each signal's points scale with its group.

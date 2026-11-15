@@ -41,7 +41,7 @@ describe('lead generator', () => {
 
   it('scores leads from real fields with reasons (lead score v2: details in leadSignals.test.js)', () => {
     const now = new Date('2026-11-13T12:00:00Z');
-    const s = scoreLead({ phone: '6145550101', email: 'owner@gmail.com', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date('2026-10-01T00:00:00Z'), fleetSize: 3, carrierOperation: 'Interstate' }, now);
+    const s = scoreLead({ phone: '6145552101', email: 'owner@gmail.com', mcNumber: '1', authorityStatus: 'active', authorityDate: new Date('2026-10-01T00:00:00Z'), fleetSize: 3, carrierOperation: 'Interstate' }, now);
     // Need 20 (new MC, estimated from the registration date) + Fit 17 + Reach 15 + Quality 8.
     expect(s).toMatchObject({ score: 60, tier: 'B' });
     expect(s.reasons).toEqual(expect.arrayContaining(['New MC · ~43 days (est.)', 'Owner-operator · 3 trucks', 'Interstate for-hire', 'Phone', 'Email', 'Gmail · owner-run', 'Authority active · insurance on file']));
@@ -107,12 +107,13 @@ describe('lead generator', () => {
   });
 
   it('runs: creates scored, de-duplicated leads, fills the list and counts usage', async () => {
-    // existing carrier with DOT 2 must be skipped; DOT 4 has no contact data and falls below minScore 50
+    // existing carrier with DOT 2 must be skipped; DOT 4 has no phone, so "phone required" leaves it out (filtered)
     await A.agent.post('/api/carriers').send({ companyName: 'Already have', dotNumber: '2' });
     mockCensus([row(1), row(2), row(3), row(4, { phone: undefined, email_address: undefined, docket1prefix: undefined, add_date: '20000101', power_units: '400' }), row(5), row(6)]);
     const res = await A.agent.post(`/api/lead-generators/${gen.id}/run`);
     expect(res.status).toBe(200);
-    expect(res.body.run).toMatchObject({ created: 3, skipped: 1, belowScore: 1, status: 'ok' });
+    expect(res.body.run).toMatchObject({ created: 3, skipped: 1, belowScore: 0, status: 'ok' });
+    expect(res.body.run.exclusions.filtered).toBe(1);
     expect(res.body.carriers.map((c) => c.dotNumber).sort()).toEqual(['1', '3', '5']);
     const c = await prisma.carrier.findFirst({ where: { ownerId: A.user.id, dotNumber: '1' }, include: { notes: true } });
     expect(c.source).toBe('lead_generator');

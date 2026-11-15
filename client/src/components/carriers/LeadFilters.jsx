@@ -19,11 +19,12 @@ export const LEAD_FILTER_DEFAULTS = Object.freeze({
   minDrivers: '', maxDrivers: '', minCdlDrivers: '', maxMilesPerTruck: '', equipment: [],
   mcAgeMinDays: '', mcAgeMaxDays: '', mcs150WithinMonths: '', excludeRatings: ['U'],
   requireCell: false, requireCellOrEmail: false, excludeSharedContacts: true, excludeEmail: 'none',
+  excludeAddressMills: true, excludeLinkedInactive: false,
   insurers: [], insurerMode: 'include',
 });
 
 const NUMBER_KEYS = ['minDrivers', 'maxDrivers', 'minCdlDrivers', 'maxMilesPerTruck', 'mcAgeMinDays', 'mcAgeMaxDays', 'mcs150WithinMonths'];
-const BOOL_KEYS = ['interstateOnly', 'forHireOnly', 'requireCell', 'requireCellOrEmail', 'excludeSharedContacts'];
+const BOOL_KEYS = ['interstateOnly', 'forHireOnly', 'requireCell', 'requireCellOrEmail', 'excludeSharedContacts', 'excludeAddressMills', 'excludeLinkedInactive'];
 const text = (v) => (v == null ? '' : String(v));
 const listText = (v) => (Array.isArray(v) ? v.join(', ') : text(v));
 const splitList = (v) => String(v || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
@@ -59,6 +60,8 @@ export function leadFiltersToCriteria(f = LEAD_FILTER_DEFAULTS) {
     requireCell: !!f.requireCell,
     requireCellOrEmail: !!f.requireCellOrEmail,
     excludeSharedContacts: f.excludeSharedContacts !== false,
+    excludeAddressMills: f.excludeAddressMills !== false,
+    excludeLinkedInactive: !!f.excludeLinkedInactive,
     excludeEmail: f.excludeEmail || 'none',
     equipment: [...(f.equipment || [])],
     insurers: [...(f.insurers || [])],
@@ -77,6 +80,8 @@ export function leadFiltersToQuery(f = LEAD_FILTER_DEFAULTS) {
   if (c.counties.length) q.counties = c.counties.join(',');
   for (const k of ['interstateOnly', 'forHireOnly', 'requireCell', 'requireCellOrEmail']) if (c[k]) q[k] = 'true';
   if (!c.excludeSharedContacts) q.excludeSharedContacts = 'false';
+  if (!c.excludeAddressMills) q.excludeAddressMills = 'false';
+  if (c.excludeLinkedInactive) q.excludeLinkedInactive = 'true';
   if (c.hazmat !== 'any') q.hazmat = c.hazmat;
   for (const k of NUMBER_KEYS) if (c[k] != null) q[k] = String(c[k]);
   const ratings = c.excludeRatings.join(',');
@@ -97,6 +102,7 @@ const GROUP_KEYS = {
   size: ['minDrivers', 'maxDrivers', 'minCdlDrivers', 'maxMilesPerTruck', 'equipment'],
   safety: ['mcAgeMinDays', 'mcAgeMaxDays', 'mcs150WithinMonths', 'excludeRatings'],
   contact: ['requireCell', 'requireCellOrEmail', 'excludeSharedContacts', 'excludeEmail'],
+  trust: ['excludeAddressMills', 'excludeLinkedInactive'],
   insurer: ['insurers'],
 };
 const changed = (f, k) => JSON.stringify(f[k]) !== JSON.stringify(LEAD_FILTER_DEFAULTS[k]);
@@ -260,6 +266,15 @@ export default function LeadFilters({ value, onChange, equipmentOptions, insurer
             <option value="corporate">Leave out company email domains</option>
           </Select>
         </Field>
+      </Group>
+
+      <Group id={`${idPrefix}-trust`} title="Authenticity" active={activeLeadFilters(f, 'trust')}
+        hint="Checks that a lead is a real carrier running its own trucks, from public FMCSA data. Every lead also shows whether it was inspected on the road recently.">
+        <div className="flex flex-col gap-1.5">
+          <Checkbox label="Leave out shared addresses (virtual offices, registration agents)" checked={f.excludeAddressMills} onChange={set('excludeAddressMills')} />
+          <Checkbox label="Leave out carriers linked to inactive or revoked carriers" checked={f.excludeLinkedInactive} onChange={set('excludeLinkedInactive')} />
+        </div>
+        <p className="text-xs text-muted">A street address with 5 or more carriers on the same suite (or 25 at the building) is usually an agent or virtual office, not the owner's yard. A phone, email or address shared with an inactive or revoked carrier can mean a carrier that came back under a new number; it can also be a family business, so it only lowers the score unless you leave them out.</p>
       </Group>
 
       <Group id={`${idPrefix}-insurer`} title="Insurer" active={activeLeadFilters(f, 'insurer')}
