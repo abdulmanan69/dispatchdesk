@@ -52,7 +52,9 @@ function SettingInput({ s, value, onChange, id }) {
   }
   const numeric = NUMERIC[s.key];
   return <Input id={id} type={s.secret ? 'password' : numeric ? 'number' : 'text'} inputMode={numeric ? 'numeric' : undefined} min={numeric?.min} max={numeric?.max} step={numeric ? 1 : undefined}
-    autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)}
+    // Chrome ignores "off" on password fields and fills the admin's saved login into SMTP user/password;
+    // "new-password" stops that, and data-*-ignore covers common password managers.
+    autoComplete={s.secret ? 'new-password' : 'off'} data-1p-ignore="" data-lpignore="true" value={value} onChange={(e) => onChange(e.target.value)}
     placeholder={s.secret ? (s.isSet ? `${s.preview} — leave blank to keep` : 'Not set') : ''} />;
 }
 
