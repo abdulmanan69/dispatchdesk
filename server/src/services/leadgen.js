@@ -210,20 +210,33 @@ function censusFilters(c, state, now = new Date()) {
 
 const lower = (e) => String(e || '').trim().toLowerCase();
 
+/** Values per `in` list in one query: well under SQLite's 999 bound parameters, with room for the other conditions. */
+export const IN_SLICE = 400;
+/** Run `query` over `values` in slices of IN_SLICE, one after another, and join the rows. */
+async function inSlices(values, query) {
+  const out = [];
+  for (let i = 0; i < values.length; i += IN_SLICE) out.push(...await query(values.slice(i, i + IN_SLICE)));
+  return out;
+}
+
 /**
  * What de-duplication needs for one page: the user's own carriers (USDOT / MC), teammates' carriers (collision guard),
  * phones on the user's do-not-call carriers and addresses on the user's email suppression list.
  */
-async function dedupeKeys(user, recs) {
+export async function dedupeKeys(user, recs) {
   const dots = [...new Set(recs.map((r) => r.dotNumber).filter(Boolean))];
   const mcs = [...new Set(recs.map((r) => r.mcNumber).filter(Boolean))];
   const phones = [...new Set(recs.map((r) => normPhone(r.phone)).filter(Boolean))];
   const emails = [...new Set(recs.map((r) => lower(r.email)).filter(Boolean))];
-  const [rows, dnc, suppressed] = await Promise.all([
-    prisma.carrier.findMany({ where: { ownerId: user.id, OR: [{ dotNumber: { in: dots } }, { mcNumber: { in: mcs } }] }, select: { dotNumber: true, mcNumber: true } }),
-    phones.length ? prisma.carrier.findMany({ where: { ownerId: user.id, doNotCall: true, phone: { in: phones } }, select: { phone: true } }) : [],
-    emails.length ? prisma.emailSuppression.findMany({ where: { ownerId: user.id, email: { in: emails } }, select: { email: true } }) : [],
+  // A page holds 200 rows per state, so a many-state run can carry thousands of numbers: each lookup goes out in
+  // slices small enough for the database's bound-parameter limit (SQLite: 999 per statement).
+  const [byDot, byMc, dnc, suppressed] = await Promise.all([
+    inSlices(dots, (part) => prisma.carrier.findMany({ where: { ownerId: user.id, dotNumber: { in: part } }, select: { dotNumber: true, mcNumber: true } })),
+    inSlices(mcs, (part) => prisma.carrier.findMany({ where: { ownerId: user.id, mcNumber: { in: part } }, select: { dotNumber: true, mcNumber: true } })),
+    inSlices(phones, (part) => prisma.carrier.findMany({ where: { ownerId: user.id, doNotCall: true, phone: { in: part } }, select: { phone: true } })),
+    inSlices(emails, (part) => prisma.emailSuppression.findMany({ where: { ownerId: user.id, email: { in: part } }, select: { email: true } })),
   ]);
+  const rows = [...byDot, ...byMc];
   // teamClaims takes 500 numbers per call.
   const team = new Map();
   if (user.teamMembership) {
