@@ -160,7 +160,9 @@ function Chat({ status }) {
       </Card>
 
       <Card bodyClass="flex h-full flex-col p-0" className="flex flex-col">
-        <div className="flex-1 space-y-4 overflow-y-auto p-4 lg:max-h-[64vh]">
+        {/* Height leaves room under the composer for the floating AI/Map dock (bottom right, about 62px), which
+            otherwise covered the Send button at 1440x900. 24rem = everything above the list plus the composer and dock. */}
+        <div className="flex-1 space-y-4 overflow-y-auto p-4 lg:max-h-[max(18rem,calc(100dvh-24rem))]">
           {activeId && conv.isLoading && <Loading />}
           {!messages.length && !pending && (
             <div className="py-6">
