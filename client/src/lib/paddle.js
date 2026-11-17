@@ -41,6 +41,7 @@ export async function openPaddleCheckout(checkout, { onClose } = {}) {
     items: checkout.items,
     customer: checkout.customer,
     customData: checkout.customData,
-    settings: { displayMode: 'overlay', successUrl: checkout.successUrl, allowLogout: false, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light' },
+    // One-page: email, card and the Apple Pay / Google Pay buttons on one screen (fewer steps than multi-page).
+    settings: { displayMode: 'overlay', variant: 'one-page', successUrl: checkout.successUrl, allowLogout: false, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light' },
   });
 }
