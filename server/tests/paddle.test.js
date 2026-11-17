@@ -31,6 +31,7 @@ function fakeFetch(url, opts = {}) {
   if (u.pathname === '/products' && opts.method === 'GET') return reply(200, []);
   if (u.pathname === '/products' && opts.method === 'POST') return reply(201, { id: `pro_${body.custom_data.dispatchdesk_plan}`, ...body });
   if (u.pathname === '/prices' && opts.method === 'GET') return reply(200, []);
+  if (opts.method === 'GET' && m(/^\/prices\/(.+)$/)) return m(/^\/prices\/pri_sandbox_old$/) ? reply(404, { code: 'entity_not_found', detail: 'price not found' }) : reply(200, { id: m(/^\/prices\/(.+)$/)[1] });
   if (u.pathname === '/prices' && opts.method === 'POST') return reply(201, { id: `pri_${body.custom_data.dispatchdesk_plan}`, ...body });
   if (u.pathname === '/notification-settings' && opts.method === 'GET') return reply(200, []);
   if (u.pathname === '/notification-settings' && opts.method === 'POST') return reply(201, { id: 'ntfset_1', endpoint_secret_key: 'pdl_ntfset_created', ...body });
@@ -156,6 +157,12 @@ describe('selling plans through Paddle', () => {
       expect(priceCall.body).toMatchObject({ unit_price: { amount: String(pro.priceCents), currency_code: 'USD' }, billing_cycle: { interval: pro.interval === 'year' ? 'year' : 'month', frequency: 1 } });
       const hook = paddle.calls.find((c) => c.method === 'POST' && c.path === '/notification-settings');
       expect(hook.body.subscribed_events).toEqual(expect.arrayContaining(['subscription.created', 'transaction.completed']));
+
+      // Moving from sandbox to live: a saved price the account does not know is replaced; a known one is kept.
+      await prisma.plan.update({ where: { key: 'pro' }, data: { paddlePriceId: 'pri_sandbox_old' } });
+      const again = await provisionPaddle(null);
+      expect(again.plans.find((p) => p.plan === 'pro')).toMatchObject({ action: expect.stringContaining('price created'), priceId: 'pri_pro' });
+      expect(again.plans.find((p) => p.plan === 'annual')).toMatchObject({ action: 'kept' });
     } finally {
       config.appUrl = appUrl;
     }

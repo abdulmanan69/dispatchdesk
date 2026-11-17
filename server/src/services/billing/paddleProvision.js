@@ -42,7 +42,15 @@ export async function provisionPaddle(userId) {
 
   const plans = await prisma.plan.findMany({ where: { active: true, key: { not: 'free' } }, orderBy: { sortOrder: 'asc' } });
   for (const plan of plans) {
-    if (plan.paddlePriceId) { report.plans.push({ plan: plan.key, action: 'kept', priceId: plan.paddlePriceId }); continue; }
+    if (plan.paddlePriceId) {
+      // A price from the other environment (sandbox → live) does not exist in this account: make a new one.
+      const exists = await paddleApi('GET', `/prices/${encodeURIComponent(plan.paddlePriceId)}`).then(() => true, (err) => {
+        if (err.status === 404) return false;
+        throw err;
+      });
+      if (exists) { report.plans.push({ plan: plan.key, action: 'kept', priceId: plan.paddlePriceId }); continue; }
+      plan.paddlePriceId = null;
+    }
     if (!plan.priceCents) { report.plans.push({ plan: plan.key, action: 'skipped', reason: 'price is 0' }); continue; }
     if (plan.basePriceCents) { report.plans.push({ plan: plan.key, action: 'skipped', reason: 'plans with a base fee are not sold through Paddle yet' }); continue; }
     let product = await findProduct(plan.key);
