@@ -67,10 +67,15 @@ async function paymentSetup() {
 }
 
 /** With the free trial on, the Free plan is shown as the trial: the trial plan's features for a number of days. */
-const trialCard = (free, trialPlan, days) => ({
-  ...publicPlan(free), name: 'Free trial', description: `Every ${trialPlan.name} feature free for ${days} days. No card needed.`,
-  freeUnit: `for ${days} days`, features: planFeatures(trialPlan),
-});
+const trialCard = (free, trialPlan, days) => {
+  // During the trial the account has the trial plan's limits, so the card and the comparison table show those.
+  const t = publicPlan(trialPlan);
+  return {
+    ...publicPlan(free), name: 'Free trial', description: `Every ${trialPlan.name} feature free for ${days} days. No card needed.`,
+    freeUnit: `for ${days} days`, features: t.features, limits: t.limits,
+    leadGenAutoRun: t.leadGenAutoRun, advancedReports: t.advancedReports, trainingIncluded: t.trainingIncluded, teamFeatures: t.teamFeatures,
+  };
+};
 
 r.get('/plans', ah(async (req, res) => {
   const [plans, t, pay] = await Promise.all([prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }), trialSettings(), paymentSetup()]);

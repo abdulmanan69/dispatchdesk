@@ -28,7 +28,12 @@ describe('free trial, then read-only', () => {
     expect(billing.body.trial).toMatchObject({ active: true });
     expect((await A.agent.post('/api/carriers').send({ companyName: 'Trial Freight LLC' })).status).toBe(201);
     const plans = await A.agent.get('/api/billing/plans');
-    expect(plans.body.plans.find((p) => p.key === 'free')).toMatchObject({ name: 'Free trial', freeUnit: 'for 14 days' });
+    const card = plans.body.plans.find((p) => p.key === 'free');
+    const pro = plans.body.plans.find((p) => p.key === 'pro');
+    expect(card).toMatchObject({ name: 'Free trial', freeUnit: 'for 14 days', priceCents: 0, purchasable: false });
+    // The comparison table reads limits: the trial column shows what the trial actually gives (the Pro limits).
+    expect(card.limits).toEqual(pro.limits);
+    expect(card.advancedReports).toBe(pro.advancedReports);
   });
 
   it('locks writes after the trial but keeps reading, billing and codes working', async () => {
