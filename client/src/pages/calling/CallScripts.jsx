@@ -58,7 +58,7 @@ export default function CallScripts() {
   const startNew = () => { setSelectedId('new'); setForm(EMPTY); setView('edit'); };
   const duplicate = () => { setSelectedId('new'); setForm({ ...form, id: null, name: `${form.name} (copy)` }); };
   const sample = {
-    company: 'Red River Transport LLC', first_name: 'Marcus', contact_name: 'Marcus Hill', mc: '1184420', dot: '3561982', city: 'Shreveport', state: 'LA', equipment: 'dry van',
+    company: 'Ferrowyn Transport LLC', first_name: 'Marcus', contact_name: 'Marcus Hill', mc: '000000', dot: '0000000', city: 'Shreveport', state: 'LA', equipment: 'dry van',
     my_name: user?.name, my_first_name: user?.name?.split(' ')[0], my_phone: user?.phone,
   };
   const dirty = form.id ? (() => { const s = items.find((x) => x.id === form.id); return s && (s.name !== form.name || s.body !== form.body || s.category !== form.category); })() : !!(form.name || form.body);
@@ -137,7 +137,7 @@ export default function CallScripts() {
                 </div>
               ) : (
                 <div>
-                  <p className="mb-3 text-xs text-muted">Preview with sample data (Red River Transport LLC) and your own name. In the power dialer the fields fill in from the carrier you are calling.</p>
+                  <p className="mb-3 text-xs text-muted">Preview with sample data (Ferrowyn Transport LLC) and your own name. In the power dialer the fields fill in from the carrier you are calling.</p>
                   <Markdown text={fillScript(form.body, sample)} className="max-w-2xl" />
                 </div>
               )}

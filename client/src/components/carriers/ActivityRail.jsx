@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronRight, Mail, MessageSquare, Phone, StickyNote, ArrowRightLeft, Activity as ActivityIcon } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { relative, dateTime } from '../../lib/format.js';
+import { relative, dateTime, plural } from '../../lib/format.js';
 import { Button, Spinner, cx } from '../ui.jsx';
 
 const FILTERS = [
@@ -79,7 +79,7 @@ export default function ActivityRail({ carrier, canWrite, onLogCall, onEmail, on
     <section className="rounded-xl border border-line bg-surface">
       <header className="flex flex-wrap items-baseline justify-between gap-2 px-4 pb-2 pt-3">
         <h2 className="text-sm font-medium">Activity history</h2>
-        <span className="text-xs text-muted tabular">{counts.calls} calls · {counts.emails} emails · {counts.texts} texts</span>
+        <span className="text-xs text-muted tabular">{plural(counts.calls, 'call')} · {plural(counts.emails, 'email')} · {plural(counts.texts, 'text')}</span>
       </header>
       <div className="flex flex-wrap gap-1.5 px-4 pb-3" role="tablist" aria-label="Activity type">
         {FILTERS.map((f) => (

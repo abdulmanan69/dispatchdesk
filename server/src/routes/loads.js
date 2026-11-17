@@ -331,7 +331,7 @@ async function rpmPageIds(ownerIds, q) {
 }
 
 /** Which paperwork each load on the page has: one groupBy over the page's ids. */
-async function docBadges(ids) {
+export async function docBadges(ids) {
   if (!ids.length) return new Map();
   const rows = await prisma.document.groupBy({ by: ['loadId', 'type'], where: { loadId: { in: ids }, type: { in: DOC_BADGES } }, _count: { _all: true } });
   const out = new Map();

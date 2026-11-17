@@ -32,10 +32,11 @@ export function SectionHead({ eyebrow, hue = 'teal', title, sub, center }) {
 /* ------------------------------------------------------------------ */
 
 const QUEUE = [
-  { name: 'Red River Transport LLC', meta: 'MC 1184420 · Shreveport, LA · 4 trucks', tz: 'America/Chicago', step: 'Call · step 2 of 4', hue: 'blue', stage: 'Sequence' },
-  { name: 'Blue Ridge Reefer Co', meta: 'MC 1093317 · Roanoke, VA · 2 trucks', tz: 'America/New_York', step: 'Follow-up due', hue: 'amber', stage: 'Prospecting' },
-  { name: 'Sunbelt Flatbed Inc', meta: 'MC 1240085 · Mesa, AZ · 7 trucks', tz: 'America/Phoenix', step: 'Rate talk', hue: 'purple', stage: 'Opportunity' },
-  { name: 'Lone Pine Hauling', meta: 'MC 1312906 · Missoula, MT · 1 truck', tz: 'America/Denver', step: 'First call', hue: 'green', stage: 'New lead' },
+  // Fictional carriers: made-up names, MC 000000 (never issued) and 555-01xx phone numbers.
+  { name: 'Ferrowyn Transport LLC', meta: 'MC 000000 · Shreveport, LA · 4 trucks', tz: 'America/Chicago', step: 'Call · step 2 of 4', hue: 'blue', stage: 'Sequence' },
+  { name: 'Coldhollow Reefer Co', meta: 'MC 000000 · Roanoke, VA · 2 trucks', tz: 'America/New_York', step: 'Follow-up due', hue: 'amber', stage: 'Prospecting' },
+  { name: 'Saguarine Flatbed Inc', meta: 'MC 000000 · Mesa, AZ · 7 trucks', tz: 'America/Phoenix', step: 'Rate talk', hue: 'purple', stage: 'Opportunity' },
+  { name: 'Larchwick Hauling', meta: 'MC 000000 · Missoula, MT · 1 truck', tz: 'America/Denver', step: 'First call', hue: 'green', stage: 'New lead' },
 ];
 const OUTCOMES = [['1', 'No answer', 'gray'], ['2', 'Voicemail', 'blue'], ['3', 'Interested', 'green'], ['4', 'Call back', 'amber'], ['5', 'Not interested', 'red'], ['6', 'Signed', 'teal']];
 
@@ -308,7 +309,7 @@ export function ExtensionPreview() {
         <div className="border-r border-line p-3">
           <p className="font-semibold text-fg">Power dialer</p>
           <div className="mt-2 space-y-1.5">
-            {['Red River Transport', 'Blue Ridge Reefer', 'Sunbelt Flatbed'].map((n, i) => (
+            {['Ferrowyn Transport', 'Coldhollow Reefer', 'Saguarine Flatbed'].map((n, i) => (
               <div key={n} className={cx('truncate rounded-md px-2 py-1.5', i === 0 ? 'bg-c-blue-soft text-c-blue' : 'bg-surface-2 text-fg-2')}>{n}</div>
             ))}
           </div>

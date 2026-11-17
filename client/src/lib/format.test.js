@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { money, dollars, num, date, dateTime, relative, nf, dtf, zoneClock } from './format.js';
+import { money, dollars, num, plural, date, dateTime, relative, nf, dtf, zoneClock } from './format.js';
 
 describe('format', () => {
   it('formats money and numbers', () => {
@@ -8,6 +8,13 @@ describe('format', () => {
     expect(money(null)).toBe('—');
     expect(dollars(2.5)).toBe('$2.50');
     expect(num(1234.567, 1)).toBe('1,234.6');
+  });
+
+  it('pairs a count with the right noun', () => {
+    expect(plural(1, 'call')).toBe('1 call');
+    expect(plural(0, 'call')).toBe('0 calls');
+    expect(plural(1234, 'carrier')).toBe('1,234 carriers');
+    expect(plural(2, 'carrier has', 'carriers have')).toBe('2 carriers have');
   });
 
   it('reuses one formatter per set of options', () => {

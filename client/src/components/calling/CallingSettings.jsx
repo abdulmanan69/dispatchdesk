@@ -23,7 +23,8 @@ export default function CallingSettings({ compact = false, onSaved }) {
   }, [settings.data]);
 
   const save = useApiMutation((body) => api.put('/api/telephony/settings', body), {
-    success: 'Calling settings saved', invalidate: [['telephony']], onSuccess: (d) => { setTest(null); onSaved?.(d.settings); },
+    // ['gs']: the dashboard's Getting started checklist re-checks its "Choose how you call" step.
+    success: 'Calling settings saved', invalidate: [['telephony'], ['gs']], onSuccess: (d) => { setTest(null); onSaved?.(d.settings); },
   });
   const runTest = useApiMutation(() => api.post('/api/telephony/settings/test'), { onSuccess: setTest });
 

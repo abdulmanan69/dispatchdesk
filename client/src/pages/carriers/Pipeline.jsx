@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid, Table2, MoreHorizontal } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
-import { money, relative } from '../../lib/format.js';
+import { money, plural, relative } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Button, Card, Checkbox, DataTable, ErrorState, Input, Loading, PageHeader, Select, cx } from '../../components/ui.jsx';
 import { PhoneLink, STAGES, StageBadge, TagList, equipmentLabel } from '../../components/carriers/shared.jsx';
@@ -67,7 +67,7 @@ export default function Pipeline() {
                       <Link to={`/app/carriers/${c.id}`} className="font-medium leading-snug hover:underline">{c.companyName}</Link>
                       <MoveMenu carrier={c} current={col.key} onMove={(stage) => move.mutate({ id: c.id, stage })} />
                     </div>
-                    <div className="mt-1 text-xs text-muted tabular">{[c.mcNumber && `MC ${c.mcNumber}`, c.state, c.fleetSize != null && `${c.fleetSize} trucks`].filter(Boolean).join(' · ')}</div>
+                    <div className="mt-1 text-xs text-muted tabular">{[c.mcNumber && `MC ${c.mcNumber}`, c.state, c.fleetSize != null && plural(c.fleetSize, 'truck')].filter(Boolean).join(' · ')}</div>
                     {c.phone && <div className="mt-1 text-xs"><PhoneLink phone={c.phone} /></div>}
                     {c.opportunity?.estimatedValueCents > 0 && <div className="mt-1 text-xs text-green-700 dark:text-green-400">{money(c.opportunity.estimatedValueCents, { digits: 0 })}/mo est.</div>}
                     <TagList tags={c.tags} className="mt-1.5" />

@@ -170,7 +170,7 @@ function BulkCheck({ onOpen }) {
     <div className="space-y-4">
       <Card title="Check many carriers at once">
         <form onSubmit={run} className="space-y-3">
-          <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={'One per line: USDOT or MC numbers\n3636864\nMC 1248213'} aria-label="USDOT or MC numbers" />
+          <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={'One per line: USDOT or MC numbers\n0000000\nMC 000000'} aria-label="USDOT or MC numbers" />
           <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" icon={ListChecks} loading={busy} disabled={!numbers.length}>Check {numbers.length ? Math.min(numbers.length, 25) : ''} carrier{numbers.length === 1 ? '' : 's'}</Button>
             <span className={cx('text-xs', numbers.length > 25 ? 'text-c-amber' : 'text-muted')}>{numbers.length > 25 ? `Only the first 25 of ${numbers.length} are checked.` : 'Up to 25 at a time. Authority and insurance are checked live.'}</span>

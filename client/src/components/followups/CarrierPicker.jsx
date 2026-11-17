@@ -38,7 +38,7 @@ export default function CarrierPicker({ value, onChange, id, autoFocus }) {
     );
   }
   // state too: call-back presets fall back to the state's zone when the carrier has no stored time zone.
-  const pick = (c) => { onChange({ id: c.id, companyName: c.companyName, phone: c.phone, email: c.email, timezone: c.timezone, state: c.state, doNotCall: c.doNotCall }); setOpen(false); };
+  const pick = (c) => { onChange({ id: c.id, companyName: c.companyName, phone: c.phone, email: c.email, timezone: c.timezone, state: c.state, doNotCall: c.doNotCall }); setOpen(false); setQ(''); };
   return (
     <div ref={ref} className="relative">
       <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted" aria-hidden />

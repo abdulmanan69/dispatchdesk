@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ListOrdered, CalendarClock, BadgeCheck, Phone, UserPlus, Handshake } from 'lucide-react';
 import { api } from '../../lib/api.js';
-import { num, pct, relative, dateTime, date, label } from '../../lib/format.js';
+import { num, plural, pct, relative, dateTime, date, label } from '../../lib/format.js';
 import { Card, PageHeader, Select, StatCard, Loading, ErrorState, EmptyState, Button, ErrorBoundary, RefreshError, cx } from '../../components/ui.jsx';
 import GettingStarted from '../../components/tour/GettingStarted.jsx';
 import { PALETTE, Legend, SERIES } from '../../components/dashboard/palette.jsx';
@@ -86,7 +86,7 @@ function Body({ d }) {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Calls made" value={num(x.callsCompleted)} sub={days} to="/app/prospecting" icon={Phone} color="blue" />
-        <StatCard label="New leads" value={num(x.newLeads)} sub={`${num(x.carriers)} carriers in total`} to="/app/carriers" icon={UserPlus} color="purple" />
+        <StatCard label="New leads" value={num(x.newLeads)} sub={`${plural(x.carriers, 'carrier')} in total`} to="/app/carriers" icon={UserPlus} color="purple" />
         <StatCard label="Active opportunities" value={num(x.activeOpportunities)} sub={`${num(x.trials)} on trial`} to="/app/opportunities" icon={Handshake} color="amber" />
         <StatCard label="Signed customers" value={num(x.customers)} sub={`${num(x.customersInRange)} signed in the ${days}`} to="/app/customers" icon={BadgeCheck} color="green" />
       </div>

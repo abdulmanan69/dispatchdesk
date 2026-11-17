@@ -27,6 +27,8 @@ export const dollars = (n, digits = 2) =>
   n == null || Number.isNaN(n) ? '—' : nf({ style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
 
 export const num = (n, digits = 0) => (n == null ? '—' : nf({ maximumFractionDigits: digits }).format(n));
+/** A count with its noun: plural(1, 'call') → "1 call", plural(3, 'call') → "3 calls". */
+export const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 export const pct = (n, digits = 1) => (n == null ? '—' : `${Number(n).toFixed(digits)}%`);
 
 const DATE_DEFAULT = { month: 'short', day: 'numeric', year: 'numeric' };

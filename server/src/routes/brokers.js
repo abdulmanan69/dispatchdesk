@@ -12,6 +12,7 @@ import { normDot, normMc } from '../services/carriers/normalize.js';
 import { vet, verifyAndStore, setTeamFlag, vettingView, knownContacts, parseJson } from '../services/brokers/vetting.js';
 import { qcConfigured } from '../services/brokers/fmcsa.js';
 import { brokerPaymentDetail, paysInFor } from '../services/reports/payments.js';
+import { docBadges } from './loads.js';
 
 const r = Router();
 r.use(requirePermission('crm.use'));
@@ -135,13 +136,18 @@ r.get('/:id', ah(async (req, res) => {
     prisma.email.findMany({ where: { brokerId: broker.id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, subject: true, status: true, sentAt: true, createdAt: true, toEmail: true } }),
     paymentOwners(req.user).then((ids) => brokerPaymentDetail(ids, broker.id)),
   ]);
+  // Same paperwork flags as the loads list, for the Paperwork column of the broker's loads table.
+  const badges = await docBadges(loads.map((l) => l.id));
   const { fmcsaSnapshot, flags, ...b } = broker;
   res.json({
     broker: b,
     vetting: { ...vettingView(broker), qcConfigured: await qcConfigured() },
     stats: statsView(statsMap.get(broker.id)),
     payments,
-    loads: loads.map(withCalc),
+    loads: loads.map((l) => {
+      const counts = badges.get(l.id) || {};
+      return { ...withCalc(l), docs: { rateCon: !!counts.rate_confirmation, bol: !!counts.bol, pod: !!counts.pod } };
+    }),
     emails,
   });
 }));

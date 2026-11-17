@@ -108,6 +108,20 @@ describe('loads: carrier rules check, lanes and sorting', () => {
     expect(missingRc.body.items.map((x) => x.id)).toEqual([mid.id, low.id]);
   });
 
+  it('shows the same paperwork flags on the broker page loads table', async () => {
+    const E = await registerUser();
+    const broker = (await E.agent.post('/api/brokers').send({ companyName: 'Paperwork Test Broker' })).body.broker;
+    const withRc = (await E.agent.post('/api/loads').send({ ...base, brokerId: broker.id })).body.load;
+    const bare = (await E.agent.post('/api/loads').send({ ...base, brokerId: broker.id })).body.load;
+    await makeDoc(E.user.id, withRc.id, 'rate_confirmation');
+    await makeDoc(E.user.id, withRc.id, 'bol');
+    const detail = await E.agent.get(`/api/brokers/${broker.id}`);
+    expect(detail.status).toBe(200);
+    const byId = Object.fromEntries(detail.body.loads.map((x) => [x.id, x.docs]));
+    expect(byId[withRc.id]).toEqual({ rateCon: true, bol: true, pod: false });
+    expect(byId[bare.id]).toEqual({ rateCon: false, bol: false, pod: false });
+  });
+
   it('builds lane history and lane stats from one bounded aggregate', async () => {
     const D = await registerUser();
     await D.agent.post('/api/loads').send({ ...base, rateCents: 200000, loadedMiles: 800, pickupDate: new Date().toISOString() });

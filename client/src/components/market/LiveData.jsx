@@ -49,7 +49,8 @@ export function FuelCards({ diesel, gasoline }) {
         <p className="text-[13px] text-fg-2">Diesel, U.S. average</p>
         {diesel.national ? (
           <>
-            <div className="mt-2 flex items-end justify-between gap-3">
+            {/* Wraps: in a narrow card (about 245px inside at 1440px wide) the price and the 160px line don't fit side by side. */}
+            <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
               <p className="text-4xl font-medium tracking-tight tabular">${diesel.national.price.toFixed(3)}<span className="ml-1 text-base font-normal text-muted">/gal</span></p>
               <Sparkline points={hist.map((h) => h.price)} />
             </div>

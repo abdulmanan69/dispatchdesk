@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Download, Upload, Trash2, Sun, Moon, Monitor, Mail, Bot, Radar, BellRing, Smartphone, Send, Copy, CalendarDays, RefreshCw, ExternalLink, Share, ShieldAlert, FileImage, ImagePlus } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation, errorToast } from '../../lib/hooks.js';
-import { dateTime, relative } from '../../lib/format.js';
+import { dateTime, plural, relative } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import { Modal, useConfirm } from '../../components/Modal.jsx';
@@ -601,9 +601,9 @@ function AiKeySettings() {
           </p>
           <p className="mt-2 text-xs text-muted">
             {d.usage.limit < 0
-              ? `DispatchDesk AI this month: ${d.usage.thisMonth} calls (no limit on your plan).`
-              : `DispatchDesk AI this month: ${d.usage.thisMonth} of ${d.usage.limit} calls on your plan.`}
-            {' '}Your own key this month: {d.usage.byokThisMonth} calls.
+              ? `DispatchDesk AI this month: ${plural(d.usage.thisMonth, 'call')} (no limit on your plan).`
+              : `DispatchDesk AI this month: ${d.usage.thisMonth} of ${plural(d.usage.limit, 'call')} on your plan.`}
+            {' '}Your own key this month: {plural(d.usage.byokThisMonth, 'call')}.
             {!d.platform.available && !d.mine.active && ' The platform AI is not set up, so AI stays off until you add a key or an admin sets it up.'}
           </p>
           <form className="mt-4 grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); save.mutate(body()); }}>

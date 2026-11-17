@@ -11,6 +11,12 @@ import { RateConVetting } from '../../components/dispatch/BrokerVetting.jsx';
 import { CarrierPicker } from '../../components/dispatch/Pickers.jsx';
 
 const START = loadToForm({ status: 'planned' });
+// The parser's key fields, named as the load form names them.
+const PARSED_LABELS = {
+  originCity: 'Origin city', destCity: 'Destination city', rateCents: 'Total rate', loadedMiles: 'Loaded miles',
+  pickupDate: 'Pickup date', equipment: 'Equipment', weightLbs: 'Weight',
+};
+const parsedLabel = (k) => PARSED_LABELS[k] || label(k.replace(/Cents$/, ''));
 
 export default function RateCalculator() {
   const [form, setForm] = useState(START);
@@ -56,8 +62,8 @@ export default function RateCalculator() {
               <div className="mt-3 space-y-2 text-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-muted">Recognized:</span>
-                  {parsed.found.length ? parsed.found.map((k) => <Badge key={k} color="green">{label(k.replace(/Cents$/, ''))}</Badge>) : <span>nothing</span>}
-                  {parsed.missing.map((k) => <Badge key={k} color="gray">{label(k.replace(/Cents$/, ''))} missing</Badge>)}
+                  {parsed.found.length ? parsed.found.map((k) => <Badge key={k} color="green">{parsedLabel(k)}</Badge>) : <span>nothing</span>}
+                  {parsed.missing.map((k) => <Badge key={k} color="gray">{parsedLabel(k)} missing</Badge>)}
                 </div>
                 {(f.brokerName || f.brokerMc || f.referenceNumber) && (
                   <p className="text-xs text-muted">

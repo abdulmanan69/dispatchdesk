@@ -151,7 +151,7 @@ export default function RateConImport({ onParsed, className, defaultPaste = fals
       {paste && (
         <div className="space-y-2">
           <Textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} aria-label="Rate con or load text" maxLength={MAX_TEXT}
-            placeholder={'Paste the rate con, load board row or broker email.\ne.g. Dallas, TX → Atlanta, GA  11/12 08:00-14:00  Van  42,000 lbs  781 mi  $2,350\nBroker: Summit Logistics MC# 123456'} />
+            placeholder={'Paste the rate con, load board row or broker email.\ne.g. Dallas, TX → Atlanta, GA  11/12 08:00-14:00  Van  42,000 lbs  781 mi  $2,350\nBroker: Quillmark Logistics MC# 000000'} />
           <div className="flex items-center gap-2">
             <Button size="sm" variant="secondary" loading={busy === 'parsing'} disabled={text.trim().length < 5} onClick={() => { setError(null); setNotice(null); parse(text); }}>Fill in from text</Button>
             <span className="text-xs text-muted">Use text you can already see in your own load board or inbox.</span>
