@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Trash2, Gift } from 'lucide-react';
+import { Search, Trash2, Gift, Mail } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
 import GrantPlanModal from './GrantPlanModal.jsx';
 import GiftPlanModal from './GiftPlanModal.jsx';
+import EmailUsersModal from './EmailUsersModal.jsx';
 import { date, relative } from '../../lib/format.js';
 import { Card, Input, Select, DataTable, Pagination, QueryState, Badge, IconButton, Button } from '../ui.jsx';
 
@@ -26,6 +27,7 @@ export default function AdminUsers() {
   // Selected users across pages (id -> { id, name, email }) for "Gift a plan".
   const [picked, setPicked] = useState(() => new Map());
   const [gifting, setGifting] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const onSelect = (rows) => (ids) => setPicked((prev) => {
     const next = new Map(prev);
     for (const u of rows) {
@@ -59,6 +61,7 @@ export default function AdminUsers() {
           <span className="ml-auto inline-flex items-center gap-2">
             <span className="text-xs text-muted">{picked.size} selected</span>
             <Button type="button" variant="ghost" size="sm" onClick={() => setPicked(new Map())}>Clear</Button>
+            <Button type="button" variant="secondary" icon={Mail} onClick={() => setEmailing(true)}>Email</Button>
             <Button type="button" icon={Gift} onClick={() => setGifting(true)}>Gift a plan</Button>
           </span>
         )}
@@ -107,6 +110,7 @@ export default function AdminUsers() {
         )}
       </QueryState>
       {grantFor && <GrantPlanModal user={grantFor} onClose={() => setGrantFor(null)} />}
+      {emailing && <EmailUsersModal users={[...picked.values()]} onClose={() => setEmailing(false)} />}
       {gifting && <GiftPlanModal users={[...picked.values()]} onClose={() => setGifting(false)} onDone={() => setPicked(new Map())} />}
       {temp && (
         <Modal open onClose={() => setTemp(null)} title={`Temporary password for ${temp.name}`} size="sm"

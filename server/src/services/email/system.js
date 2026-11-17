@@ -35,7 +35,7 @@ export function parseFrom(from) {
 const BREVO_URL = 'https://api.brevo.com/v3/smtp/email';
 
 /** Send one message through Brevo's transactional API (HTTPS, no SMTP key needed). Throws with Brevo's message on failure. */
-export async function sendViaBrevo(apiKey, { from, to, subject, text, html }) {
+export async function sendViaBrevo(apiKey, { from, to, subject, text, html, replyTo }) {
   const res = await fetch(BREVO_URL, {
     method: 'POST',
     headers: { 'api-key': apiKey, 'content-type': 'application/json', accept: 'application/json' },
@@ -43,6 +43,7 @@ export async function sendViaBrevo(apiKey, { from, to, subject, text, html }) {
       sender: parseFrom(from),
       to: [{ email: String(to) }],
       subject,
+      ...(replyTo ? { replyTo: parseFrom(replyTo) } : {}),
       ...(text ? { textContent: text } : {}),
       ...(html ? { htmlContent: html } : {}),
     }),
@@ -126,10 +127,10 @@ export async function platformMailStatus() {
 }
 
 /**
- * sendSystemMail({ to, subject, text, html, category = 'auth' }) -> { sent, messageId?, reason?, budget? }
+ * sendSystemMail({ to, subject, text, html, category = 'auth', replyTo? }) -> { sent, messageId?, reason?, budget? }
  * category: 'auth' (verification, reset, invitations; reserved capacity), 'notice' or 'digest' (budgeted).
  */
-export async function sendSystemMail({ to, subject, text, html, category = 'auth' }) {
+export async function sendSystemMail({ to, subject, text, html, category = 'auth', replyTo }) {
   const s = await getSettings(['smtp.host', 'smtp.port', 'smtp.secure', 'smtp.user', 'smtp.pass', 'smtp.from', 'app.name', 'brevo.apiKey']);
   const useBrevo = !!s['brevo.apiKey'];
   if ((!s['smtp.host'] && !useBrevo) || !s['smtp.from']) {
@@ -146,8 +147,8 @@ export async function sendSystemMail({ to, subject, text, html, category = 'auth
   }
   try {
     const info = useBrevo
-      ? await sendViaBrevo(s['brevo.apiKey'], { from: s['smtp.from'], to, subject, text, html })
-      : await transportFor(s).sendMail({ from: s['smtp.from'], to, subject, text, html: html || undefined });
+      ? await sendViaBrevo(s['brevo.apiKey'], { from: s['smtp.from'], to, subject, text, html, replyTo })
+      : await transportFor(s).sendMail({ from: s['smtp.from'], to, subject, text, html: html || undefined, ...(replyTo ? { replyTo } : {}) });
     await updateBudget((b) => ({ ...b, sent: (b.sent || 0) + 1, other: (b.other || 0) + (auth ? 0 : 1) })).catch(() => {});
     return { sent: true, messageId: info.messageId };
   } catch (err) {

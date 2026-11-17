@@ -151,6 +151,25 @@ export function inviteMessage({ appName = 'DispatchDesk', inviter, team, role, l
   };
 }
 
+/**
+ * A message an admin writes to selected users (Admin → Users → Email). The text is the admin's; blank lines start
+ * new paragraphs. Replies go to the support address (the caller sets Reply-To).
+ */
+export function adminMessage({ appName = 'DispatchDesk', name, subject, message, appUrl, supportEmail }) {
+  const paragraphs = String(message || '').split(/\n\s*\n/).map((p) => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+  return {
+    subject,
+    ...platformEmail({
+      appName,
+      preheader: paragraphs[0] || subject,
+      heading: subject,
+      paragraphs: [`Hi ${name || 'there'},`, ...paragraphs],
+      button: appUrl ? { label: `Open ${appName}`, url: `${appUrl}/app` } : null,
+      footer: supportEmail ? `Questions? Reply to this email or write to ${supportEmail}.` : '',
+    }),
+  };
+}
+
 export function carrierCodeMessage({ appName = 'DispatchDesk', code, name, dot, signInUrl }) {
   return {
     subject: `${code} is your ${appName} carrier sign-in code`,

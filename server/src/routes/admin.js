@@ -22,7 +22,7 @@ import { assertAccountDeletable, deleteAccount } from './settings.js';
 import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
 import { testPlatformAi } from '../services/ai/llm.js';
 import { config } from '../config.js';
-import { escHtml, verifyEmailMessage, resetPasswordMessage, inviteMessage, carrierCodeMessage } from '../services/email/platformTemplate.js';
+import { escHtml, verifyEmailMessage, resetPasswordMessage, inviteMessage, carrierCodeMessage, adminMessage } from '../services/email/platformTemplate.js';
 import { digestLayout } from '../services/email/digest.js';
 
 const r = Router();
@@ -277,6 +277,31 @@ function giftEmailText({ name, phrase, appName, message }) {
     `Open your desk: ${config.appUrl}/app`,
   ].join('\n');
 }
+
+/**
+ * Email selected users from the platform address (Admin → Users → select → Email). Replies go to the support email.
+ * Sent one by one as 'notice' mail, so the daily platform budget keeps room for sign-in and password emails.
+ */
+r.post('/users/email', requirePermission('admin.users'), ah(async (req, res) => {
+  const body = parse(z.object({
+    userIds: z.array(z.string().min(1).max(40)).min(1).max(200),
+    subject: z.string().trim().min(1).max(150),
+    message: z.string().trim().min(1).max(5000),
+  }), req.body);
+  const users = await prisma.user.findMany({ where: { id: { in: [...new Set(body.userIds)] } }, select: { id: true, name: true, email: true, status: true } });
+  const s = await getSettings(['app.name', 'app.supportEmail']);
+  const appName = s['app.name'] || 'DispatchDesk';
+  let sent = 0;
+  const failed = [];
+  for (const u of users) {
+    if (u.status !== 'active') { failed.push({ userId: u.id, name: u.name, reason: 'Account is not active' }); continue; }
+    const m = adminMessage({ appName, name: u.name, subject: body.subject, message: body.message, appUrl: config.appUrl, supportEmail: s['app.supportEmail'] });
+    const out = await sendSystemMail({ to: u.email, subject: m.subject, text: m.text, html: m.html, category: 'notice', replyTo: s['app.supportEmail'] || undefined });
+    if (out.sent) sent += 1; else failed.push({ userId: u.id, name: u.name, reason: out.reason || 'Not sent' });
+  }
+  await audit(req, 'admin.users_emailed', { details: { subject: body.subject, requested: body.userIds.length, sent, failed: failed.length } });
+  res.json({ sent, failed });
+}));
 
 /**
  * Gift a plan to several users at once (Admin → Users → select → Gift a plan). Users who pay through Stripe are
