@@ -5,7 +5,7 @@ import { logActivity, notify } from '../../lib/activity.js';
 import { withLock, LockBusyError } from '../../lib/locks.js';
 import { assertLimit } from '../../lib/plans.js';
 import { queueUserEmail } from '../email/compose.js';
-import { pickAccount, blockedReason, deliverEmail } from '../email/index.js';
+import { pickAccount, blockedReason, deliverEmail, outreachAllowed } from '../email/index.js';
 import { rulesForCarrier } from '../loads/fitCheck.js';
 import { negotiationNumbers } from '../loads/fit.js';
 import { laneStats } from '../loads/lanes.js';
@@ -380,7 +380,15 @@ async function processReply(neg, user, { text = null, intent = null, cents = nul
   history = withAiNotes(history, draft, null);
 
   // Auto mode: an AI-written counter strictly inside the limits goes out now. Everything else waits.
-  const auto = neg.mode === 'auto' && d.kind === 'counter' && draft.aiWritten && insideLimits(d.cents, neg.floorCents, neg.targetCents) && neg.rounds < neg.maxRounds;
+  let auto = neg.mode === 'auto' && d.kind === 'counter' && draft.aiWritten && insideLimits(d.cents, neg.floorCents, neg.targetCents) && neg.rounds < neg.maxRounds;
+  // Gmail mailboxes send only what the user writes or approves (one-to-one rule): an automatic counter waits there.
+  if (auto) {
+    const mailbox = await pickAccount(user.id, neg.emailAccountId || undefined);
+    if (mailbox && !outreachAllowed(mailbox)) {
+      auto = false;
+      history = pushHistory(history, { from: 'system', kind: 'note', text: 'Automatic counters are not sent from a Gmail mailbox. This counter waits for your approval.' }, { now });
+    }
+  }
   if (auto) {
     try {
       const r = await sendEmail(state, user, { emailId: null, subject: action.subject, body: action.body });

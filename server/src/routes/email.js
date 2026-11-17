@@ -12,7 +12,7 @@ import { startOfUserDay } from '../lib/timezones.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { onlySent } from '../services/carriers/normalize.js';
 import { SMTP_PRESETS, SMTP_PROVIDERS, SMTP_PROVIDER_KEYS, SMTP_PORTS, verifySmtp, smtpErrorMessage } from '../services/email/smtp.js';
-import { sendWithAccount, pickAccount, blockedReason, deliverEmail, mailboxSentToday } from '../services/email/index.js';
+import { sendWithAccount, pickAccount, pickOutreachAccount, noOutreachMailboxReason, blockedReason, deliverEmail, mailboxSentToday } from '../services/email/index.js';
 import { renderContent, MERGE_FIELDS } from '../services/email/render.js';
 import { OAUTH_PROVIDERS, buildAuthUrl, exchangeCode, oauthAvailability, hasScope } from '../services/email/oauth.js';
 import { resolveAttachments, parseAttachments, MAX_ATTACHMENTS } from '../services/email/attachments.js';
@@ -504,7 +504,9 @@ r.post('/messages/bulk', ah(async (req, res) => {
   const subject = b.subject || template?.subject;
   const body = b.body || template?.body;
   if (!subject || !body) throw badRequest('Choose a template or provide a subject and body');
-  const account = await requireMailbox(req, b.accountId);
+  // Bulk email never goes through Gmail (one-to-one only): an SMTP or Outlook mailbox sends it.
+  const account = await pickOutreachAccount(req.user.id, b.accountId || undefined);
+  if (!account) throw badRequest(await noOutreachMailboxReason(req.user.id, b.accountId || undefined), { code: 'no_outreach_mailbox' });
 
   // Recipients are loaded and access-checked in one query per kind (same rules as loadCarrier / loadOwned:
   // any id the caller may not read makes the whole request 404, so nothing is half-queued).

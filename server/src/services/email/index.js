@@ -65,6 +65,33 @@ export async function pickAccount(userId, accountId) {
   return prisma.emailAccount.findFirst({ where: { userId, status: 'connected' }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] });
 }
 
+/**
+ * Gmail mailboxes send one-to-one email only: Google's Gmail API policy forbids cold and bulk outreach, so sequence
+ * steps and bulk email never go through Gmail (they use the user's SMTP or Outlook mailbox instead). Automatic AI
+ * negotiation counters wait for approval in Gmail mailboxes.
+ */
+export const ONE_TO_ONE_ONLY = ['gmail'];
+export const outreachAllowed = (account) => !!account && !ONE_TO_ONE_ONLY.includes(account.provider);
+export const GMAIL_ONE_TO_ONE = 'Gmail mailboxes send one-to-one email only. Sequences and bulk email need an SMTP or Outlook mailbox: connect one in Email → Mailboxes.';
+
+/** The mailbox for sequence steps and bulk email: an explicit one must allow outreach; otherwise the first that does. */
+export async function pickOutreachAccount(userId, accountId) {
+  if (accountId) {
+    const a = await pickAccount(userId, accountId);
+    return outreachAllowed(a) ? a : null;
+  }
+  return prisma.emailAccount.findFirst({
+    where: { userId, status: 'connected', provider: { notIn: ONE_TO_ONE_ONLY } },
+    orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+  });
+}
+
+/** Why there is no outreach mailbox: only Gmail is connected (or chosen), or nothing is connected. */
+export async function noOutreachMailboxReason(userId, accountId) {
+  const any = await pickAccount(userId, accountId || undefined);
+  return any && !outreachAllowed(any) ? GMAIL_ONE_TO_ONE : (accountId ? 'Selected mailbox is not connected' : 'Connect a mailbox first (Email → Mailboxes)');
+}
+
 /** Why an address may not be emailed by this owner (null = allowed). */
 export async function blockedReason(ownerId, toEmail, carrierId) {
   const email = String(toEmail || '').trim().toLowerCase();
@@ -207,6 +234,15 @@ export async function deliverEmail(emailId, { retry = true, ctx = null } = {}) {
     ? (ctx?.accounts.get(email.emailAccountId) || await prisma.emailAccount.findFirst({ where: { id: email.emailAccountId, userId: email.userId } }))
     : await pickAccount(email.userId);
   if (account && account.userId !== email.userId) account = null; // never send through another user's mailbox
+  if (account && email.enrollmentId && !outreachAllowed(account)) {
+    // A sequence step queued on a Gmail mailbox (before the one-to-one rule, or chosen by hand): use an outreach mailbox.
+    const alt = await pickOutreachAccount(email.userId);
+    if (!alt) {
+      const row = await transition(email, { status: 'failed', error: GMAIL_ONE_TO_ONE, nextAttemptAt: null });
+      return { email: row, outcome: 'failed', message: GMAIL_ONE_TO_ONE };
+    }
+    account = (ctx?.accounts.get(alt.id)) || alt;
+  }
   if (account && ctx && !ctx.accounts.has(account.id)) ctx.accounts.set(account.id, account);
   if (!account || account.status !== 'connected') {
     const msg = 'No connected mailbox — connect one in Email → Mailboxes';

@@ -7,7 +7,7 @@ import { loadCarrier, loadOwned, ownerWhere } from '../lib/access.js';
 import { assertLimit } from '../lib/plans.js';
 import { callWindowMemo, endOfUserDay, timezoneForState } from '../lib/timezones.js';
 import { renderContent } from '../services/email/render.js';
-import { blockedReason, deliverEmail, pickAccount } from '../services/email/index.js';
+import { blockedReason, deliverEmail, pickOutreachAccount, noOutreachMailboxReason } from '../services/email/index.js';
 import { logActivity } from '../lib/activity.js';
 import { audit } from '../lib/audit.js';
 import { enrollCarriers, advanceFrom, stepDueAt, invalidateQueueCount, AI_STEP_MODES } from '../services/sequenceEngine.js';
@@ -193,8 +193,8 @@ r.post('/enrollments/:eid/send-email', ah(async (req, res) => {
   if (!to) throw badRequest(`${e.carrier.companyName} has no email address`);
   const blocked = await blockedReason(req.user.id, to, e.carrierId);
   if (blocked) throw badRequest(blocked);
-  const account = await pickAccount(req.user.id, b.accountId || undefined);
-  if (!account) throw badRequest('Connect a mailbox first (Email → Mailboxes)', { code: 'no_mailbox' });
+  const account = await pickOutreachAccount(req.user.id, b.accountId || undefined);
+  if (!account) throw badRequest(await noOutreachMailboxReason(req.user.id, b.accountId || undefined), { code: 'no_mailbox' });
   await assertLimit(req.user, 'emailsToday');
   // Claim the step first (compare-and-set on step AND due time, which the scheduler's lease also changes), so the
   // scheduler and this request can never both send it.

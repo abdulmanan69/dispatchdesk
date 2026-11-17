@@ -30,7 +30,7 @@ import { leftoverTokens } from '../services/carriers/truckPost.js';
 import { queueUserEmail } from '../services/email/compose.js';
 import { recordReply } from '../services/email/replies.js';
 import { shareForDispatcher } from '../services/carrierAccounts/index.js';
-import { pickAccount } from '../services/email/index.js';
+import { pickOutreachAccount, noOutreachMailboxReason } from '../services/email/index.js';
 import { renderContent, renderPreview } from '../services/email/render.js';
 
 const r = Router();
@@ -369,9 +369,10 @@ r.post('/bulk/email', ah(async (req, res) => {
   const { requested, carriers } = await bulkTargets(req, b, emailSelect, {
     max: BULK_EMAIL_MAX, tooMany: `Email at most ${BULK_EMAIL_MAX} carriers at a time. Narrow the selection.`,
   });
-  const account = await pickAccount(req.user.id, b.accountId || undefined);
+  // Bulk email never goes through Gmail (one-to-one only): an SMTP or Outlook mailbox sends it.
+  const account = await pickOutreachAccount(req.user.id, b.accountId || undefined);
   // A preview works without a mailbox (it says so); queueing needs one.
-  if (!account && !b.dryRun) throw badRequest('Connect a mailbox first (Email, Mailboxes)');
+  if (!account && !b.dryRun) throw badRequest(await noOutreachMailboxReason(req.user.id, b.accountId || undefined), { code: 'no_outreach_mailbox' });
 
   const emails = [...new Set(carriers.map((c) => c.email?.toLowerCase()).filter(Boolean))];
   const suppressed = new Set(emails.length
@@ -403,7 +404,11 @@ r.post('/bulk/email', ah(async (req, res) => {
     } else ready.push(c);
   }
   const capacity = account ? await sendCapacity(req.user, account) : null;
-  const base = { requested, inaccessible: requested - carriers.length, recipients: ready.length, capacity, mailbox: account ? { id: account.id, fromEmail: account.fromEmail, label: account.label } : null };
+  const base = {
+    requested, inaccessible: requested - carriers.length, recipients: ready.length, capacity,
+    mailbox: account ? { id: account.id, fromEmail: account.fromEmail, label: account.label } : null,
+    mailboxNote: account ? null : await noOutreachMailboxReason(req.user.id, b.accountId || undefined),
+  };
 
   if (b.dryRun) {
     return res.json({ ...base, skipped: skipped.slice(0, 100), skippedCount: skipped.length, samples, missingFields: [...missingFields] });

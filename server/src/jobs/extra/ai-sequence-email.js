@@ -1,6 +1,6 @@
 import { prisma } from '../../db.js';
 import { notify, logActivity } from '../../lib/activity.js';
-import { blockedReason, pickAccount } from '../../services/email/index.js';
+import { blockedReason, pickOutreachAccount, noOutreachMailboxReason } from '../../services/email/index.js';
 import { renderContent } from '../../services/email/render.js';
 import { advanceFrom, carrierTz, isAiEmailStep, AI_NOTE_PREFIX } from '../../services/sequenceEngine.js';
 import { nextBusinessTime, startOfNextUserDay, startOfUserDay, DEFAULT_TZ } from '../../lib/timezones.js';
@@ -76,7 +76,7 @@ async function pool(items, n, fn) {
 async function mailboxNotice(userId) {
   const recent = await prisma.notification.findFirst({ where: { userId, type: 'mailbox_required', createdAt: { gt: new Date(Date.now() - 86400000) } }, select: { id: true } });
   if (!recent) {
-    await notify(userId, { type: 'mailbox_required', title: 'Sequence emails are waiting', body: 'Connect a mailbox so sequence email steps can be sent.', link: '/app/email?tab=mailboxes' });
+    await notify(userId, { type: 'mailbox_required', title: 'Sequence emails are waiting', body: `${await noOutreachMailboxReason(userId)} Sequence email steps wait until then.`, link: '/app/email?tab=mailboxes' });
   }
 }
 
@@ -149,7 +149,7 @@ async function processOne(enr, ctx) {
       const open = nextBusinessTime(carrierTz(carrier), t, sequence.windowStartHour, sequence.windowEndHour, sequence.skipWeekends);
       if (open.getTime() > t.getTime() + MIN) { await release(open); stats.deferred++; return; }
     }
-    if (!accountFor.has(enr.userId)) accountFor.set(enr.userId, await pickAccount(enr.userId));
+    if (!accountFor.has(enr.userId)) accountFor.set(enr.userId, await pickOutreachAccount(enr.userId));
     const account = accountFor.get(enr.userId);
     if (!account) {
       await mailboxNotice(enr.userId);

@@ -1,6 +1,6 @@
 import { prisma } from '../db.js';
 import { notify, logActivity } from '../lib/activity.js';
-import { deliverEmail, pickAccount, blockedReason, MAX_ATTEMPTS, createSendContext, closeSendContext } from '../services/email/index.js';
+import { deliverEmail, pickOutreachAccount, noOutreachMailboxReason, blockedReason, MAX_ATTEMPTS, createSendContext, closeSendContext } from '../services/email/index.js';
 import { renderContent } from '../services/email/render.js';
 import { advanceFrom, carrierTz, invalidateQueueCount, isAiEmailStep } from '../services/sequenceEngine.js';
 import { ingestDocument } from '../services/ai/rag.js';
@@ -184,7 +184,7 @@ async function noMailboxNotice(userId) {
     await notify(userId, {
       type: 'mailbox_required',
       title: 'Sequence emails are waiting',
-      body: 'Connect a mailbox so sequence email steps can be sent.',
+      body: `${await noOutreachMailboxReason(userId)} Sequence email steps wait until then.`,
       link: '/app/email?tab=mailboxes',
     });
   }
@@ -293,7 +293,7 @@ async function runSequenceEmailSteps(now, log, { budgetMs = LIMITS.sequenceBudge
         await advanceFrom(enr, sequence, { now, expectedStep: enr.currentStep });
         continue;
       }
-      if (!accountFor.has(enr.userId)) accountFor.set(enr.userId, await pickAccount(enr.userId));
+      if (!accountFor.has(enr.userId)) accountFor.set(enr.userId, await pickOutreachAccount(enr.userId));
       const account = accountFor.get(enr.userId);
       if (!account) {
         await noMailboxNotice(enr.userId);

@@ -215,6 +215,31 @@ describe('negotiations API', () => {
     expect((await U.agent.post(`/api/negotiations/${neg.id}/approve`).send({})).status).toBe(409);
   });
 
+  it('auto mode never sends a counter from a Gmail mailbox (one-to-one rule): it waits for approval', async () => {
+    const { encrypt } = await import('../src/lib/crypto.js');
+    const U = await setup();
+    await prisma.emailAccount.updateMany({ where: { userId: U.user.id }, data: { isDefault: false } });
+    await prisma.emailAccount.create({
+      data: { userId: U.user.id, provider: 'gmail', label: 'G', fromEmail: `neg${n}@gmail.test`, status: 'connected', secretEnc: encrypt('refresh'), accessTokenEnc: encrypt('access'), tokenExpiresAt: new Date(Date.now() + 3600000), isDefault: true, cooldownSeconds: 0 },
+    });
+    const gmailSends = [];
+    vi.stubGlobal('fetch', vi.fn(async (url) => { gmailSends.push(String(url)); return { status: 200, json: async () => ({ id: `gm${gmailSends.length}` }) }; }));
+    try {
+      const s = await start(U, { mode: 'auto' });
+      expect((await U.agent.post(`/api/negotiations/${s.body.negotiation.id}/approve`).send({})).status).toBe(200); // approved by the user: allowed
+      expect(gmailSends.filter((u) => u.includes('gmail.googleapis.com'))).toHaveLength(1);
+      ai.classes.push({ intent: 'counter', cents: 170000, summary: 'They offer $1,700' });
+      const r = await U.agent.post(`/api/negotiations/${s.body.negotiation.id}/reply`).send({ text: '1700?' });
+      expect(r.body.autoSent).toBe(false);
+      expect(r.body.negotiation.nextAction).toMatchObject({ kind: 'counter' });
+      expect(r.body.negotiation.history.some((h) => /not sent from a Gmail mailbox/.test(h.text || ''))).toBe(true);
+      expect(gmailSends.filter((u) => u.includes('gmail.googleapis.com'))).toHaveLength(1);
+      expect(mail.sendMail).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('auto mode sends counters inside the limits and never accepts', async () => {
     const U = await setup();
     const s = await start(U, { mode: 'auto' });

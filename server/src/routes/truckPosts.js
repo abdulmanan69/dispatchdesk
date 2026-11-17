@@ -8,7 +8,7 @@ import { healFleetFlags } from '../services/fleet/flags.js';
 import { withLock, LockBusyError } from '../lib/locks.js';
 import { audit } from '../lib/audit.js';
 import { queueUserEmail } from '../services/email/compose.js';
-import { pickAccount } from '../services/email/index.js';
+import { pickOutreachAccount, noOutreachMailboxReason } from '../services/email/index.js';
 import { renderContent, renderPreview } from '../services/email/render.js';
 import { stateOf } from '../services/market/geo.js';
 import * as census from '../services/carriers/fmcsaCensus.js';
@@ -201,7 +201,7 @@ r.post('/preview', ah(async (req, res) => {
   const b = parse(postSchema, req.body);
   const truck = await loadTruck(req.user, b.carrierId);
   const brokers = await loadBrokers(req.user, b.brokerIds);
-  const account = await pickAccount(req.user.id);
+  const account = await pickOutreachAccount(req.user.id); // posts go to many brokers: never through Gmail
   const values = truckValues(truck, b.details || {}, { userTz: req.user.timezone });
   const recent = await recentPosts(truck.id);
   const items = b.brokerIds.map((id) => {
@@ -234,8 +234,8 @@ r.post('/send', ah(async (req, res) => {
 async function sendPost(req, b) {
   const user = req.user;
   const truck = await loadTruck(user, b.carrierId, { write: true });
-  const account = await pickAccount(user.id, b.accountId || undefined);
-  if (!account) throw badRequest('Connect a mailbox first (Email, Mailboxes)');
+  const account = await pickOutreachAccount(user.id, b.accountId || undefined);
+  if (!account) throw badRequest(await noOutreachMailboxReason(user.id, b.accountId || undefined), { code: 'no_outreach_mailbox' });
   const template = b.templateId ? await prisma.emailTemplate.findFirst({ where: { id: b.templateId, ownerId: user.id }, select: { id: true } }) : null;
   const brokers = await loadBrokers(user, b.brokerIds);
   const values = truckValues(truck, b.details || {}, { userTz: user.timezone });

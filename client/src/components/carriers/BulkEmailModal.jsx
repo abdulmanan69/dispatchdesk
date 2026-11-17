@@ -96,12 +96,14 @@ export default function BulkEmailModal({ open, onClose, target, count, onDone })
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-lg border border-line px-3 py-2"><p className="text-xs text-muted">Will receive it</p><p className="text-xl font-medium tabular">{review.recipients}</p></div>
             <div className="rounded-lg border border-line px-3 py-2"><p className="text-xs text-muted">Skipped</p><p className="text-xl font-medium tabular">{review.skippedCount + review.inaccessible}</p></div>
-            <div className="rounded-lg border border-line px-3 py-2"><p className="text-xs text-muted">From</p><p className="truncate text-sm font-medium">{review.mailbox?.fromEmail || 'No mailbox connected'}</p></div>
+            <div className="rounded-lg border border-line px-3 py-2"><p className="text-xs text-muted">From</p><p className="truncate text-sm font-medium">{review.mailbox?.fromEmail || (review.mailboxNote?.startsWith('Gmail') ? 'No SMTP or Outlook mailbox' : 'No mailbox connected')}</p></div>
           </div>
           {!review.mailbox && (
             <p className="flex items-start gap-2 rounded-lg border border-c-amber/30 bg-c-amber-soft px-3 py-2 text-[13px] text-fg-2">
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-c-amber" aria-hidden />
-              <span>No mailbox is connected, so nothing can be sent yet. <Link to="/app/email" className="font-medium text-fg underline-offset-2 hover:underline" onClick={onClose}>Connect your mailbox</Link>, then come back.</span>
+              {review.mailboxNote?.startsWith('Gmail')
+                ? <span>Bulk email is not sent from Gmail: Google allows Gmail for one-to-one email only. <Link to="/app/email?tab=mailboxes" className="font-medium text-fg underline-offset-2 hover:underline" onClick={onClose}>Connect an SMTP or Outlook mailbox</Link> for bulk email, then come back.</span>
+                : <span>No mailbox is connected, so nothing can be sent yet. <Link to="/app/email" className="font-medium text-fg underline-offset-2 hover:underline" onClick={onClose}>Connect your mailbox</Link>, then come back.</span>}
             </p>
           )}
           {review.mailbox && review.recipients > 0 && <p className="text-sm text-fg-2">{capacityLine(review.capacity, review.recipients)}</p>}
