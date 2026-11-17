@@ -1,6 +1,7 @@
 import { Component, forwardRef, memo, useId, useMemo, useState, isValidElement, cloneElement } from 'react';
 import { Link } from 'react-router';
 import { Loader2, AlertTriangle, AlertCircle, Inbox, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, RefreshCw, Eye, EyeOff } from 'lucide-react';
+import { TruckLoader, EmptyArt } from './Loaders.jsx';
 import { initials, zoneClock } from '../lib/format.js';
 
 export const cx = (...c) => c.filter(Boolean).join(' ');
@@ -178,18 +179,21 @@ export function Spinner({ className, label = 'Loading' }) {
   return <Loader2 className={cx('size-5 animate-spin text-muted', className)} aria-label={label} />;
 }
 
-export function Loading({ label = 'Loading…', className }) {
+/** Block-level loading: the driving-truck animation and a label. `size` 'lg' for whole pages. */
+export function Loading({ label = 'Loading…', className, size = 'md' }) {
   return (
-    <div className={cx('flex items-center justify-center gap-2 py-12 text-sm text-muted', className)} role="status">
-      <Spinner /> {label}
+    <div className={cx('flex flex-col items-center justify-center gap-3 py-12 text-sm text-muted', className)} role="status">
+      <TruckLoader size={size} />
+      <span>{label}</span>
     </div>
   );
 }
 
-export function EmptyState({ icon: Icon = Inbox, title, children, action }) {
+/** Nothing to show yet. `art` false keeps it to a small icon (dense places such as dropdowns). */
+export function EmptyState({ icon: Icon = Inbox, title, children, action, art = true }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
-      <Icon className="mb-3 size-5 text-muted" strokeWidth={1.5} aria-hidden />
+      {art ? <EmptyArt icon={Icon} /> : <Icon className="mb-3 size-5 text-muted" strokeWidth={1.5} aria-hidden />}
       <p className="text-sm font-medium">{title}</p>
       {children && <div className="mt-1 max-w-md text-sm text-muted">{children}</div>}
       {action && <div className="mt-4">{action}</div>}

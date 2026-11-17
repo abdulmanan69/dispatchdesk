@@ -34,7 +34,7 @@ export default function Pricing() {
       <div className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
         <p className="mb-3 text-[13px] font-semibold text-c-teal">Pricing</p>
         <h1 className="text-[34px] font-semibold tracking-[-0.025em] text-fg sm:text-[46px]">Simple plans for dispatchers</h1>
-        <p className="mt-4 text-[17px] leading-7 text-fg-2">Start free and keep using it as long as you like. Upgrade when you need higher limits, scheduled lead generation, the advanced AI dispatcher or a team.</p>
+        <p className="mt-4 text-[17px] leading-7 text-fg-2">Try every Pro feature free for 14 days, no card needed. Then choose the plan that fits: higher limits, scheduled lead generation, the advanced AI dispatcher or a team.</p>
       </div>
     </section>
     <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
@@ -44,7 +44,7 @@ export default function Pricing() {
             {q.data.plans.map((p) => (
               <PlanCard key={p.key} plan={p} highlight={p.key === 'pro'}
                 action={<Button className="w-full" variant={p.key === 'pro' ? 'primary' : 'secondary'} to={user ? '/app/billing' : `/register?next=${encodeURIComponent('/app/billing')}`}>
-                  {p.key === 'free' ? (user ? 'Open app' : 'Start free') : p.trialDays ? `Start ${p.trialDays}-day trial` : `Choose ${p.name}`}
+                  {p.key === 'free' ? (user ? 'Open app' : 'Start free trial') : p.trialDays ? `Start ${p.trialDays}-day trial` : `Choose ${p.name}`}
                 </Button>} />
             ))}
           </div>

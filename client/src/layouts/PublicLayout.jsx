@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { applyTheme } from '../context/theme.js';
 import { Button, cx } from '../components/ui.jsx';
 import { Logo } from '../components/Logo.jsx';
+import AnnouncementBar from '../components/announcement/AnnouncementBar.jsx';
 
 const NAV = [
   { to: '/features', label: 'Product' },
@@ -64,6 +65,7 @@ export default function PublicLayout() {
     <div className="flex min-h-full flex-col">
       <RouteProgress />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm">Skip to content</a>
+      <AnnouncementBar place="public" />
       <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">
           <Link to="/" className="shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500" aria-label="DispatchDesk home"><Logo /></Link>

@@ -13,6 +13,17 @@ export const SETTING_DEFS = {
   // Public contact address printed on the privacy policy and terms of service.
   'app.supportEmail': { group: 'app', default: () => process.env.SUPPORT_EMAIL || '' },
   'app.requireEmailVerification': { group: 'app', type: 'bool', default: () => 'false' },
+  // Free trial (services/billing/trial.js): accounts without a plan get the trial plan's limits for this many days, then
+  // become read-only until they choose a plan. 0 turns the trial off (Free plan forever).
+  'app.trialDays': { group: 'app', default: () => process.env.TRIAL_DAYS ?? '14' },
+  'app.trialPlan': { group: 'app', default: () => 'pro' },
+  // Announcement bar across the top of the app and/or the website (GET /api/public/announcement).
+  'announcement.enabled': { group: 'announcement', type: 'bool', default: () => 'false' },
+  'announcement.text': { group: 'announcement', default: () => '' },
+  'announcement.linkUrl': { group: 'announcement', default: () => '' },
+  'announcement.linkLabel': { group: 'announcement', default: () => '' },
+  'announcement.tone': { group: 'announcement', default: () => 'info' }, // info | success | warning
+  'announcement.audience': { group: 'announcement', default: () => 'everyone' }, // everyone | app | public
   // Platform AI provider: openai (any OpenAI-compatible API at ai.baseUrl) | anthropic (Claude, official SDK).
   'ai.provider': { group: 'ai', default: () => (process.env.AI_PROVIDER === 'anthropic' ? 'anthropic' : 'openai') },
   'ai.baseUrl': { group: 'ai', default: () => config.ai.baseUrl },

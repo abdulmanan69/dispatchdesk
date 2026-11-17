@@ -35,7 +35,7 @@ export default function AuthShell({ title, subtitle, children, footer }) {
               </li>
             ))}
           </ul>
-          <p className="mt-12 flex items-center gap-2 text-sm text-fg-2"><Check className="size-4 text-c-green" aria-hidden />Free plan, no card required. Calls are never placed without your click.</p>
+          <p className="mt-12 flex items-center gap-2 text-sm text-fg-2"><Check className="size-4 text-c-green" aria-hidden />Free 14-day trial, no card required. Calls are never placed without your click.</p>
         </div>
       </aside>
 

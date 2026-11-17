@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, FileText, Info } from 'lucide-react';
+import { ExternalLink, FileText, Info, Ticket } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -9,6 +9,7 @@ import { useConfirm } from '../../components/Modal.jsx';
 import { money, date, label } from '../../lib/format.js';
 import { Card, PageHeader, Badge, Button, Loading, ErrorState, EmptyState, DataTable, Input, cx } from '../../components/ui.jsx';
 import PlanCard from '../../components/billing/PlanCard.jsx';
+import PlanCelebration from '../../components/billing/PlanCelebration.jsx';
 
 const STATUS_COLOR = { active: 'green', trialing: 'blue', past_due: 'amber', incomplete: 'amber', unpaid: 'red', canceled: 'gray' };
 
@@ -44,6 +45,8 @@ export default function Billing() {
   const checkout = params.get('checkout');
   const [polls, setPolls] = useState(0);
   const [seats, setSeats] = useState('');
+  const [code, setCode] = useState('');
+  const [celebrate, setCelebrate] = useState(null);
 
   const me = useQuery({
     queryKey: ['billing', 'me'],
@@ -53,6 +56,16 @@ export default function Billing() {
   });
   const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get('/api/billing/plans') });
   useEffect(() => { if (checkout === 'success' && me.dataUpdatedAt) setPolls((n) => n + 1); }, [me.dataUpdatedAt, checkout]);
+  // Back from Stripe and the subscription is confirmed: celebrate once (per browser session).
+  const meSub = me.data?.subscription;
+  const justActivated = checkout === 'success' && !!meSub && ['active', 'trialing'].includes(meSub.status);
+  useEffect(() => {
+    if (!justActivated) return;
+    const k = `dd:celebrated:${meSub.id || me.data.plan.key}`;
+    try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch { /* storage unavailable */ }
+    const plan = plans.data?.plans?.find((p) => p.key === me.data.plan.key) || me.data.plan;
+    setCelebrate({ plan, note: 'Your payment went through. Thank you for upgrading.' });
+  }, [justActivated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = (r) => { if (r?.url) window.location.assign(r.url); };
   const startCheckout = useApiMutation((planKey) => api.post('/api/billing/checkout', { planKey, seats: seats ? Number(seats) : undefined }), { onSuccess: go });
@@ -60,6 +73,10 @@ export default function Billing() {
   const cancel = useApiMutation(() => api.post('/api/billing/cancel'), { success: 'Cancellation scheduled for the end of the billing period', invalidate: [['billing']] });
   const resume = useApiMutation(() => api.post('/api/billing/resume'), { success: 'Subscription will continue', invalidate: [['billing']] });
   const change = useApiMutation((planKey) => api.post('/api/billing/change-plan', { planKey }), { success: 'Plan change sent to Stripe', invalidate: [['billing']] });
+  const redeem = useApiMutation((c) => api.post('/api/billing/redeem', { code: c }), {
+    invalidate: [['billing']],
+    onSuccess: (r) => { setCode(''); setCelebrate({ plan: r.plan, note: `${r.phrase}. No payment needed.` }); },
+  });
 
   if (me.isLoading || plans.isLoading) return <Loading />;
   if (me.isError) return <ErrorState error={me.error} onRetry={me.refetch} />;
@@ -67,6 +84,8 @@ export default function Billing() {
   const sub = d.subscription;
   const payable = d.stripeMode !== 'unconfigured';
   const activated = checkout === 'success' && sub && ['active', 'trialing'].includes(sub.status);
+  const trial = d.trial;
+  const planList = (plans.data?.plans || []).filter((p) => !(trial?.enabled && p.key === 'free'));
 
   const actionFor = (p) => {
     if (p.key === d.plan.key) return <Button variant="secondary" className="w-full" disabled>Current plan</Button>;
@@ -127,6 +146,10 @@ export default function Billing() {
               {sub.granted && <p className="text-xs text-muted">Given to you by an administrator{sub.currentPeriodEnd ? '' : ' with no end date'}. No payment is taken.</p>}
               {sub.managedByTeam && <p className="text-xs text-muted">Provided by your team. The team owner manages this subscription.</p>}
             </dl>
+          ) : trial?.locked ? (
+            <p className="mt-4 text-sm text-c-amber">Your free trial ended on {date(trial.endsAt)}. Your data is kept and you can still view it; choose a plan below to keep adding, calling and sending.</p>
+          ) : trial?.active ? (
+            <p className="mt-4 text-sm text-muted">Free trial with {trial.planName || 'Pro'} features: {trial.daysLeft} day{trial.daysLeft === 1 ? '' : 's'} left (until {date(trial.endsAt)}). Choose a plan to keep going after that.</p>
           ) : <p className="mt-4 text-sm text-muted">Free forever. Upgrade any time for higher limits.</p>}
           {d.pendingSubscription && !sub && (
             <p className="mt-3 rounded-md bg-surface-2 px-3 py-2 text-xs text-muted">A {label(d.pendingSubscription.planKey)} checkout started {date(d.pendingSubscription.createdAt)} is {label(d.pendingSubscription.status).toLowerCase()} — it activates only when Stripe confirms payment.</p>
@@ -169,11 +192,22 @@ export default function Billing() {
         </div>
         {plans.isError ? <ErrorState error={plans.error} onRetry={plans.refetch} /> : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {plans.data.plans.map((p) => <PlanCard key={p.key} plan={p} current={p.key === d.plan.key} highlight={p.key === 'pro' && d.plan.key === 'free'} action={actionFor(p)} />)}
+            {planList.map((p) => <PlanCard key={p.key} plan={p} current={p.key === d.plan.key && !trial?.active} highlight={p.key === 'pro' && !sub} action={actionFor(p)} />)}
           </div>
         )}
         <p className="mt-3 text-xs text-muted">Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</p>
       </section>
+
+      {(!sub || sub.granted) && !sub?.managedByTeam && (
+        <Card title="Have a code?" bodyClass="p-4">
+          <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (code.trim()) redeem.mutate(code.trim()); }}>
+            <Ticket className="size-4 text-muted" aria-hidden />
+            <Input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Enter your code" aria-label="Plan code" className="w-56" maxLength={40} autoComplete="off" />
+            <Button type="submit" variant="secondary" loading={redeem.isPending} disabled={!code.trim()}>Redeem</Button>
+            <span className="text-xs text-muted">Codes for free months apply here. Discount codes go on the checkout page when you upgrade.</span>
+          </form>
+        </Card>
+      )}
 
       <Card title="Payment history" bodyClass="p-0">
         <DataTable
@@ -189,6 +223,7 @@ export default function Billing() {
           ]}
         />
       </Card>
+      {celebrate && <PlanCelebration plan={celebrate.plan} note={celebrate.note} onClose={() => setCelebrate(null)} />}
     </div>
   );
 }

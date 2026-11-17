@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { paymentRequired } from './errors.js';
 import { broadcast, onBroadcast } from './broadcast.js';
 import { DEFAULT_TZ, localParts, startOfUserDay as zonedStartOfDay, zonedTimeToUtc } from './timezones.js';
+import { trialSettings, trialState } from '../services/billing/trial.js';
 
 const LIVE = ['active', 'trialing'];
 export const DEFAULT_TIMEZONE = DEFAULT_TZ;
@@ -103,16 +104,51 @@ export async function activeSubscription(user) {
   });
 }
 
-/** { plan, subscription } for the user. Treat the result as read-only: it may be shared by concurrent requests. */
+// After the trial, with no plan: the account is read-only (middleware/auth.js requireActivePlan) and nothing keeps
+// running in the background (scheduled emails wait, AI and lead generation stop) until a plan is chosen.
+const LOCKED_LIMITS = { dailyEmailLimit: 0, monthlyAiMessages: 0, maxDiscoveryPerDay: 0, monthlyLeadGenLimit: 0, leadGenAutoRun: false };
+
+async function isPlatformAdmin(user) {
+  const has = (perms) => perms.some((p) => (p.permission?.key || p.key) === 'admin.access');
+  if (user.role?.permissions) return has(user.role.permissions);
+  const roleId = user.roleId ?? (await prisma.user.findUnique({ where: { id: user.id }, select: { roleId: true } }))?.roleId;
+  if (roleId == null) return false;
+  const role = await prisma.role.findUnique({ where: { id: roleId }, include: { permissions: { include: { permission: true } } } });
+  return !!role && has(role.permissions);
+}
+
+/**
+ * The plan of an account with no live subscription: the trial plan while the trial runs, then Free with background
+ * limits at zero (locked). Platform admins are never on a trial: they get the trial plan. With the trial off
+ * (app.trialDays = 0) it is the Free plan, as before.
+ */
+async function planWithoutSubscription(user) {
+  const free = await prisma.plan.findUnique({ where: { key: 'free' } });
+  const t = await trialSettings();
+  if (!t.days) return { plan: free, subscription: null, trial: null };
+  const trialPlan = (await prisma.plan.findUnique({ where: { key: t.planKey } })) || free;
+  if (await isPlatformAdmin(user)) return { plan: trialPlan, subscription: null, trial: null };
+  const trial = trialState(user, t.days);
+  if (trial.active) return { plan: trialPlan, subscription: null, trial: { ...trial, planName: trialPlan?.name || null } };
+  return { plan: free && { ...free, ...LOCKED_LIMITS }, subscription: null, trial: { ...trial, planName: null } };
+}
+
+/** The trial state the client shows (banner, Billing page), or null when the account is not on a trial. */
+export async function trialFlags(user) {
+  if (!(await trialSettings()).days) return { trial: null };
+  const u = user.teamMembership !== undefined ? user : { ...user, teamMembership: await prisma.teamMember.findUnique({ where: { userId: user.id } }) };
+  const { trial } = await effectivePlan(u);
+  return { trial: trial ? { enabled: true, active: trial.active, locked: trial.locked, endsAt: trial.endsAt, daysLeft: trial.daysLeft, planName: trial.planName } : null };
+}
+
+/** { plan, subscription, trial } for the user. Treat the result as read-only: it may be shared by concurrent requests. */
 export async function effectivePlan(user) {
   const key = `${user.id}|${user.teamMembership?.teamId || ''}`;
   const hit = planCache.get(key);
   if (hit && Date.now() - hit.at < PLAN_TTL_MS) return hit.value;
   const gen = planGeneration;
   const sub = await activeSubscription(user);
-  const value = sub
-    ? { plan: sub.plan, subscription: sub }
-    : { plan: await prisma.plan.findUnique({ where: { key: 'free' } }), subscription: null };
+  const value = sub ? { plan: sub.plan, subscription: sub, trial: null } : await planWithoutSubscription(user);
   // Do not cache a result read before a concurrent invalidation.
   if (gen === planGeneration) {
     planCache.delete(key);

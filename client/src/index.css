@@ -119,6 +119,17 @@ body {
 @keyframes dd-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .dd-enter { animation: dd-enter 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/* Loading truck and empty-state art (components/Loaders.jsx). */
+@keyframes dd-road { to { stroke-dashoffset: -24; } }
+@keyframes dd-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.2px); } }
+@keyframes dd-float { 0%, 100% { translate: -50% 0; } 50% { translate: -50% -3px; } }
+.dd-road { animation: dd-road 0.7s linear infinite; }
+.dd-bob { animation: dd-bob 0.35s ease-in-out infinite; transform-box: fill-box; }
+.dd-float { animation: dd-float 4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .dd-road, .dd-bob, .dd-float { animation: none; }
+}
+
 /* Signature: a carrier's live local clock. */
 .dd-clock { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg-2); white-space: nowrap; }
 

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { trialFlags } from '../lib/plans.js';
 import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { ah, badRequest, unauthorized, forbidden, conflict } from '../lib/errors.js';
@@ -55,14 +56,14 @@ async function meResponse(userId) {
     where: { id: userId },
     include: { role: { include: { permissions: { include: { permission: true } } } }, teamMembership: { include: { team: true } } },
   });
-  return { ...publicUser(user, user.role.permissions.map((p) => p.permission.key)), ...(await mailFlags()) };
+  return { ...publicUser(user, user.role.permissions.map((p) => p.permission.key)), ...(await mailFlags()), ...(await trialFlags(user)) };
 }
 
 r.get('/csrf', (req, res) => res.json({ ok: true }));
 
 r.get('/me', ah(async (req, res) => {
   if (!req.user) return res.json({ user: null });
-  res.json({ user: { ...publicUser(req.user, req.permissions), ...(await mailFlags()) } });
+  res.json({ user: { ...publicUser(req.user, req.permissions), ...(await mailFlags()), ...(await trialFlags(req.user)) } });
 }));
 
 r.post('/register', registerLimiter, ah(async (req, res) => {

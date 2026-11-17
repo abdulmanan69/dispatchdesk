@@ -83,6 +83,7 @@ model User {
   ownedTeams         Team[]                @relation("TeamOwner")
   sentInvitations    Invitation[]          @relation("InvitedBy")
   subscriptions      Subscription[]
+  couponRedemptions  CouponRedemption[]
   payments           Payment[]
   carriers           Carrier[]             @relation("CarrierOwner")
   assignedCarriers   Carrier[]             @relation("CarrierAssignee")
@@ -555,6 +556,44 @@ model Customer {
 
   @@index([ownerId, status])
   @@index([factoringCompanyId])
+}
+
+/// A code from Admin → Codes. kind 'discount': a Stripe coupon + promotion code typed at checkout. kind 'plan': redeemed
+/// in the app for `planKey` during `planMonths` months (null = no end) without payment, once per user.
+model Coupon {
+  id                    String             @id @default(cuid())
+  code                  String             @unique // upper case
+  kind                  String // discount | plan
+  description           String?
+  percentOff            Int?
+  amountOffCents        Int?
+  duration              String? // once | repeating | forever (discount)
+  durationMonths        Int?
+  planKey               String?
+  planMonths            Int?
+  maxRedemptions        Int?
+  redemptions           Int                @default(0) // plan codes; Stripe counts discount codes
+  expiresAt             DateTime?
+  active                Boolean            @default(true)
+  stripeCouponId        String?
+  stripePromotionCodeId String?
+  createdById           String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  redeemed              CouponRedemption[]
+}
+
+model CouponRedemption {
+  id             String   @id @default(cuid())
+  couponId       String
+  userId         String
+  subscriptionId String?
+  createdAt      DateTime @default(now())
+  coupon         Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, userId])
+  @@index([userId])
 }
 
 /// Dispatch fee a customer carrier paid for one weekly statement (weekStart = the statement's Monday, 'YYYY-MM-DD', in

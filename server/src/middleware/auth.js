@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { effectivePlan } from '../lib/plans.js';
+import { trialSettings } from '../services/billing/trial.js';
 import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { sha256, randomToken } from '../lib/crypto.js';
@@ -169,6 +171,33 @@ export async function requireVerifiedEmail(req, res, next) {
       error: 'Verify your email address to continue. Open the link we emailed you, or use "Resend link" at the top of the page.',
       code: 'EMAIL_UNVERIFIED',
       details: { code: 'EMAIL_UNVERIFIED' },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Writes still allowed once the trial has ended: everything a verification-pending account may do, plus billing (to
+// choose a plan or redeem a code) and accepting a team invitation (the team's plan then applies).
+const PLAN_EXEMPT = [...VERIFY_EXEMPT, /^\/api\/billing(\/|$)/, /^\/api\/teams\/invitations\/[^/]+\/accept(-by-id)?$/];
+
+/**
+ * After the free trial, an account without a plan is read-only: API writes return 402 { code: 'TRIAL_ENDED' } until a
+ * plan is chosen (lib/plans.js). Reading and exporting keep working; admins are never locked out.
+ */
+export async function requireActivePlan(req, res, next) {
+  try {
+    if (!req.user || READ_METHODS.has(req.method)) return next();
+    const p = `${req.baseUrl || ''}${req.path || ''}`.toLowerCase().replace(/\/{2,}/g, '/');
+    if (!p.startsWith('/api/') || PLAN_EXEMPT.some((r) => r.test(p))) return next();
+    if (req.permissions?.has('admin.access')) return next();
+    if (!(await trialSettings()).days) return next(); // trial off: nothing is ever locked
+    const { trial } = await effectivePlan(req.user);
+    if (!trial?.locked) return next();
+    res.status(402).json({
+      error: 'Your free trial has ended. Choose a plan under Billing to keep adding, calling and sending. Your data is kept and you can still view it.',
+      code: 'TRIAL_ENDED',
+      details: { code: 'TRIAL_ENDED' },
     });
   } catch (err) {
     next(err);

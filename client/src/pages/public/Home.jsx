@@ -36,7 +36,7 @@ export default function Home() {
         <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-14 sm:px-6 lg:grid-cols-[1fr_1.15fr] lg:pb-24 lg:pt-20">
           <div className="dd-enter min-w-0">
             <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface/80 px-3 py-1 text-[13px] font-medium text-fg-2 backdrop-blur">
-              <span className="size-2 rounded-full bg-c-green" />Free plan, no card required
+              <span className="size-2 rounded-full bg-c-green" />Free trial, no card required
             </span>
             <h1 className="mt-5 text-[40px] font-semibold leading-[1.05] tracking-[-0.035em] text-fg sm:text-[58px]">
               Find carriers, call them, and keep their <span className="text-brand-600 dark:text-brand-300">trucks moving</span>
@@ -45,7 +45,7 @@ export default function Home() {
               DispatchDesk is the sales CRM and dispatch desk for truck dispatchers. Generate leads from the FMCSA census, work a call queue with your own phone service, follow up on time, and plan every truck's next trip on a live map.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Button size="lg" to={user ? '/app' : '/register'}>{user ? 'Open your desk' : 'Start free'}</Button>
+              <Button size="lg" to={user ? '/app' : '/register'}>{user ? 'Open your desk' : 'Start free trial'}</Button>
               <Button size="lg" variant="secondary" to="/pricing">See pricing</Button>
             </div>
             <div className="mt-8">
@@ -124,7 +124,7 @@ export default function Home() {
       {/* Pricing */}
       <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
-          <SectionHead eyebrow="Pricing" hue="teal" title="Start free, upgrade when you grow" />
+          <SectionHead eyebrow="Pricing" hue="teal" title="Try it free, then pick your plan" />
           <Link to="/pricing" className="text-sm font-medium text-brand-700 hover:underline dark:text-brand-300">Compare all plans</Link>
         </div>
         <div className="mt-10"><PricingTeaser user={user} /></div>

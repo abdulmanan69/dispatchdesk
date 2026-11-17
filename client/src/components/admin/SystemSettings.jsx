@@ -11,6 +11,7 @@ import AiUsage from './AiUsage.jsx';
 
 const GROUPS = [
   { key: 'app', title: 'Application', test: null },
+  { key: 'announcement', title: 'Announcement bar', test: null, help: 'A one-line message across the top of the app, the website, or both. Each viewer can close it; changing the text shows it again to everyone.' },
   { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
   { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
   { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
@@ -18,7 +19,9 @@ const GROUPS = [
 ];
 
 const LABELS = {
-  'app.name': 'Application name', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
+  'app.name': 'Application name', 'app.trialDays': 'Free trial days', 'app.trialPlan': 'Trial plan (features during the trial)',
+  'announcement.enabled': 'Show the announcement', 'announcement.text': 'Message', 'announcement.linkUrl': 'Link (optional)', 'announcement.linkLabel': 'Link text',
+  'announcement.tone': 'Color', 'announcement.audience': 'Show it to', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
   'ai.provider': 'AI provider', 'ai.baseUrl': 'API base URL (OpenAI-compatible only)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional, OpenAI-compatible only)',
   'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
   'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
@@ -32,6 +35,9 @@ const LABELS = {
 const HINTS = {
   'app.requireEmailVerification': 'Applies once platform email (SMTP) works. Unverified accounts can sign in and look around, but cannot save changes until they open the verification link. Admins are never blocked.',
   'app.registrationOpen': 'When off, nobody can create a new account. Existing users can still sign in.',
+  'app.trialDays': 'Accounts without a plan get this many days with the trial plan, then become read-only until they choose a plan. 0 turns the trial off (Free plan forever).',
+  'app.trialPlan': 'Plan key whose limits apply during the trial, for example pro.',
+  'announcement.linkUrl': 'A page in the app (/app/billing) or a full https:// address.',
   'smtp.dailyLimit': 'Most messages platform email sends per day (UTC), counted across all servers. Part of it is kept for verification and password reset mail. Match it to the daily quota of your SMTP provider.',
   'ai.provider': "Users without their own key use this provider, within their plan's monthly AI limit. Users can add their own key in Settings → AI.",
   'ai.model': 'For Claude, leave it empty or enter a claude- model; anything else uses claude-opus-5-5.',
@@ -39,13 +45,19 @@ const HINTS = {
 const TEST_LABEL = { smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
 const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
 
-const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 } };
+const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 }, 'app.trialDays': { min: 0, max: 365 } };
 
 // `id` comes from the surrounding Field, so its label names the control.
 function SettingInput({ s, value, onChange, id }) {
   if (s.type === 'bool') return <Switch checked={value === 'true'} onChange={(v) => onChange(String(v))} label={LABELS[s.key] || s.key} />;
   if (s.key === 'ai.provider') {
     return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
+  }
+  if (s.key === 'announcement.tone') {
+    return <Select id={id} value={value || 'info'} onChange={(e) => onChange(e.target.value)}><option value="info">Teal (news)</option><option value="success">Green (good news)</option><option value="warning">Amber (warning)</option></Select>;
+  }
+  if (s.key === 'announcement.audience') {
+    return <Select id={id} value={value || 'everyone'} onChange={(e) => onChange(e.target.value)}><option value="everyone">Everyone (app and website)</option><option value="app">Signed-in users (app only)</option><option value="public">Visitors (website only)</option></Select>;
   }
   if (s.key === 'search.provider') {
     return <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Disabled</option><option value="tavily">Tavily</option><option value="brave">Brave Search</option></Select>;

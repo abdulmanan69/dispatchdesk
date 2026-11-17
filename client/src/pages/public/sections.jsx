@@ -396,7 +396,7 @@ export function PricingTeaser({ user }) {
             </ul>
             <div className="mt-auto pt-6">
               <Button className="w-full" variant={hot ? 'primary' : 'secondary'} to={p.key === 'free' ? (user ? '/app' : '/register') : '/pricing'}>
-                {p.key === 'free' ? (user ? 'Open app' : 'Start free') : `See ${p.name}`}
+                {p.key === 'free' ? (user ? 'Open app' : 'Start free trial') : `See ${p.name}`}
               </Button>
             </div>
           </div>
@@ -411,7 +411,7 @@ export function PricingTeaser({ user }) {
 /* ------------------------------------------------------------------ */
 
 export const FAQ = [
-  ['Is the free plan really free?', 'Yes. The Free plan has no time limit and needs no card. It includes carrier discovery, the CRM, pipeline, prospecting, one sequence and the lead generator with a monthly allowance. Paid plans raise the limits.'],
+  ['How does the free trial work?', 'Every new account gets the full Pro features free for 14 days, with no card. After the trial, choose a plan to keep adding carriers, calling and sending. Your data is kept, and you can still view it.'],
   ['Does DispatchDesk dial calls automatically?', 'No. Every call starts with your click, through the phone service you choose: Google Voice, 8x8, RingCentral, Dialpad, Microsoft Teams, Zoom Phone, your phone app, or a Twilio bridge. Texts in sequences are never sent automatically either.'],
   ['Where do the carrier leads come from?', 'From the public FMCSA Company Census on data.transportation.gov. Each run checks the live dataset, skips carriers already in your CRM, and scores leads on contact details, authority age and fleet size.'],
   ['Which email accounts can I connect?', 'Google and Microsoft accounts with one click once your administrator enables them, or any mailbox with SMTP such as Gmail with an app password, Outlook, Yahoo, Zoho, iCloud, Hostinger, GoDaddy and Fastmail. Emails go out from your own address.'],
@@ -441,7 +441,7 @@ export function CtaBand({ user }) {
         <h2 className="relative text-[28px] font-semibold tracking-[-0.02em] text-white sm:text-[36px]">Build your carrier list this afternoon</h2>
         <p className="relative mx-auto mt-3 max-w-xl text-[17px] leading-7 text-white/85">Create a free account, run your first lead generator, and start calling with the phone service you already use.</p>
         <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-          <Button size="lg" to={user ? '/app' : '/register'} className="!bg-white !text-[#0b3b37] hover:!bg-white/90">{user ? 'Open your desk' : 'Start free'}</Button>
+          <Button size="lg" to={user ? '/app' : '/register'} className="!bg-white !text-[#0b3b37] hover:!bg-white/90">{user ? 'Open your desk' : 'Start free trial'}</Button>
           <Button size="lg" variant="secondary" to="/pricing" className="!border-white/40 !bg-white/10 !text-white hover:!bg-white/20">See pricing</Button>
         </div>
       </div>

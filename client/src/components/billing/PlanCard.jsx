@@ -3,7 +3,7 @@ import { money } from '../../lib/format.js';
 import { cx } from '../ui.jsx';
 
 export function priceLabel(plan) {
-  if (plan.priceCents === 0) return { amount: '$0', unit: 'forever' };
+  if (plan.priceCents === 0) return { amount: '$0', unit: plan.freeUnit || 'forever' };
   const unit = `${plan.perSeat ? 'per user / ' : '/ '}${plan.interval === 'year' ? 'year' : 'month'}`;
   return { amount: money(plan.priceCents), unit };
 }

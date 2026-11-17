@@ -11,6 +11,8 @@ import { effectivePlan, usage, invalidatePlans, storageStatus, STORAGE_MB } from
 import { withLock } from '../lib/locks.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getStripe, requireStripe, stripeMode } from '../services/stripe.js';
+import { trialSettings } from '../services/billing/trial.js';
+import { redeemPlanCode } from '../services/billing/coupons.js';
 
 const r = Router();
 // Signature verification is a local HMAC check and needs no real API key.
@@ -53,15 +55,26 @@ const publicPlan = (p) => ({
   features: planFeatures(p),
 });
 
+/** With the free trial on, the Free plan is shown as the trial: the trial plan's features for a number of days. */
+const trialCard = (free, trialPlan, days) => ({
+  ...publicPlan(free), name: 'Free trial', description: `Every ${trialPlan.name} feature free for ${days} days. No card needed.`,
+  freeUnit: `for ${days} days`, features: planFeatures(trialPlan),
+});
+
 r.get('/plans', ah(async (req, res) => {
-  const plans = await prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } });
-  res.json({ plans: plans.map(publicPlan), paymentsEnabled: (await stripeMode()) !== 'unconfigured' });
+  const [plans, t] = await Promise.all([prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }), trialSettings()]);
+  const trialPlan = t.days ? plans.find((p) => p.key === t.planKey) : null;
+  res.json({
+    plans: plans.map((p) => (p.key === 'free' && trialPlan ? trialCard(p, trialPlan, t.days) : publicPlan(p))),
+    trial: trialPlan ? { days: t.days, planKey: trialPlan.key } : null,
+    paymentsEnabled: (await stripeMode()) !== 'unconfigured',
+  });
 }));
 
 r.use(requireAuth);
 
 r.get('/me', ah(async (req, res) => {
-  const [{ plan, subscription }, u, storage, payments, pending, mode] = await Promise.all([
+  const [{ plan, subscription, trial }, u, storage, payments, pending, mode] = await Promise.all([
     effectivePlan(req.user),
     usage(req.user),
     storageStatus(req.user),
@@ -78,12 +91,36 @@ r.get('/me', ah(async (req, res) => {
       managedByTeam: !!teamOwned, isOwner: subscription.userId === req.user.id, hasPortal: !!subscription.stripeCustomerId,
       granted: !subscription.stripeSubscriptionId && !subscription.stripeCheckoutId,
     },
+    trial: trial ? { enabled: true, active: trial.active, locked: trial.locked, endsAt: trial.endsAt, daysLeft: trial.daysLeft, planName: trial.planName } : null,
     pendingSubscription: pending && { id: pending.id, status: pending.status, planKey: pending.plan.key, createdAt: pending.createdAt },
     usage: u,
     storage: { usedBytes: storage.usedBytes, limitBytes: storage.limitBytes, scope: storage.scope },
     payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
     stripeMode: mode,
   });
+}));
+
+/** Redeem a code for free plan months (Admin → Codes). */
+r.post('/redeem', ah(async (req, res) => {
+  const body = parse(z.object({ code: z.string().trim().min(1).max(60) }), req.body);
+  const out = await redeemPlanCode(req.user, body.code);
+  await audit(req, 'billing.code_redeemed', { entityType: 'subscription', entityId: out.subscription.id, details: { plan: out.plan.key, months: out.months ?? null } });
+  res.json({ plan: publicPlan(out.plan), months: out.months ?? null, phrase: `${out.phrase.charAt(0).toUpperCase()}${out.phrase.slice(1)}` });
+}));
+
+/**
+ * The newest plan gift the user has not seen yet (an admin gifted it with "notify" on): the app shows a welcome card
+ * once, then marks the notification read.
+ */
+r.get('/celebration', ah(async (req, res) => {
+  const n = await prisma.notification.findFirst({
+    where: { userId: req.user.id, type: 'plan_gift', readAt: null, createdAt: { gte: new Date(Date.now() - 60 * 86_400_000) } },
+    orderBy: { createdAt: 'desc' },
+  });
+  const key = n?.link ? new URL(n.link, 'http://x').searchParams.get('gift') : null;
+  const plan = key ? await prisma.plan.findUnique({ where: { key } }) : null;
+  if (!n || !plan) return res.json({ celebration: null });
+  res.json({ celebration: { notificationId: n.id, plan: publicPlan(plan), headline: n.title, message: n.body } });
 }));
 
 async function customerIdFor(user) {

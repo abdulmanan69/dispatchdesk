@@ -148,7 +148,7 @@ export function termsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail 
 
 <h2>Plans and payment</h2>
 <ul>
-<li>The Free plan has usage limits. Paid plans are billed in advance through Stripe and renew until cancelled.</li>
+<li>New accounts get a free trial with no card. When the trial ends, the account becomes read-only (you can view and export your data) until you choose a paid plan. Paid plans are billed in advance and renew until cancelled.</li>
 <li>You can cancel at any time in Billing; the plan stays active until the end of the paid period. Fees are not refunded except where the law requires.</li>
 <li>We may change prices with at least 30 days' notice before your next renewal.</li>
 </ul>
@@ -181,7 +181,7 @@ export function homeHtml({ appName = 'DispatchDesk', appUrl = '' } = {}) {
 <li>Loads, rate confirmation import, broker checks, a live fleet map with road routes and ETAs, and driver location links shared with consent.</li>
 <li>Invoices, detention, weekly carrier statements and profit reports.</li>
 </ul>
-<p>Free plan, no card needed. <a href="${esc(appUrl)}/register">Create an account</a> or <a href="${esc(appUrl)}/login">sign in</a>.</p>
+<p>Free trial, no card needed. <a href="${esc(appUrl)}/register">Create an account</a> or <a href="${esc(appUrl)}/login">sign in</a>.</p>
 <p><a href="${esc(appUrl)}/privacy">Privacy policy</a> · <a href="${esc(appUrl)}/terms">Terms of service</a></p>
 </main>`;
 }

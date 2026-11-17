@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Trash2 } from 'lucide-react';
+import { Search, Trash2, Gift } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Modal, useConfirm } from '../Modal.jsx';
 import GrantPlanModal from './GrantPlanModal.jsx';
+import GiftPlanModal from './GiftPlanModal.jsx';
 import { date, relative } from '../../lib/format.js';
 import { Card, Input, Select, DataTable, Pagination, QueryState, Badge, IconButton, Button } from '../ui.jsx';
 
@@ -22,6 +23,17 @@ export default function AdminUsers() {
   const remove = useApiMutation((id) => api.del(`/api/admin/users/${id}`), { success: 'User deleted', invalidate: inv });
   const [temp, setTemp] = useState(null); // { name, password }
   const [grantFor, setGrantFor] = useState(null);
+  // Selected users across pages (id -> { id, name, email }) for "Gift a plan".
+  const [picked, setPicked] = useState(() => new Map());
+  const [gifting, setGifting] = useState(false);
+  const onSelect = (rows) => (ids) => setPicked((prev) => {
+    const next = new Map(prev);
+    for (const u of rows) {
+      if (ids.has(u.id)) next.set(u.id, { id: u.id, name: u.name, email: u.email });
+      else next.delete(u.id);
+    }
+    return next;
+  });
   const resetPw = useApiMutation(({ id }) => api.post(`/api/admin/users/${id}/temp-password`), { onSuccess: (d, v) => setTemp({ name: v.name, password: d.password }) });
   const canAssignAdmin = can('admin.roles');
   const isAdminRole = (k) => k === 'admin' || k === 'super_admin';
@@ -43,11 +55,18 @@ export default function AdminUsers() {
           <option value="suspended">Suspended</option>
         </Select>
         <Button type="submit" variant="secondary">Search</Button>
+        {picked.size > 0 && (
+          <span className="ml-auto inline-flex items-center gap-2">
+            <span className="text-xs text-muted">{picked.size} selected</span>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setPicked(new Map())}>Clear</Button>
+            <Button type="button" icon={Gift} onClick={() => setGifting(true)}>Gift a plan</Button>
+          </span>
+        )}
       </form>
       <QueryState query={q}>
         {(d) => (
           <>
-            <DataTable rows={d.items} columns={[
+            <DataTable rows={d.items} selected={new Set(picked.keys())} onSelect={onSelect(d.items)} columns={[
               { key: 'name', header: 'User', render: (u) => (<div><p className="font-medium">{u.name}</p><p className="text-xs text-muted">{u.email}{!u.emailVerified && ' · unverified'}</p></div>) },
               { key: 'role', header: 'Role', render: (u) => {
                 const locked = u.id === me.id || (!canAssignAdmin && isAdminRole(u.role));
@@ -88,6 +107,7 @@ export default function AdminUsers() {
         )}
       </QueryState>
       {grantFor && <GrantPlanModal user={grantFor} onClose={() => setGrantFor(null)} />}
+      {gifting && <GiftPlanModal users={[...picked.values()]} onClose={() => setGifting(false)} onDone={() => setPicked(new Map())} />}
       {temp && (
         <Modal open onClose={() => setTemp(null)} title={`Temporary password for ${temp.name}`} size="sm"
           footer={<><Button variant="secondary" onClick={() => navigator.clipboard?.writeText(temp.password)}>Copy</Button><Button onClick={() => setTemp(null)}>Done</Button></>}>

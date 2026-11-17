@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { prisma } from './db.js';
 import { config } from './config.js';
-import { loadSession, requireAuth, requireVerifiedEmail } from './middleware/auth.js';
+import { loadSession, requireAuth, requireVerifiedEmail, requireActivePlan } from './middleware/auth.js';
 import { csrf, apiLimiter, ipFloodLimiter, publicLinkLimiter, linkMissLimiter } from './middleware/security.js';
 import { errorHandler, notFoundApi } from './middleware/error.js';
 import { precompressAssets, precompressedAssets } from './middleware/static.js';
@@ -202,6 +202,7 @@ export function createApp() {
   // Per address, counting only unknown or expired links: guessing tokens cannot get a fresh bucket per guess.
   app.use(/^\/api\/public\/(track|load-track|portal|calendar|onboarding)(?=\/)/, linkMissLimiter);
   app.use(forApi(requireVerifiedEmail));
+  app.use(forApi(requireActivePlan));
 
   app.get('/api/health', async (req, res) => {
     try {

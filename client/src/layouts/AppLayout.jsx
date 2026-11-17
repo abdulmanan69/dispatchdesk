@@ -19,6 +19,9 @@ import { Avatar, Button, ErrorBoundary, Loading, cx } from '../components/ui.jsx
 import { Modal } from '../components/Modal.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Logo } from '../components/Logo.jsx';
+import AnnouncementBar from '../components/announcement/AnnouncementBar.jsx';
+import TrialBanner from '../components/billing/TrialBanner.jsx';
+import GiftCelebration from '../components/billing/GiftCelebration.jsx';
 import CommandPalette, { CommandHint } from '../components/CommandPalette.jsx';
 import FloatingDock from '../components/market/FloatingDock.jsx';
 
@@ -518,7 +521,7 @@ export default function AppLayout() {
   useShellEffects(user?.id);
 
   if (loading) {
-    return connection ? <ConnectionNotice connection={connection} retryNow={retryNow} block /> : <Loading label="Loading your workspace…" className="h-full" />;
+    return connection ? <ConnectionNotice connection={connection} retryNow={retryNow} block /> : <Loading label="Loading your workspace…" className="h-full" size="lg" />;
   }
   if (!user) return <Navigate to={`/login?next=${encodeURIComponent(location.pathname + location.search)}`} replace />;
 
@@ -566,7 +569,10 @@ export default function AppLayout() {
           <Suspense fallback={null}><TourHost /></Suspense>
         </ErrorBoundary>
         <ConnectionNotice connection={connection} retryNow={retryNow} />
+        <AnnouncementBar place="app" />
         <VerifyBanner />
+        <TrialBanner />
+        <ErrorBoundary fallback={null}><GiftCelebration /></ErrorBoundary>
         <main className="min-h-0 flex-1 overflow-y-auto">
           {/* Bottom padding keeps the last rows clear of the floating dock (desktop) and the home indicator (phones). */}
           <div key={location.pathname} className="dd-enter mx-auto max-w-[1440px] px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-6 sm:px-8 sm:pb-20 sm:pt-8">

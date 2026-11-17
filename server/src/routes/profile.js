@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { trialFlags } from '../lib/plans.js';
 import { prisma } from '../db.js';
 import { ah, notFound } from '../lib/errors.js';
 import { parse, z, reqStr, optStr } from '../lib/validate.js';
@@ -13,7 +14,7 @@ const avatarUpload = uploader('image', 'avatars', 3, { quotaCredit: (req) => sto
 
 const validTz = (tz) => { try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; } };
 /** The same account shape as GET /api/auth/me (the client replaces its user with it). */
-const accountJson = async (user, permissions) => ({ ...publicUser(user, permissions), ...(await mailFlags()) });
+const accountJson = async (user, permissions) => ({ ...publicUser(user, permissions), ...(await mailFlags()), ...(await trialFlags(user)) });
 
 r.patch('/', requireAuth, ah(async (req, res) => {
   const body = parse(z.object({

@@ -6,6 +6,7 @@ import Overview from '../../components/admin/Overview.jsx';
 import AdminUsers from '../../components/admin/Users.jsx';
 import AdminSubscriptions from '../../components/admin/Subscriptions.jsx';
 import AdminPlans from '../../components/admin/Plans.jsx';
+import Coupons from '../../components/admin/Coupons.jsx';
 import Moderation from '../../components/admin/Moderation.jsx';
 import SystemSettings from '../../components/admin/SystemSettings.jsx';
 import AuditLog from '../../components/admin/AuditLog.jsx';
@@ -17,6 +18,7 @@ const TABS = [
   { value: 'users', label: 'Users', perm: 'admin.users' },
   { value: 'subscriptions', label: 'Subscriptions', perm: 'admin.billing' },
   { value: 'plans', label: 'Plans', perm: 'admin.billing' },
+  { value: 'codes', label: 'Codes', perm: 'admin.billing' },
   { value: 'moderation', label: 'Moderation', perm: 'admin.moderate' },
   { value: 'settings', label: 'System settings', perm: 'admin.settings' },
   { value: 'audit', label: 'Audit log', perm: 'admin.audit' },
@@ -38,6 +40,7 @@ export default function Admin() {
       {tab === 'users' && <AdminUsers />}
       {tab === 'subscriptions' && <AdminSubscriptions />}
       {tab === 'plans' && <AdminPlans />}
+      {tab === 'codes' && <Coupons />}
       {tab === 'moderation' && <Moderation />}
       {tab === 'settings' && <SystemSettings />}
       {tab === 'audit' && <AuditLog />}

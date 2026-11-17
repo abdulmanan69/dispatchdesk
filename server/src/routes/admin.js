@@ -12,6 +12,10 @@ import { LockBusyError } from '../lib/locks.js';
 import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
+import { grantPlan, planPhrase } from '../services/billing/grant.js';
+import { COUPON_KINDS, DISCOUNT_DURATIONS, CODE_RE, normCode, createStripeDiscount, setStripeDiscountActive, stripeRedemptions, findCoupon } from '../services/billing/coupons.js';
+import { notify } from '../lib/activity.js';
+import { sendSystemMail } from '../services/email/system.js';
 import { assertAccountDeletable, deleteAccount } from './settings.js';
 import { invalidateLoadTrack } from '../services/fleet/loadShare.js';
 import { testPlatformAi } from '../services/ai/llm.js';
@@ -212,18 +216,55 @@ r.post('/subscriptions/grant', requirePermission('admin.billing'), ah(async (req
   ]);
   if (!user) throw notFound('User not found');
   if (!plan || plan.key === 'free') throw badRequest('Pick a paid plan to grant');
-  const paying = await prisma.subscription.findFirst({ where: { userId: user.id, status: { in: ['active', 'trialing', 'past_due'] }, stripeSubscriptionId: { not: null } } });
-  if (paying) throw conflict('This user already pays through Stripe. Change their plan there instead.');
-  const end = body.months ? new Date(Date.now() + body.months * 30.44 * 86400000) : null;
-  const seats = Math.max(body.seats || 1, plan.perSeat ? plan.minSeats : 1);
-  const existing = await prisma.subscription.findFirst({ where: { userId: user.id, stripeSubscriptionId: null, status: { in: ['active', 'trialing'] } } });
-  const data = { planId: plan.id, status: 'active', seats, currentPeriodEnd: end, cancelAtPeriodEnd: !!end };
-  const sub = existing
-    ? await prisma.subscription.update({ where: { id: existing.id }, data })
-    : await prisma.subscription.create({ data: { ...data, userId: user.id } });
-  invalidatePlans();
+  const out = await grantPlan({ userId: user.id, plan, months: body.months ?? null, seats: body.seats || 1 });
+  if (out.skipped) throw conflict('This user already pays through Stripe. Change their plan there instead.');
+  const sub = out.subscription;
+  const existing = !out.created;
+  const { seats } = sub;
   await audit(req, 'admin.plan_granted', { entityType: 'subscription', entityId: sub.id, details: { userId: user.id, plan: plan.key, months: body.months ?? null, seats } });
   res.status(existing ? 200 : 201).json({ subscription: { id: sub.id, planKey: plan.key, status: sub.status, currentPeriodEnd: sub.currentPeriodEnd, seats } });
+}));
+
+function giftEmailText({ name, phrase, appName, message }) {
+  return [
+    `Hi ${name || 'there'},`, '',
+    `You got ${phrase} on ${appName}. No payment needed.`,
+    ...(message ? ['', message] : []), '',
+    `Open your desk: ${config.appUrl}/app`,
+  ].join('\n');
+}
+
+/**
+ * Gift a plan to several users at once (Admin → Users → select → Gift a plan). Users who pay through Stripe are
+ * skipped. With `notify`: an in-app notification (the app shows a welcome card once) and an email with the message.
+ */
+r.post('/subscriptions/gift', requirePermission('admin.billing'), ah(async (req, res) => {
+  const body = parse(z.object({
+    userIds: z.array(z.string().min(1).max(40)).min(1).max(500),
+    planKey: z.string().min(1).max(30),
+    months: z.coerce.number().int().min(1).max(120).nullable().optional(),
+    notify: z.boolean().default(false),
+    message: z.string().trim().max(500).optional(),
+  }), req.body);
+  const plan = await prisma.plan.findUnique({ where: { key: body.planKey } });
+  if (!plan || plan.key === 'free') throw badRequest('Pick a paid plan to gift');
+  const users = await prisma.user.findMany({ where: { id: { in: [...new Set(body.userIds)] } }, select: { id: true, name: true, email: true } });
+  const months = body.months ?? null;
+  const phrase = planPhrase(plan, months);
+  const appName = (await getSetting('app.name')) || 'DispatchDesk';
+  let granted = 0;
+  const skipped = [];
+  for (const u of users) {
+    const out = await grantPlan({ userId: u.id, plan, months, extend: true });
+    if (out.skipped) { skipped.push({ userId: u.id, name: u.name, reason: 'Pays through Stripe' }); continue; }
+    granted += 1;
+    if (!body.notify) continue;
+    await notify(u.id, { type: 'plan_gift', title: `You got ${phrase}`, body: body.message || `A gift from ${appName}. No payment needed.`, link: `/app/billing?gift=${plan.key}` });
+    sendSystemMail({ to: u.email, subject: `You got ${phrase}`, text: giftEmailText({ name: u.name, phrase, appName, message: body.message }), category: 'notice' })
+      .catch((err) => console.error(`[gift] email to user ${u.id} failed: ${err.message}`));
+  }
+  await audit(req, 'admin.plan_gifted', { details: { plan: plan.key, months, granted, skipped: skipped.length, notify: body.notify } });
+  res.json({ granted, skipped });
 }));
 
 r.post('/subscriptions/:id/revoke', requirePermission('admin.billing'), ah(async (req, res) => {
@@ -234,6 +275,67 @@ r.post('/subscriptions/:id/revoke', requirePermission('admin.billing'), ah(async
   invalidatePlans();
   await audit(req, 'admin.plan_revoked', { entityType: 'subscription', entityId: sub.id });
   res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Codes: discounts at Stripe checkout and free plan months (services/billing/coupons.js)
+// ---------------------------------------------------------------------------
+const planMap = async () => new Map((await prisma.plan.findMany()).map((p) => [p.key, p]));
+const couponView = (c, plans, used = new Map()) => ({
+  id: c.id, code: c.code, kind: c.kind, description: c.description, percentOff: c.percentOff, amountOffCents: c.amountOffCents,
+  duration: c.duration, durationMonths: c.durationMonths, planKey: c.planKey, planName: plans.get(c.planKey)?.name || null,
+  planMonths: c.planMonths, maxRedemptions: c.maxRedemptions, used: c.kind === 'plan' ? c.redemptions : (used.get(c.id) ?? null),
+  expiresAt: c.expiresAt, active: c.active, createdAt: c.createdAt,
+});
+
+r.get('/coupons', requirePermission('admin.billing'), ah(async (req, res) => {
+  const rows = await prisma.coupon.findMany({ orderBy: { createdAt: 'desc' }, take: 500 });
+  const [plans, used] = await Promise.all([planMap(), stripeRedemptions(rows)]);
+  res.json({ coupons: rows.map((c) => couponView(c, plans, used)) });
+}));
+
+r.post('/coupons', requirePermission('admin.billing'), ah(async (req, res) => {
+  const b = parse(z.object({
+    kind: z.enum(COUPON_KINDS),
+    code: z.string().trim().min(3).max(40),
+    description: optStr(120),
+    percentOff: z.coerce.number().int().min(1).max(100).optional(),
+    amountOffCents: z.coerce.number().int().min(1).max(10_000_000).optional(),
+    duration: z.enum(DISCOUNT_DURATIONS).optional(),
+    durationMonths: z.coerce.number().int().min(1).max(36).optional(),
+    planKey: z.string().max(30).optional(),
+    planMonths: z.coerce.number().int().min(1).max(120).nullable().optional(),
+    maxRedemptions: z.coerce.number().int().min(1).max(1_000_000).optional(),
+    expiresAt: z.coerce.date().optional(),
+  }), req.body);
+  const code = normCode(b.code);
+  if (!CODE_RE.test(code)) throw badRequest('Use 3 to 40 letters, numbers, - or _ for the code');
+  if (b.expiresAt && b.expiresAt <= new Date()) throw badRequest('The expiry date must be in the future');
+  if (await prisma.coupon.findUnique({ where: { code } })) throw conflict(`The code ${code} already exists`);
+  const data = { code, kind: b.kind, description: b.description || null, maxRedemptions: b.maxRedemptions ?? null, expiresAt: b.expiresAt ?? null, createdById: req.user.id };
+  if (b.kind === 'discount') {
+    if (!b.percentOff === !b.amountOffCents) throw badRequest('Give either a percent or a dollar amount off');
+    const duration = b.duration || 'once';
+    if (duration === 'repeating' && !b.durationMonths) throw badRequest('Say for how many months the discount applies');
+    Object.assign(data, { percentOff: b.percentOff ?? null, amountOffCents: b.amountOffCents ?? null, duration, durationMonths: duration === 'repeating' ? b.durationMonths : null });
+    Object.assign(data, await createStripeDiscount(data));
+  } else {
+    const plan = await prisma.plan.findUnique({ where: { key: b.planKey || '' } });
+    if (!plan || plan.key === 'free') throw badRequest('Pick the plan this code unlocks');
+    Object.assign(data, { planKey: plan.key, planMonths: b.planMonths ?? null });
+  }
+  const c = await prisma.coupon.create({ data });
+  await audit(req, 'admin.coupon_created', { entityType: 'coupon', entityId: c.id, details: { code, kind: c.kind } });
+  res.status(201).json({ coupon: couponView(c, await planMap()) });
+}));
+
+r.patch('/coupons/:id', requirePermission('admin.billing'), ah(async (req, res) => {
+  const b = parse(z.object({ active: z.boolean() }), req.body);
+  const c = await findCoupon(req.params.id);
+  if (c.kind === 'discount') await setStripeDiscountActive(c, b.active);
+  const row = await prisma.coupon.update({ where: { id: c.id }, data: { active: b.active } });
+  await audit(req, b.active ? 'admin.coupon_enabled' : 'admin.coupon_disabled', { entityType: 'coupon', entityId: c.id });
+  res.json({ coupon: couponView(row, await planMap()) });
 }));
 
 r.get('/payments', requirePermission('admin.billing'), ah(async (req, res) => {
@@ -363,6 +465,13 @@ r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
     if (key === 'ai.provider' && !['', 'openai', 'anthropic'].includes(value)) throw badRequest('AI provider must be openai or anthropic');
     if (key === 'app.supportEmail' && value && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(value)) throw badRequest('Support email must be a valid email address');
+    if (key === 'app.trialDays' && value && !(/^\d{1,3}$/.test(value) && Number(value) <= 365)) throw badRequest('Free trial days must be a whole number from 0 to 365');
+    if (key === 'app.trialPlan' && value && !(await prisma.plan.findUnique({ where: { key: value } }))) throw badRequest(`There is no plan with the key ${value}`);
+    if (key === 'announcement.tone' && !['', 'info', 'success', 'warning'].includes(value)) throw badRequest('Announcement color must be info, success or warning');
+    if (key === 'announcement.audience' && !['', 'everyone', 'app', 'public'].includes(value)) throw badRequest('Show the announcement to everyone, app or public');
+    if (key === 'announcement.text' && value.length > 300) throw badRequest('Keep the announcement under 300 characters');
+    if (key === 'announcement.linkLabel' && value.length > 40) throw badRequest('Keep the link text under 40 characters');
+    if (key === 'announcement.linkUrl' && value && !/^(\/(?!\/)\S*|https:\/\/\S+)$/.test(value)) throw badRequest('The announcement link must be a page in the app (starting with /) or an https:// address');
     writes.push([key, value]);
   }
   for (const key of body.clear) {

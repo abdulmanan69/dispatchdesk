@@ -16,7 +16,25 @@
     <link rel="manifest" href="/manifest.webmanifest" />
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Shown until the app script runs (React replaces it). Inline so it needs no stylesheet. -->
+    <style>
+      #dd-splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #fafafa; font: 500 13px/1.4 system-ui, sans-serif; color: #63636b; }
+      html.dark #dd-splash { background: #141415; color: #a1a1aa; }
+      #dd-splash .r { animation: dd-s-road .7s linear infinite; }
+      #dd-splash .b { animation: dd-s-bob .35s ease-in-out infinite; }
+      @keyframes dd-s-road { to { stroke-dashoffset: -24; } }
+      @keyframes dd-s-bob { 50% { transform: translateY(-1.2px); } }
+      @media (prefers-reduced-motion: reduce) { #dd-splash .r, #dd-splash .b { animation: none; } }
+    </style>
+    <div id="root"><div id="dd-splash" role="status" aria-label="Loading DispatchDesk">
+      <svg viewBox="0 0 72 36" width="112" height="56" aria-hidden="true">
+        <line x1="2" y1="33" x2="70" y2="33" stroke="#a1a1aa" stroke-opacity=".4" stroke-width="1.5" stroke-linecap="round" />
+        <line class="r" x1="2" y1="33" x2="70" y2="33" stroke="#149c8e" stroke-width="1.5" stroke-dasharray="6 6" stroke-linecap="round" opacity=".6" />
+        <g class="b"><rect x="20" y="9" width="27" height="17" rx="2.5" fill="none" stroke="#0f7d73" stroke-width="1.8" /><path d="M47 14h7l5 6v6h-12z" fill="#0f7d73" /></g>
+        <g fill="#f59e0b"><circle cx="27" cy="28" r="3.2" /><circle cx="40" cy="28" r="3.2" /><circle cx="53" cy="28" r="3.2" /></g>
+      </svg>
+      <span>DispatchDesk</span>
+    </div></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
