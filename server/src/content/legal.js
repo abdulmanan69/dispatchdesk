@@ -65,6 +65,9 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <li>No person at ${n} reads Google user data unless you ask us to for support, it is needed for security or abuse investigations, or the law requires it.</li>
 <li>Google user data is not used to train artificial intelligence models.</li>
 </ul>
+<p><strong>What we access.</strong> From Google sign-in: your name, email address, profile picture and Google account ID. From a connected Gmail mailbox: only the permission to send; ${n} does not read, list or store your Gmail messages, labels, drafts or contacts.</p>
+<p><strong>How it is protected.</strong> The Gmail refresh token is encrypted at rest (AES-256-GCM), travels only over HTTPS, is used only by our server to send the emails you write or schedule, and is never shown in the browser. Access to production systems is limited to the operator.</p>
+<p><strong>Retention and deletion.</strong> The Gmail token and the connected address are kept only while the mailbox is connected. Disconnecting the mailbox deletes the token immediately. Copies of the emails you wrote and sent through ${n} (recipient, subject, text, attachments and time) stay in your account history until you delete them or your account. Deleting your account deletes your Google sign-in data and all of your records; backup copies are replaced within 7 days. You can also remove ${n}'s access at any time from your Google account permissions page.</p>
 <p>You can disconnect Google at any time in Settings (Security for sign-in, Email for a connected Gmail mailbox) or from your Google account permissions page.</p>
 
 <h2>How we share information</h2>

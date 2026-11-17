@@ -25,7 +25,8 @@ describe('privacy policy, terms and home page for crawlers', () => {
     const res = await request(app).get('/privacy');
     expect(res.status).toBe(200);
     expect(res.text).toContain('data-legal="privacy"');
-    for (const s of ['Information we collect', 'Google API Services User Data Policy', 'Limited Use', 'gmail.send', 'Retention', 'Your choices and rights', 'Children']) {
+    for (const s of ['Information we collect', 'Google API Services User Data Policy', 'Limited Use', 'gmail.send', 'Retention', 'Your choices and rights', 'Children',
+      'Disconnecting the mailbox deletes the token immediately', 'AES-256-GCM']) {
       expect(res.text).toContain(s);
     }
     expect(res.text).not.toMatch(/<script>(?!.*seo)/);
