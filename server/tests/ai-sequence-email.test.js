@@ -278,7 +278,9 @@ describe('the same rules as template emails', () => {
 
     // Closed window in the carrier's zone (state TX, America/Chicago): written when it opens, not now.
     const hour = localParts('America/Chicago', new Date()).hour;
-    const start = (hour + 2) % 24 === 23 ? 21 : (hour + 2) % 24;
+    // A one-hour window that is closed now and ends by midnight (at 21:00 the old fallback of 21 was the open hour).
+    let start = (hour + 2) % 24;
+    if (start === 23) start = (hour + 4) % 24;
     const win = await setup({ steps: [{ aiMode: 'auto', aiBrief: 'Intro' }], carrierData: { state: 'TX' }, extra: { respectBusinessHours: true, windowStartHour: start, windowEndHour: start + 1, skipWeekends: false } });
     await prisma.sequenceEnrollment.updateMany({ where: { sequenceId: win.seq.id }, data: { nextStepAt: new Date() } });
     const calls = ai.chat.mock.calls.length;

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Printer, Send, Eye, Link2, Copy, Link2Off, RefreshCw } from 'lucide-react';
+import { Printer, Send, Eye, Link2, Copy, Link2Off, RefreshCw, HandCoins } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { date, dollars, money, num } from '../../lib/format.js';
@@ -8,6 +8,7 @@ import { Badge, Button, Card, Checkbox, DataTable, EmptyState, Field, Input, Loa
 import { Modal, useConfirm } from '../Modal.jsx';
 import { useToast } from '../Toast.jsx';
 import { copyText, openPrintable } from '../invoices/print.js';
+import { FeeBadge, FeePaymentsModal } from './FeePayments.jsx';
 
 // Weeks run Monday 00:00 to Monday 00:00 in the account time zone (the server builds them there), so they are labeled
 // in that zone, not the browser's.
@@ -115,20 +116,23 @@ export default function StatementsPanel({ customer }) {
   const toast = useToast();
   const [view, setView] = useState(null);
   const [sending, setSending] = useState(null);
+  const [paying, setPaying] = useState(null);
   const q = useQuery({ queryKey: ['customer', customer.id, 'statements'], queryFn: () => api.get(`/api/customers/${customer.id}/statements`, { weeks: 12 }) });
   const print = (week) => { if (!openPrintable(`/api/customers/${customer.id}/statements/${week}/print`)) toast.info('Allow pop-ups for this site to print the statement.'); };
+  const owed = q.data?.owedCents || 0;
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-      <Card title="Weekly statements" bodyClass="p-0">
+      <Card title="Weekly statements" bodyClass="p-0"
+        actions={q.data && (owed > 0 ? <Badge color="amber">Owes you {money(owed)}</Badge> : q.data.items.some((w) => w.fees?.status === 'paid') ? <Badge color="green">Fees paid</Badge> : null)}>
         {q.isLoading ? <Loading /> : q.isError ? <ErrorState error={q.error} onRetry={q.refetch} /> : (
           <>
-            <p className="border-b border-line px-4 py-2 text-xs text-muted">Loads delivered Monday to Sunday ({q.data.timezone}). Fee = the load’s fee %, else {customer.dispatchFeePercent != null ? `${customer.dispatchFeePercent}%` : 'the customer’s fee % (not set)'}.</p>
+            <p className="border-b border-line px-4 py-2 text-xs text-muted">Loads delivered Monday to Sunday ({q.data.timezone}). Fee = the load’s fee %, else {customer.dispatchFeePercent != null ? `${customer.dispatchFeePercent}%` : 'the customer’s fee % (not set)'}. Record what the carrier pays under Payment; payments on dispatch fee invoices count too.</p>
             <DataTable rows={q.data.items.map((w) => ({ ...w, id: w.weekStart }))}
               mobileRow={(w) => (
                 <div className="space-y-2">
                   <div className="flex justify-between gap-2 text-sm"><span className="font-medium">{weekLabel(w, q.data.timezone)}</span><span className="tabular">{money(w.totals.feeCents)}</span></div>
-                  <p className="text-xs text-muted">{w.totals.loads} load{w.totals.loads === 1 ? '' : 's'} · gross {money(w.totals.grossCents)} · net {money(w.totals.netCents)}</p>
-                  {w.totals.loads > 0 && <div className="flex gap-1"><Button size="sm" variant="secondary" onClick={() => setView(w.weekStart)}>View</Button><Button size="sm" variant="secondary" onClick={() => setSending(w.weekStart)}>Email</Button></div>}
+                  <p className="flex flex-wrap items-center gap-2 text-xs text-muted">{w.totals.loads} load{w.totals.loads === 1 ? '' : 's'} · gross {money(w.totals.grossCents)} · net {money(w.totals.netCents)} <FeeBadge fees={w.fees} /></p>
+                  {w.totals.loads > 0 && <div className="flex gap-1"><Button size="sm" variant="secondary" onClick={() => setView(w.weekStart)}>View</Button><Button size="sm" variant="secondary" onClick={() => setSending(w.weekStart)}>Email</Button>{w.totals.feeCents > 0 && <Button size="sm" variant="secondary" onClick={() => setPaying(w.weekStart)}>Payment</Button>}</div>}
                 </div>
               )}
               columns={[
@@ -137,10 +141,12 @@ export default function StatementsPanel({ customer }) {
                 { key: 'gross', header: 'Gross', className: 'text-right', render: (w) => <span className="tabular">{money(w.totals.grossCents, { digits: 0 })}</span> },
                 { key: 'fee', header: 'Fee', className: 'text-right', render: (w) => <span className="tabular font-medium">{money(w.totals.feeCents)}</span> },
                 { key: 'net', header: 'Net', className: 'text-right', render: (w) => <span className="tabular">{money(w.totals.netCents, { digits: 0 })}</span> },
+                { key: 'paid', header: 'Fee paid', render: (w) => <FeeBadge fees={w.fees} /> },
                 {
                   key: 'actions', header: <span className="sr-only">Actions</span>, className: 'text-right',
                   render: (w) => (w.totals.loads > 0 ? (
                     <span className="inline-flex gap-1">
+                      {w.totals.feeCents > 0 && <Button size="sm" variant="ghost" icon={HandCoins} onClick={() => setPaying(w.weekStart)}>Payment</Button>}
                       <Button size="sm" variant="ghost" icon={Eye} onClick={() => setView(w.weekStart)}>View</Button>
                       <Button size="sm" variant="ghost" icon={Printer} onClick={() => print(w.weekStart)}>Print</Button>
                       <Button size="sm" variant="ghost" icon={Send} onClick={() => setSending(w.weekStart)}>Email</Button>
@@ -157,6 +163,7 @@ export default function StatementsPanel({ customer }) {
         {view && <StatementView customerId={customer.id} week={view} />}
       </Modal>
       {sending && <SendStatement customer={customer} week={sending} onClose={() => setSending(null)} />}
+      {paying && <FeePaymentsModal customerId={customer.id} week={paying} title={`Fee payments · week of ${date(`${paying}T12:00:00`)}`} onClose={() => setPaying(null)} />}
     </div>
   );
 }

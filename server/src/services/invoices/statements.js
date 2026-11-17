@@ -135,8 +135,46 @@ export async function buildStatement({ customer, carrier, week, withDocuments = 
   };
 }
 
-/** Totals for the most recent `count` weeks (newest first) with one bounded query. */
-export async function weeklySummaries({ customer, carrier, tz, count = 12, now = new Date() }) {
+/**
+ * Collection state of a week's dispatch fee: 'none' (no fee), 'paid', 'partial' or 'unpaid'. Overpayment is not
+ * carried to other weeks.
+ */
+export function feeState(feeCents, collectedCents) {
+  const fee = feeCents || 0;
+  const owedCents = Math.max(0, fee - collectedCents);
+  const status = fee <= 0 ? (collectedCents > 0 ? 'paid' : 'none') : owedCents === 0 ? 'paid' : collectedCents > 0 ? 'partial' : 'unpaid';
+  return { feeCents: fee, collectedCents, owedCents, status };
+}
+
+/**
+ * What was collected toward each week's fee: payments recorded on the statement week (FeePayment) plus payments on
+ * per-load dispatch-fee invoices for that week's loads, so a fee is never counted as owed twice.
+ * `weeks` = [{ key, feeCents, loadIds }] -> Map(key -> feeState + { recordedCents, invoicePaidCents }).
+ */
+export async function feeCollection(customerId, weeks) {
+  const loadIds = weeks.flatMap((w) => w.loadIds);
+  const [invoices, payments] = await Promise.all([
+    loadIds.length
+      ? prisma.invoice.findMany({ where: { kind: 'dispatch_fee', status: { not: 'void' }, loadId: { in: loadIds } }, select: { loadId: true, paidCents: true } })
+      : [],
+    prisma.feePayment.findMany({ where: { customerId, weekStart: { in: weeks.map((w) => w.key) } }, select: { weekStart: true, amountCents: true } }),
+  ]);
+  const byLoad = new Map();
+  for (const i of invoices) byLoad.set(i.loadId, (byLoad.get(i.loadId) || 0) + (i.paidCents || 0));
+  const byWeek = new Map();
+  for (const p of payments) byWeek.set(p.weekStart, (byWeek.get(p.weekStart) || 0) + p.amountCents);
+  return new Map(weeks.map((w) => {
+    const invoicePaidCents = w.loadIds.reduce((s, id) => s + (byLoad.get(id) || 0), 0);
+    const recordedCents = byWeek.get(w.key) || 0;
+    return [w.key, { ...feeState(w.feeCents, recordedCents + invoicePaidCents), recordedCents, invoicePaidCents }];
+  }));
+}
+
+/**
+ * Totals for the most recent `count` weeks (newest first) with one bounded query. `withFees` adds each week's
+ * collection state (dispatcher views only; the carrier portal does not show it).
+ */
+export async function weeklySummaries({ customer, carrier, tz, count = 12, now = new Date(), withFees = false }) {
   const weeks = recentWeeks(tz, count, now);
   if (!weeks.length) return [];
   const from = weeks[weeks.length - 1].start;
@@ -146,11 +184,15 @@ export async function weeklySummaries({ customer, carrier, tz, count = 12, now =
     select: { id: true, rateCents: true, tonuCents: true, loadedMiles: true, deadheadMiles: true, detentionHours: true, detentionRateCents: true, dispatchFeePercent: true, deliveryDate: true, pickupDate: true, originCity: true, originState: true, destCity: true, destState: true, referenceNumber: true, status: true },
     take: 5000,
   });
-  return weeks.map((w) => {
+  const out = weeks.map((w) => {
     const lines = loads.filter((l) => {
       const t = new Date(loadDay(l)).getTime();
       return t >= w.start.getTime() && t < w.end.getTime();
     }).map((l) => statementLine(l, customer.dispatchFeePercent));
-    return { weekStart: w.key, periodStart: w.start, periodEnd: w.end, totals: statementTotals(lines) };
+    return { weekStart: w.key, periodStart: w.start, periodEnd: w.end, totals: statementTotals(lines), loadIds: lines.map((l) => l.id) };
   });
+  const fees = withFees
+    ? await feeCollection(customer.id, out.map((w) => ({ key: w.weekStart, feeCents: w.totals.feeCents, loadIds: w.loadIds })))
+    : null;
+  return out.map(({ loadIds, ...w }) => (fees ? { ...w, fees: fees.get(w.weekStart) } : w));
 }

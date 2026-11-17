@@ -13,7 +13,7 @@ import { withCalc } from '../services/loads/rateCalc.js';
 import { homeDays } from '../services/loads/fit.js';
 import { rulesOf, rulesForCarrier, RULE_FIELDS } from '../services/loads/fitCheck.js';
 import { parseJson } from '../services/brokers/vetting.js';
-import { buildStatement, weekFromKey, weekOf, weeklySummaries } from '../services/invoices/statements.js';
+import { buildStatement, weekFromKey, weekOf, weeklySummaries, feeCollection } from '../services/invoices/statements.js';
 import { statementHtml, statementText, brandLogo } from '../services/invoices/print.js';
 import { createPortalLink, revokePortalLink, portalStatus } from '../services/invoices/portal.js';
 import { queueUserEmail } from '../services/email/compose.js';
@@ -363,14 +363,65 @@ async function senderName(user) {
 r.get('/:id/statements', ah(async (req, res) => {
   const { customer, carrier } = await loadCustomer(req.user, req.params.id);
   const { weeks } = parse(z.object({ weeks: z.coerce.number().int().min(1).max(26).default(12) }), req.query);
-  const items = await weeklySummaries({ customer, carrier, tz: req.user.timezone, count: weeks });
-  res.json({ items, currentWeek: weekOf(req.user.timezone).key, timezone: req.user.timezone, portal: portalStatus(customer) });
+  const items = await weeklySummaries({ customer, carrier, tz: req.user.timezone, count: weeks, withFees: true });
+  const owedCents = items.reduce((s, w) => s + (w.fees?.owedCents || 0), 0);
+  res.json({ items, owedCents, currentWeek: weekOf(req.user.timezone).key, timezone: req.user.timezone, portal: portalStatus(customer) });
 }));
+
+/** The week's fee collection: totals plus the payments recorded on the week (newest first). */
+async function weekFees(customer, statement) {
+  const fees = await feeCollection(customer.id, [{ key: statement.weekStart, feeCents: statement.totals.feeCents, loadIds: statement.lines.map((l) => l.id) }]);
+  const payments = await prisma.feePayment.findMany({
+    where: { customerId: customer.id, weekStart: statement.weekStart }, orderBy: { paidAt: 'desc' },
+    select: { id: true, amountCents: true, paidAt: true, method: true, reference: true, note: true, createdAt: true },
+  });
+  return { ...fees.get(statement.weekStart), payments };
+}
 
 r.get('/:id/statements/:week', ah(async (req, res) => {
   const { customer, carrier } = await loadCustomer(req.user, req.params.id);
   const week = weekFromKey(req.user.timezone, req.params.week);
-  res.json({ statement: await buildStatement({ customer, carrier, week }) });
+  const statement = await buildStatement({ customer, carrier, week });
+  res.json({ statement, fees: await weekFees(customer, statement) });
+}));
+
+export const FEE_METHODS = ['zelle', 'ach', 'check', 'cash', 'card', 'other'];
+const DAY_MS = 86_400_000;
+const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+/** Record a dispatch fee payment from the carrier for one statement week. */
+r.post('/:id/statements/:week/payments', ah(async (req, res) => {
+  const { customer, carrier } = await loadCustomer(req.user, req.params.id, true);
+  const week = weekFromKey(req.user.timezone, req.params.week);
+  const body = parse(z.object({
+    amountCents: z.coerce.number().int().min(1, 'Enter the amount paid').max(100_000_000),
+    paidAt: z.coerce.date().optional(),
+    method: z.enum(FEE_METHODS).optional(),
+    reference: optStr(100),
+    note: optStr(500),
+  }), req.body);
+  const paidAt = body.paidAt || new Date();
+  if (paidAt.getTime() > Date.now() + DAY_MS) throw badRequest('The payment date cannot be in the future');
+  await prisma.feePayment.create({
+    data: {
+      customerId: customer.id, weekStart: week.key, amountCents: body.amountCents, paidAt,
+      method: body.method || null, reference: body.reference || null, note: body.note || null, createdById: req.user.id,
+    },
+  });
+  await logActivity(req.user, { type: 'customer', carrierId: carrier.id, summary: `Recorded a ${usd(body.amountCents)} dispatch fee payment for the week of ${week.key}` });
+  const statement = await buildStatement({ customer, carrier, week });
+  res.status(201).json({ fees: await weekFees(customer, statement) });
+}));
+
+/** Remove a recorded fee payment (a typo, or a payment that bounced). */
+r.delete('/:id/fee-payments/:paymentId', ah(async (req, res) => {
+  const { customer, carrier } = await loadCustomer(req.user, req.params.id, true);
+  const payment = await prisma.feePayment.findFirst({ where: { id: String(req.params.paymentId), customerId: customer.id } });
+  if (!payment) throw notFound('Payment not found');
+  await prisma.feePayment.delete({ where: { id: payment.id } });
+  await logActivity(req.user, { type: 'customer', carrierId: carrier.id, summary: `Removed a ${usd(payment.amountCents)} dispatch fee payment for the week of ${payment.weekStart}` });
+  const statement = await buildStatement({ customer, carrier, week: weekFromKey(req.user.timezone, payment.weekStart) });
+  res.json({ fees: await weekFees(customer, statement) });
 }));
 
 r.get('/:id/statements/:week/print', ah(async (req, res) => {

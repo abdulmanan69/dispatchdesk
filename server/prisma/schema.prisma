@@ -551,9 +551,28 @@ model Customer {
   owner               User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   lanes               CustomerLane[]
   factoringCompany    FactoringCompany? @relation(fields: [factoringCompanyId], references: [id], onDelete: SetNull)
+  feePayments         FeePayment[]
 
   @@index([ownerId, status])
   @@index([factoringCompanyId])
+}
+
+/// Dispatch fee a customer carrier paid for one weekly statement (weekStart = the statement's Monday, 'YYYY-MM-DD', in
+/// the dispatcher's time zone). Fee invoices keep their own payments; a statement week counts both.
+model FeePayment {
+  id          String   @id @default(cuid())
+  customerId  String
+  weekStart   String
+  amountCents Int
+  paidAt      DateTime
+  method      String? // zelle | ach | check | cash | card | other
+  reference   String?
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, weekStart])
 }
 
 /// A factoring company the dispatcher's carriers use. Kept per owner and shared by that owner's carriers.
