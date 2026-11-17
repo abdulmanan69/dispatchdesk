@@ -1,9 +1,10 @@
 import { Suspense, useEffect, useState } from 'react';
-import { isRouteErrorResponse, Link, useLocation, useNavigate, useRouteError } from 'react-router';
+import { isRouteErrorResponse, Link, Navigate, useLocation, useNavigate, useRouteError } from 'react-router';
 import { RefreshCw, ArrowLeft } from 'lucide-react';
 import { Button, Loading } from '../components/ui.jsx';
 import { useAuth } from './AuthContext.jsx';
 import { importWithReload, isChunkError, reloadForNewVersion } from './reload.js';
+import { useSite } from '../lib/site.js';
 
 /**
  * Building blocks for the route table in src/router.jsx: lazy page and layout loaders (with the one-time reload on a
@@ -40,6 +41,14 @@ export function RequirePermission({ perm, children }) {
   return children;
 }
 export const requires = (perm) => (el) => <RequirePermission perm={perm}>{el}</RequirePermission>;
+
+/** Route guard for optional parts of the site (Admin → System settings): switched off, the page sends you to `to`. */
+export function RequireFeature({ name, to, children }) {
+  const { loading, features } = useSite();
+  if (loading) return <Loading />;
+  return features[name] ? children : <Navigate to={to} replace />;
+}
+export const feature = (name, to) => (el) => <RequireFeature name={name} to={to}>{el}</RequireFeature>;
 
 export function NotFound() {
   return (

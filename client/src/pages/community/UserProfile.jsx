@@ -4,12 +4,14 @@ import { ArrowLeft, MessageSquare, Store } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { date, label } from '../../lib/format.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useSite } from '../../lib/site.js';
 import { Avatar, Badge, Card, EmptyState, QueryState } from '../../components/ui.jsx';
 import { PostCard } from '../../components/community/PostCard.jsx';
 
 export default function UserProfile() {
   const { userId } = useParams();
   const { user } = useAuth();
+  const { features } = useSite();
   const q = useQuery({ queryKey: ['community', 'user', userId], queryFn: () => api.get(`/api/community/users/${userId}`) });
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
@@ -31,7 +33,7 @@ export default function UserProfile() {
                   {user?.id === u.id && <Link to="/app/settings" className="mt-4 text-xs text-brand-700 hover:underline dark:text-brand-300">Edit your profile</Link>}
                 </div>
               </Card>
-              {listings.length > 0 && (
+              {features.marketplace && listings.length > 0 && (
                 <Card title="Marketplace listings" className="mt-4" bodyClass="p-0">
                   <ul>
                     {listings.map((l) => (

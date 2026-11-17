@@ -4,6 +4,7 @@ import { ah, badRequest } from '../lib/errors.js';
 import { verifyPayload, sha256 } from '../lib/crypto.js';
 import { getSettings } from '../lib/settings.js';
 import { publicFormLimiter } from '../middleware/security.js';
+import { siteFeatures } from '../lib/siteFeatures.js';
 
 const r = Router();
 
@@ -24,6 +25,13 @@ r.get('/contact', ah(async (req, res) => {
   const s = await getSettings(['app.supportEmail']);
   res.set('Cache-Control', 'public, max-age=300');
   res.json({ supportEmail: s['app.supportEmail'] || null });
+}));
+
+/** What the public site and the app show: the support email and the optional parts (marketplace, live training). */
+r.get('/site', ah(async (req, res) => {
+  const [s, features] = await Promise.all([getSettings(['app.supportEmail']), siteFeatures()]);
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ supportEmail: s['app.supportEmail'] || null, features });
 }));
 
 /** The announcement bar set in Admin → System settings (null when off). `id` changes with the content. */

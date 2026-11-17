@@ -6,6 +6,7 @@ import { ah, notFound, badRequest, conflict } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, reqEmail, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { TRAINING_CATEGORIES } from '../lib/constants.js';
 import { requireAuth, requirePermission, avatarUrl } from '../middleware/auth.js';
+import { requireFeature } from '../lib/siteFeatures.js';
 import { publicFormLimiter } from '../middleware/security.js';
 import { uploader, verifyFileSignature, removeFile, filePath } from '../middleware/upload.js';
 import { audit } from '../lib/audit.js';
@@ -205,7 +206,7 @@ r.get('/me/dashboard', requireAuth, ah(async (req, res) => {
 // Training requests (public "book a slot" form)
 // ---------------------------------------------------------------------------
 
-r.post('/requests', publicFormLimiter, ah(async (req, res) => {
+r.post('/requests', requireFeature('trainingProgram'), publicFormLimiter, ah(async (req, res) => {
   const body = parse(z.object({ name: reqStr(120), email: reqEmail, phone: optStr(40), message: optStr(2000) }), req.body);
   const row = await prisma.trainingRequest.create({ data: { ...body, userId: req.user?.id ?? null } });
   for (const id of await trainerIds()) {
@@ -221,13 +222,13 @@ r.post('/requests', publicFormLimiter, ah(async (req, res) => {
 const authorSelect = { id: true, name: true, avatarPath: true };
 const msgOut = (m) => ({ id: m.id, body: m.body, fromTrainer: m.fromTrainer, readAt: m.readAt, createdAt: m.createdAt, author: m.author ? { id: m.author.id, name: m.author.name, avatarUrl: avatarUrl(m.author) } : null });
 
-r.get('/messages', requireAuth, ah(async (req, res) => {
+r.get('/messages', requireFeature('trainingProgram'), requireAuth, ah(async (req, res) => {
   const rows = await prisma.trainerMessage.findMany({ where: { threadUserId: req.user.id }, include: { author: { select: authorSelect } }, orderBy: { createdAt: 'asc' }, take: 500 });
   await prisma.trainerMessage.updateMany({ where: { threadUserId: req.user.id, fromTrainer: true, readAt: null }, data: { readAt: new Date() } });
   res.json({ items: rows.map(msgOut) });
 }));
 
-r.post('/messages', requireAuth, ah(async (req, res) => {
+r.post('/messages', requireFeature('trainingProgram'), requireAuth, ah(async (req, res) => {
   const { body } = parse(z.object({ body: reqStr(4000) }), req.body);
   const m = await prisma.trainerMessage.create({ data: { threadUserId: req.user.id, authorId: req.user.id, fromTrainer: false, body }, include: { author: { select: authorSelect } } });
   for (const id of await trainerIds()) {

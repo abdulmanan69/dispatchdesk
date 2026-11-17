@@ -19,7 +19,7 @@ const GROUPS = [
 ];
 
 const LABELS = {
-  'app.name': 'Application name', 'app.trialDays': 'Free trial days', 'app.trialPlan': 'Trial plan (features during the trial)',
+  'app.name': 'Application name', 'app.marketplace': 'Marketplace (community listings)', 'app.trainingProgram': 'Live training program (seat requests and trainer messages)', 'app.trialDays': 'Free trial days', 'app.trialPlan': 'Trial plan (features during the trial)',
   'announcement.enabled': 'Show the announcement', 'announcement.text': 'Message', 'announcement.linkUrl': 'Link (optional)', 'announcement.linkLabel': 'Link text',
   'announcement.tone': 'Color', 'announcement.audience': 'Show it to', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
   'ai.provider': 'AI provider', 'ai.baseUrl': 'API base URL (OpenAI-compatible only)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional, OpenAI-compatible only)',
@@ -38,6 +38,8 @@ const LABELS = {
 const HINTS = {
   'app.requireEmailVerification': 'Applies once platform email (SMTP) works. Unverified accounts can sign in and look around, but cannot save changes until they open the verification link. Admins are never blocked.',
   'app.registrationOpen': 'When off, nobody can create a new account. Existing users can still sign in.',
+  'app.marketplace': 'Off by default: the payment provider (Paddle) sells DispatchDesk as software only and does not accept a marketplace on the site. Turning it on shows /marketplace and the Marketplace menu.',
+  'app.trainingProgram': 'Off by default for the same reason. The self-paced course library is always on; this adds the public /training page with seat requests and trainer messaging.',
   'app.trialDays': 'Accounts without a plan get this many days with the trial plan, then become read-only until they choose a plan. 0 turns the trial off (Free plan forever).',
   'app.trialPlan': 'Plan key whose limits apply during the trial, for example pro.',
   'announcement.linkUrl': 'A page in the app (/app/billing) or a full https:// address.',

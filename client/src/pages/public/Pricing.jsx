@@ -60,7 +60,7 @@ export default function Pricing() {
                 </tr>
               </thead>
               <tbody>
-                {ROWS.map(([name, fn]) => (
+                {ROWS.filter(([name, fn]) => name !== 'Training entitlement' || q.data.plans.some((p) => fn(p))).map(([name, fn]) => (
                   <tr key={name} className="border-b border-line/70 last:border-0">
                     <td className="px-4 py-2.5 text-muted">{name}</td>
                     {q.data.plans.map((p) => {

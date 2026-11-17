@@ -1,6 +1,6 @@
 import { createBrowserRouter } from 'react-router';
 import { Loading } from './components/ui.jsx';
-import { page, layout, requires, bindRouter, NotFound, RouteError, PageError } from './context/routes.jsx';
+import { page, layout, requires, feature, bindRouter, NotFound, RouteError, PageError } from './context/routes.jsx';
 
 /**
  * Routes load lazily with React Router's route-level `lazy`, so a page's chunk downloads in parallel with the
@@ -29,9 +29,9 @@ export const router = createBrowserRouter([
         { path: '/', lazy: page(() => import('./pages/public/Home.jsx')) },
         { path: '/features', lazy: page(() => import('./pages/public/Features.jsx')) },
         { path: '/pricing', lazy: page(() => import('./pages/public/Pricing.jsx')) },
-        { path: '/training', lazy: page(() => import('./pages/training/PublicTraining.jsx')) },
-        { path: '/marketplace', lazy: page(() => import('./pages/marketplace/MarketplaceBrowse.jsx')) },
-        { path: '/marketplace/:id', lazy: page(() => import('./pages/marketplace/ListingDetail.jsx')) },
+        { path: '/training', lazy: page(() => import('./pages/training/PublicTraining.jsx'), feature('trainingProgram', '/features')) },
+        { path: '/marketplace', lazy: page(() => import('./pages/marketplace/MarketplaceBrowse.jsx'), feature('marketplace', '/')) },
+        { path: '/marketplace/:id', lazy: page(() => import('./pages/marketplace/ListingDetail.jsx'), feature('marketplace', '/')) },
         { path: '/community', lazy: page(() => import('./pages/community/CommunityFeed.jsx')) },
         { path: '/community/:id', lazy: page(() => import('./pages/community/PostDetail.jsx')) },
         { path: '/u/:userId', lazy: page(() => import('./pages/community/UserProfile.jsx')) },
@@ -97,12 +97,12 @@ export const router = createBrowserRouter([
         { path: 'ai/knowledge', lazy: page(() => import('./pages/ai/KnowledgeBase.jsx')) },
         // Grow
         { path: 'training', lazy: page(() => import('./pages/training/TrainingHome.jsx')) },
-        { path: 'training/messages', lazy: page(() => import('./pages/training/TrainerMessages.jsx')) },
+        { path: 'training/messages', lazy: page(() => import('./pages/training/TrainerMessages.jsx'), feature('trainingProgram', '/app/training')) },
         { path: 'training/:slug', lazy: page(() => import('./pages/training/CourseView.jsx')) },
         { path: 'training/:slug/:lessonId', lazy: page(() => import('./pages/training/LessonView.jsx')) },
-        { path: 'marketplace', lazy: page(() => import('./pages/marketplace/MyMarketplace.jsx')) },
-        { path: 'marketplace/new', lazy: page(() => import('./pages/marketplace/ListingForm.jsx')) },
-        { path: 'marketplace/:id/edit', lazy: page(() => import('./pages/marketplace/ListingForm.jsx')) },
+        { path: 'marketplace', lazy: page(() => import('./pages/marketplace/MyMarketplace.jsx'), feature('marketplace', '/app')) },
+        { path: 'marketplace/new', lazy: page(() => import('./pages/marketplace/ListingForm.jsx'), feature('marketplace', '/app')) },
+        { path: 'marketplace/:id/edit', lazy: page(() => import('./pages/marketplace/ListingForm.jsx'), feature('marketplace', '/app')) },
         { path: 'community', lazy: page(() => import('./pages/community/CommunityFeed.jsx')) },
         { path: 'community/:id', lazy: page(() => import('./pages/community/PostDetail.jsx')) },
         { path: 'team', lazy: page(() => import('./pages/team/Team.jsx')) },

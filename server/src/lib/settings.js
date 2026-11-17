@@ -18,6 +18,10 @@ export const SETTING_DEFS = {
   // Free trial (services/billing/trial.js): accounts without a plan get the trial plan's limits for this many days, then
   // become read-only until they choose a plan. 0 turns the trial off (Free plan forever).
   'app.trialDays': { group: 'app', default: () => process.env.TRIAL_DAYS ?? '14' },
+  // Optional parts of the site. Off by default: the payment provider sells DispatchDesk as software only, and
+  // a marketplace or a live coaching program on the same domain blocks that review. Admin → System settings turns them on.
+  'app.marketplace': { group: 'app', type: 'bool', default: () => process.env.MARKETPLACE || 'false' },
+  'app.trainingProgram': { group: 'app', type: 'bool', default: () => process.env.TRAINING_PROGRAM || 'false' },
   'app.trialPlan': { group: 'app', default: () => 'pro' },
   // Announcement bar across the top of the app and/or the website (GET /api/public/announcement).
   'announcement.enabled': { group: 'announcement', type: 'bool', default: () => 'false' },

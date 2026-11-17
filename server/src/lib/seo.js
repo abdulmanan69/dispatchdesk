@@ -124,9 +124,10 @@ export function robotsTxt() {
   ].join('\n');
 }
 
-export function sitemapXml(lastmod = new Date()) {
+export function sitemapXml(lastmod = new Date(), features = { marketplace: true, trainingProgram: true }) {
   const day = lastmod.toISOString().slice(0, 10);
-  const urls = PAGES.filter((p) => p.sitemap).map((p) => `  <url><loc>${config.appUrl}${p.sitemap.path}</loc><lastmod>${day}</lastmod><priority>${p.sitemap.priority}</priority></url>`);
+  const off = new Set([...(features.marketplace ? [] : ['/marketplace']), ...(features.trainingProgram ? [] : ['/training'])]);
+  const urls = PAGES.filter((p) => p.sitemap && !off.has(p.sitemap.path)).map((p) => `  <url><loc>${config.appUrl}${p.sitemap.path}</loc><lastmod>${day}</lastmod><priority>${p.sitemap.priority}</priority></url>`);
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 

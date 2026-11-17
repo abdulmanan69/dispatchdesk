@@ -4,6 +4,7 @@ import compression from 'compression';
 import { renderIndex, robotsTxt, sitemapXml, webManifest } from './lib/seo.js';
 import { LEGAL_DOCS, homeHtml } from './content/legal.js';
 import { getSettings } from './lib/settings.js';
+import { siteFeatures } from './lib/siteFeatures.js';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -311,7 +312,9 @@ export function createApp() {
     };
     loadIndex();
     app.get('/robots.txt', (req, res) => res.type('text/plain').set('Cache-Control', 'public, max-age=3600').send(robotsTxt()));
-    app.get('/sitemap.xml', (req, res) => { loadIndex(); res.type('application/xml').set('Cache-Control', 'public, max-age=3600').send(sitemapXml(builtAt)); });
+    app.get('/sitemap.xml', async (req, res, next) => {
+      try { loadIndex(); res.type('application/xml').set('Cache-Control', 'public, max-age=3600').send(sitemapXml(builtAt, await siteFeatures())); } catch (err) { next(err); }
+    });
     app.get('/manifest.webmanifest', (req, res) => res.type('application/manifest+json').set('Cache-Control', 'public, max-age=86400').send(JSON.stringify(webManifest())));
     // Every other path gets index.html with that page's title, description and link-preview tags.
     // The home page, privacy policy and terms also carry their text in the HTML, for crawlers and reviewers (for example

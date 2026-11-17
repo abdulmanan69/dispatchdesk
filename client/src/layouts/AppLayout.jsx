@@ -8,6 +8,7 @@ import {
   Sun as SunIcon, ShieldCheck, Receipt, FileStack, BadgePlus, Megaphone, Download, Share, WifiOff, BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useSite } from '../lib/site.js';
 import { applyTheme, storedTheme } from '../context/theme.js';
 import { sharedQueryFn } from '../context/tabSync.js';
 import { promptInstall, registerServiceWorker, useInstallPrompt } from '../context/pwa.js';
@@ -68,7 +69,7 @@ const NAV = [
   ] },
   { hue: 'pink', group: 'Grow', items: [
     { to: '/app/training', label: 'Training', icon: GraduationCap },
-    { to: '/app/marketplace', label: 'Marketplace', icon: Store },
+    { to: '/app/marketplace', label: 'Marketplace', icon: Store, feature: 'marketplace' },
     { to: '/app/community', label: 'Community', icon: MessagesSquare },
     { to: '/app/team', label: 'Team', icon: Users },
   ] },
@@ -160,11 +161,12 @@ function useNavCounts(uid) {
 
 const Sidebar = memo(function Sidebar({ onNavigate, collapsed }) {
   const { can, user } = useAuth();
+  const { features } = useSite();
   const counts = useNavCounts(user.id);
   return (
     <nav className={cx('flex-1 overflow-y-auto pb-6', collapsed ? 'px-2' : 'px-3')} aria-label="App">
       {NAV.map((section, i) => {
-        const items = section.items.filter((it) => !it.perm || can(it.perm));
+        const items = section.items.filter((it) => (!it.perm || can(it.perm)) && (!it.feature || features[it.feature]));
         if (!items.length) return null;
         const hue = GROUP_HUE[section.hue] || GROUP_HUE.gray;
         return (

@@ -3,22 +3,24 @@ import { useQuery } from '@tanstack/react-query';
 import { BookOpen, CheckCircle2, GraduationCap, MessageCircle, PlayCircle, Settings2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useSite } from '../../lib/site.js';
 import { Button, PageHeader, QueryState, StatCard, EmptyState, Card } from '../../components/ui.jsx';
 import { CourseCard } from '../../components/training/CourseCard.jsx';
 import { ProgressBar } from '../../components/training/ProgressBar.jsx';
 
 export default function TrainingHome() {
   const { can } = useAuth();
+  const { features } = useSite();
   const q = useQuery({ queryKey: ['training', 'dashboard'], queryFn: () => api.get('/api/training/me/dashboard') });
 
   return (
     <>
       <PageHeader
         title="Training"
-        subtitle="Self-paced dispatch courses with progress tracking and trainer support."
+        subtitle={features.trainingProgram ? 'Self-paced dispatch courses with progress tracking and trainer support.' : 'Self-paced dispatch courses with progress tracking.'}
         actions={<>
           {can('training.manage') && <Button variant="secondary" icon={Settings2} to="/app/admin/training">Manage training</Button>}
-          <Button variant="secondary" icon={MessageCircle} to="/app/training/messages">Message a trainer</Button>
+          {features.trainingProgram && <Button variant="secondary" icon={MessageCircle} to="/app/training/messages">Message a trainer</Button>}
         </>}
       />
       <QueryState query={q}>
@@ -28,7 +30,7 @@ export default function TrainingHome() {
               <StatCard label="Lessons completed" value={d.stats.lessonsCompleted} icon={CheckCircle2} />
               <StatCard label="Courses started" value={d.stats.coursesStarted} icon={BookOpen} />
               <StatCard label="Courses completed" value={`${d.stats.coursesCompleted} / ${d.stats.totalCourses}`} icon={GraduationCap} tone="green" />
-              <StatCard label="Unread trainer replies" value={d.stats.unreadTrainerMessages} icon={MessageCircle} tone="signal" to="/app/training/messages" />
+              {features.trainingProgram && <StatCard label="Unread trainer replies" value={d.stats.unreadTrainerMessages} icon={MessageCircle} tone="signal" to="/app/training/messages" />}
             </div>
 
             {d.continueCourse && (

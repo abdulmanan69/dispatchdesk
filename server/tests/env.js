@@ -13,6 +13,10 @@ process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.TRIAL_DAYS = '0';
 // Trials count from sign-up, not from the launch date, in tests.
 process.env.TRIAL_LAUNCH = '2020-01-01T00:00:00Z';
+// The marketplace and the live training program are off by default in production (payment provider review); tests
+// exercise them, so they are on here. Tests of the switches set the settings themselves.
+process.env.MARKETPLACE = 'true';
+process.env.TRAINING_PROGRAM = 'true';
 // External integrations are deliberately unconfigured in tests.
 for (const k of ['AI_API_KEY', 'OPENAI_API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'SMTP_HOST', 'SEARCH_API_KEY', 'SEARCH_PROVIDER', 'FMCSA_WEBKEY', 'GOOGLE_CLIENT_ID', 'MICROSOFT_CLIENT_ID', 'ADMIN_EMAIL', 'ADMIN_PASSWORD']) delete process.env[k];
 

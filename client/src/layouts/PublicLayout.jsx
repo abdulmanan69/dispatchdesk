@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api.js';
+import { useSite } from '../lib/site.js';
 import { Link, NavLink, Outlet, useLocation, useNavigation } from 'react-router';
 import { Menu, X, Moon, Sun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -48,8 +47,9 @@ function RouteProgress() {
 
 export default function PublicLayout() {
   const { user } = useAuth();
-  const contact = useQuery({ queryKey: ['public', 'contact'], queryFn: () => api.get('/api/public/contact'), staleTime: 300_000 });
-  const supportEmail = contact.data?.supportEmail;
+  const { supportEmail, features } = useSite();
+  // Optional parts of the site (Admin → System settings) leave the menus when they are switched off.
+  const shown = (to) => !((to.startsWith('/marketplace') && !features.marketplace) || (to.startsWith('/training') && !features.trainingProgram));
   const [open, setOpen] = useState(false);
   const { pathname, hash } = useLocation();
   useEffect(() => { setOpen(false); }, [pathname]);
@@ -74,7 +74,7 @@ export default function PublicLayout() {
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">
           <Link to="/" className="shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500" aria-label="DispatchDesk home"><Logo /></Link>
           <nav className="hidden flex-1 items-center gap-1 md:flex" aria-label="Main">
-            {NAV.map((n) => (
+            {NAV.filter((n) => shown(n.to)).map((n) => (
               <NavLink key={n.to} to={n.to}
                 className={({ isActive }) => cx('rounded-lg px-3 py-2 text-sm transition-ui focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500', isActive ? 'bg-surface-2 font-medium text-fg' : 'text-fg-2 hover:bg-surface-2 hover:text-fg')}>
                 {n.label}
@@ -99,7 +99,7 @@ export default function PublicLayout() {
         </div>
         {open && (
           <nav className="border-t border-line bg-bg px-4 py-3 md:hidden" aria-label="Mobile">
-            {NAV.map((n) => <Link key={n.to} to={n.to} className="block rounded-lg px-2 py-2.5 text-[15px] text-fg hover:bg-surface-2">{n.label}</Link>)}
+            {NAV.filter((n) => shown(n.to)).map((n) => <Link key={n.to} to={n.to} className="block rounded-lg px-2 py-2.5 text-[15px] text-fg hover:bg-surface-2">{n.label}</Link>)}
             <div className="mt-3 flex gap-2">
               {user ? <Button to="/app" className="flex-1">Open app</Button> : (<><Button variant="secondary" to="/login" className="flex-1">Log in</Button><Button to="/register" className="flex-1">Start free</Button></>)}
             </div>
@@ -122,7 +122,7 @@ export default function PublicLayout() {
             <div key={col.title}>
               <h2 className="text-sm font-semibold text-fg">{col.title}</h2>
               <ul className="mt-3 space-y-2 text-sm">
-                {col.links.map(([to, l]) => <li key={to}><Link to={to} className="text-fg-2 transition-ui hover:text-fg">{l}</Link></li>)}
+                {col.links.filter(([to]) => shown(to)).map(([to, l]) => <li key={to}><Link to={to} className="text-fg-2 transition-ui hover:text-fg">{l}</Link></li>)}
                 {col.title === 'Company' && supportEmail && <li><a href={`mailto:${supportEmail}`} className="break-all text-fg-2 transition-ui hover:text-fg">Contact: {supportEmail}</a></li>}
               </ul>
             </div>

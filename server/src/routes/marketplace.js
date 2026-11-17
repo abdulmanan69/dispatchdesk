@@ -5,11 +5,14 @@ import { ah, notFound, badRequest, forbidden } from '../lib/errors.js';
 import { parse, z, reqStr, optStr, optEmail, pageQuery, paginate, pageResult, clean } from '../lib/validate.js';
 import { MARKET_CATEGORIES } from '../lib/constants.js';
 import { requireAuth, requirePermission, hasPermission, avatarUrl } from '../middleware/auth.js';
+import { requireFeature } from '../lib/siteFeatures.js';
 import { uploader, verifyFileSignature, removeFile, filePath, storedFileSize } from '../middleware/upload.js';
 import { audit } from '../lib/audit.js';
 import { notify } from '../lib/activity.js';
 
 const r = Router();
+// The whole marketplace is off unless Admin → System settings turns it on.
+r.use(requireFeature('marketplace'));
 // Replacing a listing image frees the old one, so only the difference counts toward storage.
 const imageUpload = uploader('image', 'marketplace', 5, {
   quotaCredit: async (req) => {

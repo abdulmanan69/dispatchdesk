@@ -10,6 +10,7 @@ import {
 import { api } from '../lib/api.js';
 import { label as statusLabel } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useSite } from '../lib/site.js';
 import { cx } from './ui.jsx';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -95,6 +96,7 @@ export default function CommandPalette() {
   const listRef = useRef(null);
   const navigate = useNavigate();
   const { can } = useAuth();
+  const { features } = useSite();
   const canSearch = can('crm.use');
 
   useEffect(() => {
@@ -142,7 +144,7 @@ export default function CommandPalette() {
 
   const results = useMemo(() => {
     const q = query.trim();
-    const base = [...ACTIONS, ...PAGES.filter((p) => !p.perm || can(p.perm))]
+    const base = [...ACTIONS, ...PAGES.filter((p) => (!p.perm || can(p.perm)) && (p.to !== '/app/marketplace' || features.marketplace))]
       .map((it) => ({ ...it, s: score(q, `${it.label} ${it.keywords || ''}`) }))
       .filter((it) => it.s >= 0)
       .sort((a, b) => (q ? b.s - a.s : 0));
@@ -160,7 +162,7 @@ export default function CommandPalette() {
     }));
     const limited = q ? base.slice(0, 8) : base.filter((x) => x.group === 'Actions').concat(base.filter((x) => x.group === 'Go to').slice(0, 6));
     return [...carrierItems, ...loadItems, ...brokerItems, ...limited];
-  }, [query, found, can]);
+  }, [query, found, can, features]);
 
   useEffect(() => { setActive(0); }, [query, found]);
   useEffect(() => {
