@@ -5,9 +5,9 @@ const MONTH_MS = 30.44 * 86_400_000;
 
 /**
  * Give a user a plan without payment (admin grant, gift, or a plan code). Stored as a subscription with no Stripe IDs
- * that ends at `currentPeriodEnd` (null = no end). A user who pays through Stripe is left alone: returns
- * { skipped: 'paying' }. An existing granted plan is replaced; with `extend`, the later of the two end dates is kept
- * (a code or gift never shortens a plan the user already has).
+ * that ends at `currentPeriodEnd` (null = no end). A user who pays online (Stripe or Paddle) is left alone: returns
+ * { skipped: 'paying' }. An existing granted plan is replaced; with `extend`, a code or gift never shortens what the user
+ * already has: the same plan keeps the later end date, and another plan that lasts longer is kept as is ({ kept: true }).
  */
 export async function grantPlan({ userId, plan, months = null, seats = 1, extend = false }) {
   const paying = await prisma.subscription.findFirst({
@@ -16,9 +16,14 @@ export async function grantPlan({ userId, plan, months = null, seats = 1, extend
   if (paying) return { skipped: 'paying' };
   let end = months ? new Date(Date.now() + months * MONTH_MS) : null;
   const existing = await prisma.subscription.findFirst({ where: { userId, stripeSubscriptionId: null, status: { in: ['active', 'trialing'] } } });
-  if (extend && existing && existing.planId === plan.id && end) {
-    if (!existing.currentPeriodEnd) end = null; // already without an end date
-    else if (existing.currentPeriodEnd > end) end = existing.currentPeriodEnd;
+  if (extend && existing) {
+    if (existing.planId === plan.id) {
+      if (end && !existing.currentPeriodEnd) end = null; // already without an end date
+      else if (end && existing.currentPeriodEnd > end) end = existing.currentPeriodEnd;
+    } else if (!existing.currentPeriodEnd || (end && existing.currentPeriodEnd > end)) {
+      // Another plan that lasts longer: a code or gift never shortens what the user already has.
+      return { subscription: existing, created: false, kept: true };
+    }
   }
   const n = Math.max(seats || 1, plan.perSeat ? plan.minSeats : 1);
   const data = { planId: plan.id, status: 'active', seats: n, currentPeriodEnd: end, cancelAtPeriodEnd: !!end };

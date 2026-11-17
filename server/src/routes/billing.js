@@ -10,6 +10,7 @@ import { getSetting } from '../lib/settings.js';
 import { effectivePlan, usage, invalidatePlans, storageStatus, STORAGE_MB } from '../lib/plans.js';
 import { withLock } from '../lib/locks.js';
 import { requireAuth } from '../middleware/auth.js';
+import { redeemLimiter } from '../middleware/security.js';
 import { getStripe, requireStripe, stripeMode } from '../services/stripe.js';
 import { trialSettings } from '../services/billing/trial.js';
 import { redeemPlanCode } from '../services/billing/coupons.js';
@@ -90,7 +91,8 @@ r.get('/me', ah(async (req, res) => {
     usage(req.user),
     storageStatus(req.user),
     prisma.payment.findMany({ where: { userId: req.user.id }, orderBy: { createdAt: 'desc' }, take: 50 }),
-    prisma.subscription.findFirst({ where: { userId: req.user.id, status: { in: ['incomplete', 'past_due', 'unpaid'] } }, include: { plan: true }, orderBy: { createdAt: 'desc' } }),
+    // Paddle checkouts that were never paid are not "pending" (they are just abandoned overlays).
+    prisma.subscription.findFirst({ where: { userId: req.user.id, status: { in: ['incomplete', 'past_due', 'unpaid'] }, OR: [{ provider: 'stripe' }, { stripeSubscriptionId: { not: null } }] }, include: { plan: true }, orderBy: { createdAt: 'desc' } }),
     stripeMode(),
     paymentSetup(),
   ]);
@@ -118,7 +120,7 @@ r.get('/me', ah(async (req, res) => {
 }));
 
 /** Redeem a code for free plan months (Admin → Codes). */
-r.post('/redeem', ah(async (req, res) => {
+r.post('/redeem', redeemLimiter, ah(async (req, res) => {
   const body = parse(z.object({ code: z.string().trim().min(1).max(60) }), req.body);
   const out = await redeemPlanCode(req.user, body.code);
   await audit(req, 'billing.code_redeemed', { entityType: 'subscription', entityId: out.subscription.id, details: { plan: out.plan.key, months: out.months ?? null } });
@@ -150,7 +152,7 @@ r.get('/payments/:id/invoice', ah(async (req, res) => {
 }));
 
 async function customerIdFor(user) {
-  const prev = await prisma.subscription.findFirst({ where: { userId: user.id, stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' } });
+  const prev = await prisma.subscription.findFirst({ where: { userId: user.id, provider: 'stripe', stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' } });
   return prev?.stripeCustomerId || null;
 }
 
@@ -217,7 +219,8 @@ async function ownedLiveSubscription(user) {
 
 r.post('/portal', ah(async (req, res) => {
   const latest = await prisma.subscription.findFirst({ where: { userId: req.user.id, stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' }, select: { provider: true } });
-  if (latest?.provider === 'paddle') return res.json({ url: await paddlePortalUrl(req.user) });
+  // Paddle customers (or anyone on a Paddle install without a Stripe customer) use Paddle's portal.
+  if (latest?.provider === 'paddle' || (!latest && (await billingProvider()) === 'paddle')) return res.json({ url: await paddlePortalUrl(req.user) });
   const stripe = await requireStripe();
   const customer = await customerIdFor(req.user);
   if (!customer) throw notFound('No billing account yet — start a subscription first');

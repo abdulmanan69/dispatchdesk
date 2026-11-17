@@ -14,6 +14,7 @@ import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/emai
 import { getStripe } from '../services/stripe.js';
 import { paddleApi, paddleConfig } from '../services/paddle.js';
 import { grantPlan, planPhrase } from '../services/billing/grant.js';
+import { trialSettings, trialState } from '../services/billing/trial.js';
 import { COUPON_KINDS, DISCOUNT_DURATIONS, CODE_RE, normCode, createStripeDiscount, setStripeDiscountActive, stripeRedemptions, findCoupon } from '../services/billing/coupons.js';
 import { notify } from '../lib/activity.js';
 import { sendSystemMail } from '../services/email/system.js';
@@ -35,6 +36,29 @@ const monthKey = (d) => new Date(d).toISOString().slice(0, 7);
 // ---------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------
+/**
+ * Trial funnel for the overview: accounts on the free trial, trials ending within 7 days, trials that ended without a
+ * plan (read-only now), paying and gifted subscriptions. Admin accounts are never on a trial.
+ */
+async function billingFunnel(activeSubs, paidSubs, roles) {
+  const t = await trialSettings();
+  const out = { paying: paidSubs.length, gifted: activeSubs.length - paidSubs.length, trialDays: t.days, onTrial: 0, endingSoon: 0, ended: 0 };
+  if (!t.days) return out;
+  const withPlan = new Set(activeSubs.map((s) => s.userId));
+  const adminRoleIds = new Set();
+  for (const r of await prisma.role.findMany({ include: { permissions: { include: { permission: true } } } })) {
+    if (r.permissions.some((p) => p.permission.key === 'admin.access')) adminRoleIds.add(r.id);
+  }
+  const users = await prisma.user.findMany({ where: { status: 'active' }, select: { id: true, createdAt: true, roleId: true }, take: 100_000 });
+  const now = new Date();
+  for (const u of users) {
+    if (withPlan.has(u.id) || adminRoleIds.has(u.roleId)) continue;
+    const s = trialState(u, t.days, now);
+    if (s.active) { out.onTrial += 1; if (s.daysLeft <= 7) out.endingSoon += 1; } else if (s.locked) out.ended += 1;
+  }
+  return out;
+}
+
 r.get('/stats', ah(async (req, res) => {
   const now = Date.now();
   const since30 = new Date(now - 30 * DAY);
@@ -73,7 +97,9 @@ r.get('/stats', ah(async (req, res) => {
   const rev = Object.fromEntries(months.map((k) => [k, 0]));
   payments.forEach((p) => { const k = monthKey(p.paidAt); if (k in rev) rev[k] += p.amountCents; });
 
-  const mrrCents = activeSubs.reduce((s, sub) => {
+  // Paying = sold through a provider (Stripe or Paddle); gifted = granted by an admin or a code (no revenue).
+  const paidSubs = activeSubs.filter((sub) => sub.stripeSubscriptionId);
+  const mrrCents = paidSubs.reduce((s, sub) => {
     const monthly = sub.plan.interval === 'year' ? sub.plan.priceCents / 12 : sub.plan.priceCents;
     return s + monthly * (sub.plan.perSeat ? sub.seats : 1) + (sub.plan.basePriceCents || 0);
   }, 0);
@@ -85,6 +111,7 @@ r.get('/stats', ah(async (req, res) => {
     subscriptions: subsGroups.map((g) => ({ plan: planById[g.planId]?.name, status: g.status, count: g._count._all })),
     activeSubscriptions: activeSubs.length,
     mrrCents: Math.round(mrrCents),
+    billing: await billingFunnel(activeSubs, paidSubs, roles),
     revenueByMonth: months.map((k) => ({ month: k, cents: rev[k] })),
     revenue12mCents: payments.reduce((s, p) => s + p.amountCents, 0),
     carriers: { total: carriersTotal, new30d: carriers30 },
@@ -257,7 +284,8 @@ r.post('/subscriptions/gift', requirePermission('admin.billing'), ah(async (req,
   const skipped = [];
   for (const u of users) {
     const out = await grantPlan({ userId: u.id, plan, months, extend: true });
-    if (out.skipped) { skipped.push({ userId: u.id, name: u.name, reason: 'Pays through Stripe' }); continue; }
+    if (out.skipped) { skipped.push({ userId: u.id, name: u.name, reason: 'Pays online' }); continue; }
+    if (out.kept) { skipped.push({ userId: u.id, name: u.name, reason: 'Already has a longer plan' }); continue; }
     granted += 1;
     if (!body.notify) continue;
     await notify(u.id, { type: 'plan_gift', title: `You got ${phrase}`, body: body.message || `A gift from ${appName}. No payment needed.`, link: `/app/billing?gift=${plan.key}` });
@@ -319,13 +347,28 @@ r.post('/coupons', requirePermission('admin.billing'), ah(async (req, res) => {
     const duration = b.duration || 'once';
     if (duration === 'repeating' && !b.durationMonths) throw badRequest('Say for how many months the discount applies');
     Object.assign(data, { percentOff: b.percentOff ?? null, amountOffCents: b.amountOffCents ?? null, duration, durationMonths: duration === 'repeating' ? b.durationMonths : null });
-    Object.assign(data, await createStripeDiscount(data));
   } else {
     const plan = await prisma.plan.findUnique({ where: { key: b.planKey || '' } });
     if (!plan || plan.key === 'free') throw badRequest('Pick the plan this code unlocks');
     Object.assign(data, { planKey: plan.key, planMonths: b.planMonths ?? null });
   }
-  const c = await prisma.coupon.create({ data });
+  // The row first (off until the provider has the code), so a failed save never leaves a live code at the provider
+  // with no row here; the unique code also stops two admins creating the same one.
+  let c;
+  try {
+    c = await prisma.coupon.create({ data: { ...data, active: data.kind !== 'discount' } });
+  } catch (err) {
+    if (err?.code === 'P2002') throw conflict(`The code ${code} already exists`);
+    throw err;
+  }
+  if (c.kind === 'discount') {
+    try {
+      c = await prisma.coupon.update({ where: { id: c.id }, data: { ...(await createStripeDiscount(data)), active: true } });
+    } catch (err) {
+      await prisma.coupon.delete({ where: { id: c.id } }).catch(() => {});
+      throw err;
+    }
+  }
   await audit(req, 'admin.coupon_created', { entityType: 'coupon', entityId: c.id, details: { code, kind: c.kind } });
   res.status(201).json({ coupon: couponView(c, await planMap()) });
 }));

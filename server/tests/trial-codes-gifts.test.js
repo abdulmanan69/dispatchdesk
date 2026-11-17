@@ -88,7 +88,7 @@ describe('codes', () => {
     expect((await A.agent.post('/api/billing/redeem').send({ code: 'PARTNER3' })).status).toBe(409);
     const used = await B.agent.post('/api/billing/redeem').send({ code: 'PARTNER3' });
     expect(used.status).toBe(400);
-    expect(used.body.error).toMatch(/used up/);
+    expect(used.body.error).toMatch(/not valid or can no longer be used/);
     expect((await B.agent.post('/api/billing/redeem').send({ code: 'NOPE-123' })).status).toBe(400);
     const list = await admin.agent.get('/api/admin/coupons');
     expect(list.body.coupons.find((c) => c.code === 'PARTNER3')).toMatchObject({ used: 1, maxRedemptions: 1 });
@@ -100,7 +100,7 @@ describe('codes', () => {
     const A = await registerUser();
     const r = await A.agent.post('/api/billing/redeem').send({ code: 'OFFCODE' });
     expect(r.status).toBe(400);
-    expect(r.body.error).toMatch(/no longer active/);
+    expect(r.body.error).toMatch(/not valid or can no longer be used/);
     const d = await admin.agent.post('/api/admin/coupons').send({ kind: 'discount', code: 'SAVE20', percentOff: 20, duration: 'once' });
     expect(d.status).toBe(400);
     expect(d.body.error).toMatch(/Stripe secret key/);

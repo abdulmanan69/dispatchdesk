@@ -135,10 +135,13 @@ async function planWithoutSubscription(user) {
 
 /** The trial state the client shows (banner, Billing page), or null when the account is not on a trial. */
 export async function trialFlags(user) {
-  if (!(await trialSettings()).days) return { trial: null };
+  // A renewal that failed (the provider retries for a while): the owner should update the card before the plan stops.
+  const pastDue = await prisma.subscription.findFirst({ where: { userId: user.id, status: 'past_due' }, select: { id: true } });
+  const billingAlert = pastDue ? 'past_due' : null;
+  if (!(await trialSettings()).days) return { trial: null, billingAlert };
   const u = user.teamMembership !== undefined ? user : { ...user, teamMembership: await prisma.teamMember.findUnique({ where: { userId: user.id } }) };
   const { trial } = await effectivePlan(u);
-  return { trial: trial ? { enabled: true, active: trial.active, locked: trial.locked, endsAt: trial.endsAt, daysLeft: trial.daysLeft, planName: trial.planName } : null };
+  return { trial: trial ? { enabled: true, active: trial.active, locked: trial.locked, endsAt: trial.endsAt, daysLeft: trial.daysLeft, planName: trial.planName } : null, billingAlert };
 }
 
 /** { plan, subscription, trial } for the user. Treat the result as read-only: it may be shared by concurrent requests. */

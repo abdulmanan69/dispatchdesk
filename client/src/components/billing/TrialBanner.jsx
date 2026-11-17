@@ -5,10 +5,19 @@ import { cx } from '../ui.jsx';
 
 /**
  * Free trial state for accounts without a plan (user.trial from the server): days left while it runs, and once it
- * ends, that the account is read-only until a plan is chosen.
+ * ends, that the account is read-only until a plan is chosen. A failed renewal (user.billingAlert) comes first.
  */
 export default function TrialBanner() {
   const { user } = useAuth();
+  if (user?.billingAlert === 'past_due') {
+    return (
+      <div role="status" className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-c-red/30 bg-c-red-soft px-4 py-2 text-[13px] text-fg sm:px-6">
+        <span className="size-1.5 shrink-0 rounded-full bg-c-red" aria-hidden />
+        Your last payment did not go through. Update your card to keep your plan.
+        <Link to="/app/billing" className="font-medium text-fg underline-offset-2 hover:underline">Update payment method</Link>
+      </div>
+    );
+  }
   const t = user?.trial;
   if (!t || (!t.active && !t.locked)) return null;
   const locked = t.locked;

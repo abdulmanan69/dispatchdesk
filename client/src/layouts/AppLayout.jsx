@@ -219,6 +219,7 @@ const SidebarFooter = memo(function SidebarFooter({ collapsed }) {
   const billing = useQuery({ queryKey: ['billing', 'me'], queryFn: ({ signal }) => api.get('/api/billing/me', undefined, { signal }), staleTime: 60000 });
   const used = billing.data?.usage?.discoveryToday;
   const limit = billing.data?.plan?.limits?.maxDiscoveryPerDay;
+  const trial = billing.data?.trial;
   if (collapsed) return null;
   return (
     <div className="border-t border-line px-3 py-3">
@@ -243,6 +244,13 @@ const SidebarFooter = memo(function SidebarFooter({ collapsed }) {
         <Link to="/app/billing" className="mt-3 block px-0.5 text-[11.5px] text-fg-2 hover:text-fg">
           <div className="flex justify-between"><span>Leads saved today</span><span className="tabular">{used} / {limit < 0 ? '∞' : limit}</span></div>
           {limit > 0 && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-2"><div className={cx('h-full rounded-full', used / limit >= 0.9 ? 'bg-c-red' : used / limit >= 0.7 ? 'bg-c-amber' : 'bg-c-teal')} style={{ width: `${Math.min(100, (used / limit) * 100)}%` }} /></div>}
+        </Link>
+      )}
+      {(trial?.active || trial?.locked) && (
+        <Link to="/app/billing" className={cx('mt-3 flex items-center justify-between rounded-lg border px-2.5 py-2 text-[12px] transition-ui',
+          trial.locked ? 'border-c-amber/40 bg-c-amber-soft text-fg hover:border-c-amber' : 'border-line text-fg-2 hover:border-brand-500/50 hover:text-fg')}>
+          <span>{trial.locked ? 'Trial ended' : `Free trial · ${trial.daysLeft} day${trial.daysLeft === 1 ? '' : 's'} left`}</span>
+          <span className="font-medium text-brand-700 dark:text-brand-300">{trial.locked ? 'Choose a plan' : 'Upgrade'}</span>
         </Link>
       )}
     </div>

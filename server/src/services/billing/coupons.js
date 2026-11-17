@@ -16,6 +16,7 @@ export const COUPON_KINDS = ['discount', 'plan'];
 export const DISCOUNT_DURATIONS = ['once', 'repeating', 'forever'];
 export const CODE_RE = /^[A-Z0-9][A-Z0-9_-]{2,39}$/;
 export const normCode = (c) => String(c || '').trim().toUpperCase().replace(/\s+/g, '');
+const INVALID = 'That code is not valid or can no longer be used';
 
 /** A Paddle discount for a discount code. Returns { provider, stripeCouponId: dsc_… }. */
 async function createPaddleDiscount(c) {
@@ -115,14 +116,14 @@ export async function redeemPlanCode(user, rawCode) {
   const code = normCode(rawCode);
   if (!CODE_RE.test(code)) throw badRequest('Enter the code as it was given to you');
   const c = await prisma.coupon.findUnique({ where: { code } });
-  if (c?.kind === 'discount') throw badRequest('That is a discount code: enter it on the checkout page when you upgrade');
+  if (c?.kind === 'discount' && c.active) throw badRequest('That is a discount code: enter it on the checkout page when you upgrade');
   if (c && await prisma.couponRedemption.findUnique({ where: { couponId_userId: { couponId: c.id, userId: user.id } } })) {
     throw conflict('You have already used this code');
   }
-  const problem = planCodeProblem(c);
-  if (problem) throw badRequest(problem);
+  // One answer for every unusable code (unknown, off, expired, used up), so codes cannot be probed by their errors.
+  if (planCodeProblem(c)) throw badRequest(INVALID);
   const plan = await prisma.plan.findUnique({ where: { key: c.planKey || '' } });
-  if (!plan || plan.key === 'free') throw badRequest('That code is not valid');
+  if (!plan || plan.key === 'free') throw badRequest(INVALID);
 
   const taken = await prisma.coupon.updateMany({
     where: {
@@ -131,20 +132,27 @@ export async function redeemPlanCode(user, rawCode) {
     },
     data: { redemptions: { increment: 1 } },
   });
-  if (!taken.count) throw badRequest('That code has been used up');
+  if (!taken.count) throw badRequest(INVALID);
   let result;
+  let redeemed = false;
+  const undo = async () => {
+    if (redeemed) await prisma.couponRedemption.deleteMany({ where: { couponId: c.id, userId: user.id } }).catch(() => {});
+    await prisma.coupon.update({ where: { id: c.id }, data: { redemptions: { decrement: 1 } } }).catch(() => {});
+  };
   try {
     await prisma.couponRedemption.create({ data: { couponId: c.id, userId: user.id } });
+    redeemed = true;
     result = await grantPlan({ userId: user.id, plan, months: c.planMonths, extend: true });
   } catch (err) {
-    await prisma.coupon.update({ where: { id: c.id }, data: { redemptions: { decrement: 1 } } }).catch(() => {});
+    await undo();
     if (err?.code === 'P2002') throw conflict('You have already used this code');
     throw err;
   }
-  if (result.skipped) {
-    await prisma.couponRedemption.deleteMany({ where: { couponId: c.id, userId: user.id } });
-    await prisma.coupon.update({ where: { id: c.id }, data: { redemptions: { decrement: 1 } } });
-    throw conflict('You already pay for a plan through Stripe. Codes for free months apply to accounts without a paid plan.');
+  if (result.skipped || result.kept) {
+    await undo();
+    throw conflict(result.skipped
+      ? 'You already pay for a plan online. Codes for free months apply to accounts without a paid plan.'
+      : 'You already have a plan that lasts longer than this code gives, so the code was not used.');
   }
   await prisma.couponRedemption.updateMany({ where: { couponId: c.id, userId: user.id }, data: { subscriptionId: result.subscription.id } });
   return { plan, months: c.planMonths, subscription: result.subscription, phrase: planPhrase(plan, c.planMonths) };

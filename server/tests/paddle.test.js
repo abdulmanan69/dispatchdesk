@@ -133,6 +133,39 @@ describe('selling plans through Paddle', () => {
     expect((await prisma.subscription.findFirst({ where: { stripeSubscriptionId: 'sub_01paddletest' } })).status).toBe('canceled');
   });
 
+  it('ignores edited checkout data, waits for the subscription before a payment, and cancels a duplicate', async () => {
+    const B = await registerUser();
+    const co = (await B.agent.post('/api/billing/checkout').send({ planKey: 'pro' })).body.checkout;
+    expect(co.customData.checkoutToken).toMatch(/^ddck_/);
+    // Opening the checkout again within minutes reuses the same checkout.
+    const again = (await B.agent.post('/api/billing/checkout').send({ planKey: 'pro' })).body.checkout;
+    expect(again.customData).toMatchObject({ localSubscriptionId: co.customData.localSubscriptionId, checkoutToken: co.customData.checkoutToken });
+
+    // Someone edits custom_data to point at B's pending row without the token: nothing is attached.
+    const forged = subscription({ id: 'sub_forged', customer_id: 'ctm_attacker', custom_data: { userId: B.user.id, localSubscriptionId: co.customData.localSubscriptionId } });
+    paddle.subs.set(forged.id, forged);
+    expect((await sendEvent({ event_id: 'evt_forged', event_type: 'subscription.created', occurred_at: new Date().toISOString(), data: forged })).status).toBe(200);
+    expect(await prisma.subscription.count({ where: { stripeSubscriptionId: 'sub_forged' } })).toBe(0);
+    expect((await B.agent.get('/api/billing/me')).body.subscription).toBeNull();
+
+    // The payment arrives first: Paddle is asked to retry (500); after the subscription arrives it is recorded.
+    const txn = { id: 'txn_b1', status: 'completed', customer_id: 'ctm_b', subscription_id: 'sub_b1', currency_code: 'USD', details: { totals: { grand_total: '2900' } }, items: [] };
+    expect((await sendEvent({ event_id: 'evt_txn_b1', event_type: 'transaction.completed', occurred_at: new Date().toISOString(), data: txn })).status).toBe(500);
+    const real = subscription({ id: 'sub_b1', customer_id: 'ctm_b', custom_data: co.customData });
+    paddle.subs.set(real.id, real);
+    expect((await sendEvent({ event_id: 'evt_sub_b1', event_type: 'subscription.created', occurred_at: new Date().toISOString(), data: real })).status).toBe(200);
+    expect((await sendEvent({ event_id: 'evt_txn_b1', event_type: 'transaction.completed', occurred_at: new Date().toISOString(), data: txn })).status).toBe(200);
+    expect((await B.agent.get('/api/billing/me')).body.payments).toHaveLength(1);
+
+    // The same checkout paid a second time (other tab): the second subscription is canceled at once.
+    const dup = subscription({ id: 'sub_b2', customer_id: 'ctm_b', custom_data: co.customData });
+    paddle.subs.set(dup.id, dup);
+    expect((await sendEvent({ event_id: 'evt_sub_b2', event_type: 'subscription.created', occurred_at: new Date().toISOString(), data: dup })).status).toBe(200);
+    expect(paddle.calls.some((c) => c.method === 'POST' && c.path === '/subscriptions/sub_b2/cancel' && c.body.effective_from === 'immediately')).toBe(true);
+    expect(await prisma.subscription.count({ where: { userId: B.user.id, status: 'active' } })).toBe(1);
+    expect(await prisma.notification.count({ where: { userId: B.user.id, title: 'Duplicate subscription canceled' } })).toBe(1);
+  });
+
   it('creates discount codes in Paddle', async () => {
     const admin = await createAdmin();
     const r = await admin.agent.post('/api/admin/coupons').send({ kind: 'discount', code: 'LAUNCH20', percentOff: 20, duration: 'repeating', durationMonths: 3, maxRedemptions: 50 });

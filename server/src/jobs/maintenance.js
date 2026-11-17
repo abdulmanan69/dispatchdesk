@@ -1,4 +1,5 @@
 import { prisma } from '../db.js';
+import { runTrialReminders } from '../services/billing/trialReminders.js';
 import { notify } from '../lib/activity.js';
 import { withLock, LockBusyError } from '../lib/locks.js';
 import { prunePings } from '../services/fleet/track.js';
@@ -85,6 +86,10 @@ export const JOBS = [
   {
     name: 'document-expiry', label: 'Remind about documents expiring in 30, 7 and 1 days', dailyAtUtc: 13, // 8 AM Central
     run: documentExpiry,
+  },
+  {
+    name: 'trial-reminders', label: 'Remind free-trial accounts 3 days and 1 day before the trial ends, and when it ends', dailyAtUtc: 14, // 9 AM Central
+    run: (now) => runTrialReminders(now),
   },
   {
     name: 'notifications', label: 'Delete read notifications after 90 days and unread after a year', dailyAtUtc: 8,

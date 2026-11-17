@@ -14,7 +14,11 @@ function load() {
       const s = document.createElement('script');
       s.src = SRC;
       s.async = true;
-      s.onload = () => (window.Paddle ? resolve(window.Paddle) : reject(new Error('Paddle checkout did not load')));
+      s.onload = () => {
+        if (window.Paddle) return resolve(window.Paddle);
+        loading = null; // let the next click try again
+        return reject(new Error('Paddle checkout did not load'));
+      };
       s.onerror = () => { loading = null; reject(new Error('Could not load Paddle checkout. Check your connection or ad blocker, then try again.')); };
       document.head.appendChild(s);
     });

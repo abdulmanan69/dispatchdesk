@@ -5,6 +5,7 @@ import { notify } from '../../lib/activity.js';
 import { audit } from '../../lib/audit.js';
 import { invalidatePlans } from '../../lib/plans.js';
 import { withLock } from '../../lib/locks.js';
+import { randomToken } from '../../lib/crypto.js';
 import { paddleApi, paddleConfig, verifyPaddleSignature, paddleStatus, paddleCents } from '../paddle.js';
 
 /**
@@ -21,9 +22,20 @@ export async function paddleCheckout(user, plan, { seats = 1, teamId = null } = 
   const c = await paddleConfig();
   if (!c.apiKey || !c.clientToken) throw unavailable('Paddle is not set up yet. An administrator must add the Paddle keys in System settings → Billing.');
   if (!plan.paddlePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Paddle price yet. An administrator must run "Set up Paddle" in Admin → Setup.`);
-  // An abandoned Paddle checkout leaves an empty row; only the newest one is kept.
-  await prisma.subscription.deleteMany({ where: { userId: user.id, provider: 'paddle', status: 'incomplete', stripeSubscriptionId: null } });
-  const local = await prisma.subscription.create({ data: { userId: user.id, teamId, planId: plan.id, status: 'incomplete', seats, provider: 'paddle' } });
+  const now = Date.now();
+  // Abandoned checkouts are removed after two days.
+  await prisma.subscription.deleteMany({ where: { userId: user.id, provider: 'paddle', status: 'incomplete', stripeSubscriptionId: null, createdAt: { lt: new Date(now - 2 * 86_400_000) } } });
+  // The same checkout opened again within 15 minutes (a second tab, a retry) reuses its row and token, so paying twice
+  // is caught as a duplicate (syncPaddleSubscription) instead of creating two plans.
+  const recent = await prisma.subscription.findFirst({
+    where: { userId: user.id, provider: 'paddle', status: 'incomplete', stripeSubscriptionId: null, planId: plan.id, seats, stripeCheckoutId: { not: null }, createdAt: { gte: new Date(now - 15 * 60_000) } },
+    orderBy: { createdAt: 'desc' },
+  });
+  // The token is made here and kept on the row: a webhook attaches a subscription to this row only when its
+  // custom_data carries the same token (custom_data comes from the browser and could be edited).
+  const local = recent || await prisma.subscription.create({
+    data: { userId: user.id, teamId, planId: plan.id, status: 'incomplete', seats, provider: 'paddle', stripeCheckoutId: `ddck_${randomToken(16)}` },
+  });
   return {
     provider: 'paddle',
     localSubscriptionId: local.id,
@@ -32,7 +44,7 @@ export async function paddleCheckout(user, plan, { seats = 1, teamId = null } = 
       clientToken: c.clientToken,
       items: [{ priceId: plan.paddlePriceId, quantity: seats }],
       customer: { email: user.email },
-      customData: { userId: user.id, planKey: plan.key, teamId: teamId || '', localSubscriptionId: local.id },
+      customData: { userId: user.id, planKey: plan.key, teamId: teamId || '', localSubscriptionId: local.id, checkoutToken: local.stripeCheckoutId },
       successUrl: `${config.appUrl}/app/billing?checkout=success`,
     },
   };
@@ -40,8 +52,9 @@ export async function paddleCheckout(user, plan, { seats = 1, teamId = null } = 
 
 /**
  * Mirror a Paddle subscription (from a signed webhook or the Paddle API) into the local row. The row is found by the
- * Paddle ID, else the pending checkout row named in custom_data (only for the same user). An ended subscription is
- * never revived by an older event.
+ * Paddle ID, else the pending checkout row named in custom_data, only when the checkout token matches the one this
+ * server made. A subscription with no matching checkout is not attached to anyone. A second subscription paid from the
+ * same checkout is canceled at once (duplicate). An ended subscription is never revived by an older event.
  */
 export async function syncPaddleSubscription(remote) {
   const item = remote.items?.[0];
@@ -49,9 +62,12 @@ export async function syncPaddleSubscription(remote) {
   const plan = priceId ? await prisma.plan.findFirst({ where: { paddlePriceId: priceId } }) : null;
   const cd = remote.custom_data || {};
   let local = await prisma.subscription.findUnique({ where: { stripeSubscriptionId: remote.id } });
-  if (!local && cd.localSubscriptionId) {
+  if (!local && cd.localSubscriptionId && cd.checkoutToken) {
     const pending = await prisma.subscription.findUnique({ where: { id: String(cd.localSubscriptionId) } });
-    if (pending && pending.userId === cd.userId && pending.provider === 'paddle' && !pending.stripeSubscriptionId) local = pending;
+    if (pending && pending.provider === 'paddle' && pending.stripeCheckoutId === String(cd.checkoutToken)) {
+      if (!pending.stripeSubscriptionId) local = pending;
+      else if (paddleStatus(remote.status) !== 'canceled') return cancelDuplicate(remote, pending);
+    }
   }
   const status = paddleStatus(remote.status);
   if (local?.stripeSubscriptionId === remote.id && local.status === 'canceled' && status !== 'canceled') {
@@ -77,27 +93,44 @@ export async function syncPaddleSubscription(remote) {
     invalidatePlans();
     return { row, before: local.status };
   }
-  const userId = cd.userId ? String(cd.userId) : null;
-  if (!userId || !plan || !(await prisma.user.findUnique({ where: { id: userId }, select: { id: true } }))) {
-    console.warn('[billing] Paddle subscription for an unknown user or price', remote.id);
-    return { row: null, before: null };
+  console.warn('[billing] Paddle subscription with no matching checkout (not attached to any account)', remote.id);
+  return { row: null, before: null };
+}
+
+/**
+ * The same checkout was paid twice (two tabs): the second subscription is canceled at once in Paddle, and the buyer
+ * is told so they can ask for a refund of the duplicate charge.
+ */
+async function cancelDuplicate(remote, original) {
+  console.warn(`[billing] duplicate Paddle subscription ${remote.id} for checkout ${original.id}: canceling it`);
+  try {
+    await paddleApi('POST', `/subscriptions/${encodeURIComponent(remote.id)}/cancel`, { effective_from: 'immediately' });
+  } catch (err) {
+    console.error(`[billing] could not cancel duplicate Paddle subscription ${remote.id}: ${err.message}`);
   }
-  // A team plan only attaches to a team the buyer owns.
-  const team = cd.teamId ? await prisma.team.findFirst({ where: { id: String(cd.teamId), ownerId: userId }, select: { id: true } }) : null;
-  const row = await prisma.subscription.create({ data: { ...data, userId, teamId: team?.id || null, planId: plan.id } });
-  invalidatePlans();
-  return { row, before: null };
+  await notify(original.userId, {
+    type: 'billing', title: 'Duplicate subscription canceled',
+    body: 'The same checkout was paid twice, so the second subscription was canceled. Contact support to get the duplicate charge refunded.',
+    link: '/app/billing',
+  });
+  await audit(null, 'billing.duplicate_canceled', { entityType: 'subscription', entityId: original.id, details: { paddleSubscriptionId: remote.id } });
+  return { row: null, before: null };
 }
 
 /** Record a Paddle transaction as a payment; notifies only when its status changes (paid / failed). */
 export async function recordPaddleTransaction(txn, status) {
   return withLock(`paddle-txn.${txn.id}`, 60_000, async () => {
     const local = txn.subscription_id ? await prisma.subscription.findUnique({ where: { stripeSubscriptionId: txn.subscription_id } }) : null;
+    // Never from custom_data (the browser could set it): only a recorded subscription or a known Paddle customer.
     const userId = local?.userId
-      ?? (txn.customer_id ? (await prisma.subscription.findFirst({ where: { stripeCustomerId: txn.customer_id } }))?.userId : null)
-      ?? (txn.custom_data?.userId && (await prisma.user.findUnique({ where: { id: String(txn.custom_data.userId) }, select: { id: true } }))?.id)
+      ?? (txn.customer_id ? (await prisma.subscription.findFirst({ where: { stripeCustomerId: txn.customer_id, provider: 'paddle' } }))?.userId : null)
       ?? null;
-    if (!userId) { console.warn('[billing] Paddle transaction for an unknown customer', txn.id); return null; }
+    if (!userId) {
+      // The payment can arrive before subscription.created: fail so Paddle delivers it again a little later.
+      if (txn.subscription_id) throw new Error(`Paddle subscription ${txn.subscription_id} is not recorded yet`);
+      console.warn('[billing] Paddle transaction for an unknown customer', txn.id);
+      return null;
+    }
     const totals = txn.details?.totals || {};
     const line = txn.items?.[0];
     const data = {

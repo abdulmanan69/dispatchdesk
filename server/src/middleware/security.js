@@ -139,6 +139,8 @@ export const mailLimiter = chain(mailIpLimiter, mailAccountLimiter);
 /** New accounts: per network address only (each signup has a new email, so email keys would not limit bots). */
 export const registerLimiter = makeLimiter('register', 60 * 60_000, envInt('RATE_LIMIT_REGISTER_IP', 30), 'Too many new accounts from this network. Try again later.', { key: ipOnlyKey });
 
+// Codes for free months: a few tries per hour per account, so codes cannot be guessed by trying many.
+export const redeemLimiter = makeLimiter('redeem', 60 * 60_000, envInt('RATE_LIMIT_REDEEM_PER_HOUR', 10), 'Too many code attempts. Try again in an hour.', { key: userOrIpKey });
 export const aiLimiter = makeLimiter('ai', 60_000, 30, 'Too many AI requests. Try again in a minute.', { key: userOrIpKey });
 /** Driver link: per link token (drivers behind one carrier NAT keep separate budgets). */
 export const trackLimiter = makeLimiter('track', 60_000, 30, 'Too many location updates. Try again in a minute.', { key: linkTokenKey });

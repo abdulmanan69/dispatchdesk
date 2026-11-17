@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { Users, UserCheck, UserPlus, CreditCard, DollarSign, Truck, UsersRound, Flag, GraduationCap, Store, MessagesSquare } from 'lucide-react';
+import { Users, UserCheck, UserPlus, CreditCard, DollarSign, Truck, UsersRound, Flag, GraduationCap, Store, MessagesSquare, Gift, Hourglass, CalendarClock, Lock } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { money, num, label } from '../../lib/format.js';
 import { Card, StatCard, QueryState, DataTable, Badge, EmptyState } from '../ui.jsx';
@@ -18,8 +18,8 @@ export default function Overview({ onTab }) {
             <StatCard label="Active (30 days)" value={num(d.users.active30d)} icon={UserCheck} tone="green" />
             <StatCard label="New (30 days)" value={num(d.users.new30d)} icon={UserPlus} tone="signal" />
             <StatCard label="Active subscriptions" value={num(d.activeSubscriptions)} icon={CreditCard} />
-            <StatCard label="MRR (estimate)" value={money(d.mrrCents, { digits: 0 })} sub="active subs × plan price" icon={DollarSign} tone="green" />
-            <StatCard label="Revenue (12 months)" value={money(d.revenue12mCents, { digits: 0 })} sub="paid Stripe invoices" icon={DollarSign} />
+            <StatCard label="MRR (estimate)" value={money(d.mrrCents, { digits: 0 })} sub="paying subscriptions × plan price" icon={DollarSign} tone="green" />
+            <StatCard label="Revenue (12 months)" value={money(d.revenue12mCents, { digits: 0 })} sub="paid invoices" icon={DollarSign} />
             <StatCard label="Carriers" value={num(d.carriers.total)} sub={`${num(d.carriers.new30d)} added in 30 days`} icon={Truck} />
             <StatCard label="Teams" value={num(d.teams)} icon={UsersRound} />
             <StatCard label="Open reports" value={num(d.openReports)} icon={Flag} tone={d.openReports ? 'red' : 'muted'} />
@@ -27,6 +27,17 @@ export default function Overview({ onTab }) {
             <StatCard label="Marketplace listings" value={num(d.marketplaceListings)} icon={Store} />
             <StatCard label="Community posts" value={num(d.communityPosts)} icon={MessagesSquare} />
           </div>
+          {d.billing && (
+            <Card title="Trial and plans" actions={<span className="text-xs text-muted">{d.billing.trialDays ? `${d.billing.trialDays}-day free trial` : 'Free trial off'}</span>}>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                <StatCard label="Paying customers" value={num(d.billing.paying)} icon={CreditCard} tone="green" />
+                <StatCard label="Gifted plans" value={num(d.billing.gifted)} sub="admin gifts and codes" icon={Gift} />
+                <StatCard label="On free trial" value={num(d.billing.onTrial)} icon={Hourglass} tone="signal" />
+                <StatCard label="Trials ending in 7 days" value={num(d.billing.endingSoon)} icon={CalendarClock} tone={d.billing.endingSoon ? 'amber' : 'muted'} />
+                <StatCard label="Trials ended, no plan" value={num(d.billing.ended)} sub="read-only now" icon={Lock} tone={d.billing.ended ? 'red' : 'muted'} />
+              </div>
+            </Card>
+          )}
           <div className="grid gap-4 lg:grid-cols-2">
             <Card title="New registrations (30 days)">
               <ChartBox label={`New registrations per day, ${d.users.new30d} total`}>

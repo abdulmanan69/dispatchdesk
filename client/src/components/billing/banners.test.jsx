@@ -29,6 +29,13 @@ describe('TrialBanner', () => {
     expect(screen.getByRole('link', { name: 'Choose a plan' })).toHaveAttribute('href', '/app/billing');
   });
 
+  it('asks to update the card after a failed renewal, before anything about the trial', () => {
+    auth.user = { billingAlert: 'past_due', trial: null };
+    wrap(<TrialBanner />);
+    expect(screen.getByText(/last payment did not go through/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Update payment method' })).toHaveAttribute('href', '/app/billing');
+  });
+
   it('shows nothing for accounts with a plan', () => {
     auth.user = { trial: null };
     const { container } = wrap(<TrialBanner />);
