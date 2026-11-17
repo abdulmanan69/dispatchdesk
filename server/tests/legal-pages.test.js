@@ -63,6 +63,16 @@ describe('privacy policy, terms and home page for crawlers', () => {
     expect(homeHtml({ appUrl: 'https://x.test' })).toContain('https://x.test/privacy');
   });
 
+  it('shows a contact email and the refund policy on the home page, and serves the contact for the footer', async () => {
+    const html = homeHtml({ appUrl: 'https://x.test', supportEmail: 'team@x.test' });
+    expect(html).toContain('href="mailto:team@x.test"');
+    expect(html).toContain('https://x.test/refunds');
+    expect(homeHtml({ appUrl: 'https://x.test' })).not.toContain('mailto:');
+    const res = await request(app).get('/api/public/contact');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('supportEmail');
+  });
+
   it('names the payment provider that actually takes the money', () => {
     const paddle = privacyHtml({ provider: 'paddle' });
     expect(paddle).toContain('Paddle.com');

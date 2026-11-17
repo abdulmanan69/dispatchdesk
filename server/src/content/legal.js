@@ -180,7 +180,7 @@ ${provider === 'paddle' ? `<li>Our order process is conducted by our online rese
 }
 
 /** Plain summary of the home page for crawlers and reviewers that do not run JavaScript (React replaces it). */
-export function homeHtml({ appName = 'DispatchDesk', appUrl = '' } = {}) {
+export function homeHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '' } = {}) {
   const n = esc(appName);
   return `<main class="mx-auto max-w-3xl px-4 py-14" data-ssr="home">
 <h1>${n}: the CRM and dispatch desk for truck dispatchers</h1>
@@ -191,8 +191,9 @@ export function homeHtml({ appName = 'DispatchDesk', appUrl = '' } = {}) {
 <li>Invoices, detention, weekly carrier statements and profit reports.</li>
 </ul>
 <p>Free trial, no card needed. <a href="${esc(appUrl)}/register">Create an account</a> or <a href="${esc(appUrl)}/login">sign in</a>.</p>
-<p><a href="${esc(appUrl)}/privacy">Privacy policy</a> · <a href="${esc(appUrl)}/terms">Terms of service</a></p>
-</main>`;
+<p><a href="${esc(appUrl)}/privacy">Privacy policy</a> · <a href="${esc(appUrl)}/terms">Terms of service</a> · <a href="${esc(appUrl)}/refunds">Refund policy</a> · <a href="${esc(appUrl)}/pricing">Pricing</a></p>
+${supportEmail ? `<p>Contact: <a href="mailto:${esc(supportEmail)}">${esc(supportEmail)}</a></p>
+` : ''}</main>`;
 }
 
 export function refundsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '', provider = 'stripe' } = {}) {

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../lib/api.js';
 import { Link, NavLink, Outlet, useLocation, useNavigation } from 'react-router';
 import { Menu, X, Moon, Sun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -46,6 +48,8 @@ function RouteProgress() {
 
 export default function PublicLayout() {
   const { user } = useAuth();
+  const contact = useQuery({ queryKey: ['public', 'contact'], queryFn: () => api.get('/api/public/contact'), staleTime: 300_000 });
+  const supportEmail = contact.data?.supportEmail;
   const [open, setOpen] = useState(false);
   const { pathname, hash } = useLocation();
   useEffect(() => { setOpen(false); }, [pathname]);
@@ -119,6 +123,7 @@ export default function PublicLayout() {
               <h2 className="text-sm font-semibold text-fg">{col.title}</h2>
               <ul className="mt-3 space-y-2 text-sm">
                 {col.links.map(([to, l]) => <li key={to}><Link to={to} className="text-fg-2 transition-ui hover:text-fg">{l}</Link></li>)}
+                {col.title === 'Company' && supportEmail && <li><a href={`mailto:${supportEmail}`} className="break-all text-fg-2 transition-ui hover:text-fg">Contact: {supportEmail}</a></li>}
               </ul>
             </div>
           ))}

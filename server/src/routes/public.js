@@ -19,6 +19,13 @@ function decode(req) {
 
 const ANNOUNCEMENT_KEYS = ['announcement.enabled', 'announcement.text', 'announcement.linkUrl', 'announcement.linkLabel', 'announcement.tone', 'announcement.audience'];
 
+/** Public contact details for the site footer (the support email from Admin → System settings). */
+r.get('/contact', ah(async (req, res) => {
+  const s = await getSettings(['app.supportEmail']);
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json({ supportEmail: s['app.supportEmail'] || null });
+}));
+
 /** The announcement bar set in Admin → System settings (null when off). `id` changes with the content. */
 r.get('/announcement', ah(async (req, res) => {
   const s = await getSettings(ANNOUNCEMENT_KEYS);
