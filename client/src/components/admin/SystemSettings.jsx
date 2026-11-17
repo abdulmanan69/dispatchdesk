@@ -15,7 +15,7 @@ const GROUPS = [
   { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
   { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
   { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
-  { key: 'billing', title: 'Billing (Stripe or Paddle)', test: ['stripe', 'paddle'], help: 'Billing provider picks who sells the plans. Paddle is the merchant of record and pays out to Pakistan; Stripe needs a business in a Stripe country.' },
+  { key: 'billing', title: 'Billing (Stripe, Paddle or Polar)', test: ['stripe', 'paddle', 'polar'], help: 'Billing provider picks who sells the plans. Paddle and Polar are merchants of record and pay out to Pakistan (Polar through Stripe Connect Express); Stripe needs a business in a Stripe country.' },
 ];
 
 const LABELS = {
@@ -32,6 +32,7 @@ const LABELS = {
   'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
   'billing.provider': 'Billing provider', 'paddle.environment': 'Paddle environment', 'paddle.apiKey': 'Paddle API key',
   'paddle.clientToken': 'Paddle client-side token', 'paddle.webhookSecret': 'Paddle webhook secret (Set up Paddle saves it)',
+  'polar.environment': 'Polar environment', 'polar.accessToken': 'Polar organization access token', 'polar.webhookSecret': 'Polar webhook secret (Set up Polar saves it)', 'polar.products': 'Polar products (Set up Polar saves them)',
   'app.legalName': 'Legal name (business or owner, shown in the terms)',
 };
 // Short explanations shown under a setting.
@@ -47,7 +48,7 @@ const HINTS = {
   'ai.provider': "Users without their own key use this provider, within their plan's monthly AI limit. Users can add their own key in Settings → AI.",
   'ai.model': 'For Claude, leave it empty or enter a claude- model; anything else uses claude-opus-5-5.',
 };
-const TEST_LABEL = { paddle: 'Test Paddle', smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
+const TEST_LABEL = { polar: 'Test Polar', paddle: 'Test Paddle', smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
 const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
 
 const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 }, 'app.trialDays': { min: 0, max: 365 } };
@@ -59,7 +60,10 @@ function SettingInput({ s, value, onChange, id }) {
     return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
   }
   if (s.key === 'billing.provider') {
-    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option></Select>;
+    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option></Select>;
+  }
+  if (s.key === 'polar.environment') {
+    return <Select id={id} value={value || 'production'} onChange={(e) => onChange(e.target.value)}><option value="production">Production</option><option value="sandbox">Sandbox (test)</option></Select>;
   }
   if (s.key === 'paddle.environment') {
     return <Select id={id} value={value || 'live'} onChange={(e) => onChange(e.target.value)}><option value="live">Live</option><option value="sandbox">Sandbox (test)</option></Select>;

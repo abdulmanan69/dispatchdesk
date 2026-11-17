@@ -111,7 +111,7 @@ export default function Billing() {
 
   const toast = useToast();
   const go = (r) => { if (r?.url) window.location.assign(r.url); };
-  // Stripe returns a page to go to; Paddle returns what its checkout overlay needs.
+  // Stripe and Polar return a page to go to; Paddle returns what its checkout overlay needs.
   const onCheckout = (r) => {
     if (r?.provider !== 'paddle') return go(r);
     openPaddleCheckout(r.checkout).catch((e) => toast.error(e.message));
@@ -137,7 +137,7 @@ export default function Billing() {
   const paddle = d.provider === 'paddle';
   const activated = checkout === 'success' && sub && ['active', 'trialing'].includes(sub.status);
   const trial = d.trial;
-  const providerName = paddle ? 'Paddle' : 'Stripe';
+  const providerName = paddle ? 'Paddle' : d.provider === 'polar' ? 'Polar' : 'Stripe';
   const trialOn = !!plans.data?.trial;
   // Monthly Pro subscribers: the yearly plan costs less per month (shown as a small offer under the current plan).
   const annual = (plans.data?.plans || []).find((p) => p.key === 'annual' && p.purchasable);
@@ -183,7 +183,7 @@ export default function Billing() {
       )}
       {!payable && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-          Online payments are not set up yet. An administrator needs to connect {paddle ? 'Paddle' : 'Stripe'} before plans can be purchased.
+          Online payments are not set up yet. An administrator needs to connect {providerName} before plans can be purchased.
         </div>
       )}
 
@@ -263,7 +263,9 @@ export default function Billing() {
         <p className="mt-3 text-xs text-muted">
           {paddle
             ? <>Payments are processed by Paddle.com, our reseller and merchant of record, which adds sales tax or VAT where it applies{d.paddle?.environment === 'sandbox' ? ' (sandbox: use Paddle test cards)' : ''}. See our <a href="/refunds" className="underline">refund policy</a>.</>
-            : <>Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</>}
+            : d.provider === 'polar'
+              ? <>Payments are processed by Polar (polar.sh), our reseller and merchant of record, which adds sales tax or VAT where it applies{d.paymentMode === 'sandbox' ? ' (sandbox: use Stripe test cards)' : ''}. See our <a href="/refunds" className="underline">refund policy</a>.</>
+              : <>Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</>}
         </p>
       </section>
 

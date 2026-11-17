@@ -2,6 +2,7 @@ import { prisma } from '../../db.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { getStripe } from '../stripe.js';
 import { billingProvider, paddleApi, paddleConfig } from '../paddle.js';
+import { polarApi, polarConfig } from '../polar.js';
 import { grantPlan, planPhrase } from './grant.js';
 
 /**
@@ -41,9 +42,32 @@ async function createPaddleDiscount(c) {
   }
 }
 
-/** Create the discount with the active payment provider (Stripe or Paddle). Returns the provider and its IDs. */
+/** A Polar discount for a discount code (Polar codes are letters and digits only). Returns { provider, stripeCouponId }. */
+async function createPolarDiscount(c) {
+  if (!(await polarConfig()).accessToken) throw badRequest('Add the Polar access token (Admin → System settings → Billing) before creating discount codes');
+  if (!/^[A-Za-z0-9]{3,256}$/.test(c.code)) throw badRequest('Polar codes can use only letters and digits (3 or more)');
+  try {
+    const dsc = await polarApi('POST', '/discounts/', {
+      name: (c.description || c.code).slice(0, 100),
+      code: c.code,
+      ...(c.percentOff ? { type: 'percentage', basis_points: Math.round(c.percentOff * 100) } : { type: 'fixed', amounts: { usd: c.amountOffCents } }),
+      duration: c.duration,
+      ...(c.duration === 'repeating' ? { duration_in_months: c.durationMonths } : {}),
+      ...(c.maxRedemptions ? { max_redemptions: c.maxRedemptions } : {}),
+      ...(c.expiresAt ? { ends_at: new Date(c.expiresAt).toISOString() } : {}),
+      metadata: { source: 'dispatchdesk' },
+    });
+    return { provider: 'polar', stripeCouponId: dsc.id, stripePromotionCodeId: null };
+  } catch (err) {
+    throw badRequest(`Polar refused the code: ${err.message.replace(/^Polar: /, '')}`);
+  }
+}
+
+/** Create the discount with the active payment provider (Stripe, Paddle or Polar). Returns the provider and its IDs. */
 export async function createStripeDiscount(c) {
-  if ((await billingProvider()) === 'paddle') return createPaddleDiscount(c);
+  const provider = await billingProvider();
+  if (provider === 'paddle') return createPaddleDiscount(c);
+  if (provider === 'polar') return createPolarDiscount(c);
   const stripe = await getStripe();
   if (!stripe) throw badRequest('Add the Stripe secret key (Admin → System settings → Billing) before creating discount codes');
   const coupon = await stripe.coupons.create({
@@ -74,6 +98,11 @@ export async function setStripeDiscountActive(c, active) {
     if (c.stripeCouponId) await paddleApi('PATCH', `/discounts/${encodeURIComponent(c.stripeCouponId)}`, { status: active ? 'active' : 'archived' });
     return;
   }
+  if (c.provider === 'polar') {
+    // A switched-off Polar code ends now; switched on again, it has no end date (or its original expiry).
+    if (c.stripeCouponId) await polarApi('PATCH', `/discounts/${encodeURIComponent(c.stripeCouponId)}`, { ends_at: active ? (c.expiresAt ? new Date(c.expiresAt).toISOString() : null) : new Date().toISOString() });
+    return;
+  }
   if (!c.stripePromotionCodeId) return;
   const stripe = await getStripe();
   if (stripe) await stripe.promotionCodes.update(c.stripePromotionCodeId, { active });
@@ -90,7 +119,7 @@ export async function stripeRedemptions(coupons) {
     }));
   }
   if (!stripe) return out;
-  await Promise.all(coupons.filter((c) => c.provider !== 'paddle' && c.stripePromotionCodeId).map(async (c) => {
+  await Promise.all(coupons.filter((c) => !['paddle', 'polar'].includes(c.provider) && c.stripePromotionCodeId).map(async (c) => {
     try {
       const p = await stripe.promotionCodes.retrieve(c.stripePromotionCodeId);
       out.set(c.id, p.times_redeemed ?? null);

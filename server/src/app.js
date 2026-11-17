@@ -46,6 +46,7 @@ import communityRoutes from './routes/community.js';
 import teamRoutes from './routes/teams.js';
 import billingRoutes, { webhookHandler } from './routes/billing.js';
 import { paddleWebhookHandler } from './services/billing/paddleBilling.js';
+import { polarWebhookHandler } from './services/billing/polarBilling.js';
 import adminRoutes from './routes/admin.js';
 import adminSetupRoutes from './routes/adminSetup.js';
 import settingsRoutes from './routes/settings.js';
@@ -146,6 +147,7 @@ export function createApp() {
   // Stripe needs the raw body to verify webhook signatures: mount before the JSON parser.
   app.post('/api/billing/webhook', express.raw({ type: 'application/json', limit: '1mb' }), webhookHandler);
   app.post('/api/billing/paddle/webhook', express.raw({ type: 'application/json', limit: '1mb' }), paddleWebhookHandler);
+  app.post('/api/billing/polar/webhook', express.raw({ type: 'application/json', limit: '1mb' }), polarWebhookHandler);
 
   // Only the lower-case /api prefix is the API. /API/... and /Api/... are refused outright, so no path-based check
   // (CSRF, API-token blocklist, verification) can be skipped by changing letter case.
@@ -228,7 +230,7 @@ export function createApp() {
   /** What the privacy policy, terms and refund policy print: names, contact, and who processes payments. */
   const legalArgs = async () => {
     const s = await getSettings(['app.name', 'app.supportEmail', 'app.legalName', 'billing.provider']);
-    return { appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'], legalName: s['app.legalName'] || '', provider: s['billing.provider'] === 'paddle' ? 'paddle' : 'stripe' };
+    return { appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'], legalName: s['app.legalName'] || '', provider: ['paddle', 'polar'].includes(s['billing.provider']) ? s['billing.provider'] : 'stripe' };
   };
   // Privacy policy, terms and refund policy as HTML for the React pages (the same text the server writes into the page for crawlers).
   app.get('/api/public/legal/:doc', async (req, res, next) => {

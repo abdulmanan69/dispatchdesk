@@ -10,6 +10,8 @@ import { OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { platformMailStatus } from '../services/email/system.js';
 import { getStripe } from '../services/stripe.js';
 import { provisionPaddle, paddleWebhookUrl } from '../services/billing/paddleProvision.js';
+import { provisionPolar, polarWebhookUrl } from '../services/billing/polarProvision.js';
+import { POLAR_EVENTS, parseProducts } from '../services/polar.js';
 import { PADDLE_EVENTS } from '../services/paddle.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { listBackups, runBackup, backupPath } from '../services/backup.js';
@@ -36,7 +38,7 @@ export const STRIPE_WEBHOOK_EVENTS = [
 
 const KEYS = [
   'smtp.host', 'smtp.port', 'smtp.user', 'smtp.pass', 'smtp.from', 'brevo.apiKey', 'app.requireEmailVerification', 'app.registrationOpen',
-  'stripe.secretKey', 'stripe.webhookSecret', 'billing.provider', 'paddle.environment', 'paddle.apiKey', 'paddle.clientToken', 'paddle.webhookSecret', 'app.legalName',
+  'stripe.secretKey', 'stripe.webhookSecret', 'billing.provider', 'paddle.environment', 'paddle.apiKey', 'paddle.clientToken', 'paddle.webhookSecret', 'polar.environment', 'polar.accessToken', 'polar.webhookSecret', 'polar.products', 'app.legalName',
   'google.clientId', 'google.clientSecret', 'microsoft.clientId', 'microsoft.clientSecret',
   'eia.apiKey', 'fred.apiKey', 'usda.marsApiKey', 'ai.apiKey', 'ai.baseUrl', 'ai.model',
   'search.provider', 'search.apiKey', 'fmcsa.socrataAppToken', 'fmcsa.webKey',
@@ -180,6 +182,39 @@ export async function buildChecklist(req) {
       links: [
         { label: 'Paddle authentication', url: s['paddle.environment'] === 'sandbox' ? 'https://sandbox-vendors.paddle.com/authentication-v2' : 'https://vendors.paddle.com/authentication-v2' },
         { label: 'Paddle checkout settings', url: s['paddle.environment'] === 'sandbox' ? 'https://sandbox-vendors.paddle.com/checkout-settings' : 'https://vendors.paddle.com/checkout-settings' },
+      ],
+    }));
+
+  // 3c. Polar (merchant of record; pays out through Stripe Connect Express, Pakistan included)
+  const polarOn = s['billing.provider'] === 'polar';
+  const polarKey = set('polar.accessToken');
+  const polarProducts = parseProducts(s['polar.products']);
+  const noPolarProduct = paid.filter((p) => !polarProducts[p.key] && p.priceCents && !p.basePriceCents);
+  const polarReady = polarKey && set('polar.webhookSecret') && !noPolarProduct.length;
+  const polarDash = s['polar.environment'] === 'sandbox' ? 'https://sandbox.polar.sh/dashboard' : 'https://polar.sh/dashboard';
+  items.push(item('polar', 'Payments (Polar)', !polarKey ? 'todo' : polarReady && polarOn ? 'done' : 'partial',
+    !polarKey ? 'Not configured. Polar is a merchant of record like Paddle: it sells the plans and pays you out through Stripe Connect Express, which reaches Pakistan.'
+      : `${s['polar.environment'] === 'sandbox' ? 'Sandbox' : 'Production'} access token saved.`
+        + (set('polar.webhookSecret') ? ' Webhook secret saved.' : ' Webhook not created yet.')
+        + (noPolarProduct.length ? ` ${noPolarProduct.length} paid plan(s) have no Polar product.` : ' All paid plans are linked to Polar products.')
+        + (polarOn ? ' Polar sells the plans.' : ' Set Billing provider to polar to sell through it.'), {
+      required: false,
+      testService: 'polar',
+      settingsGroup: 'billing',
+      canProvisionPolar: polarKey && https,
+      steps: [
+        'In Polar: **Settings → General → Developers**, create an **Organization Access Token** with the scopes products, checkouts, subscriptions, customers, customer sessions, orders, discounts and webhooks (read and write), and no expiry.',
+        'In **System settings → Billing**: paste the access token, set **Polar environment** (production or sandbox, matching the token) and set **Billing provider** to `polar`.',
+        'Press **Set up Polar** on this card. It creates a product for each paid plan and the webhook with its signing secret.',
+        'In Polar: **Finance → Payout account**, connect the Stripe Connect Express payout account, and complete the review. Live payments start once Polar approves the organization.',
+      ],
+      values: [
+        { label: 'Webhook URL', value: polarWebhookUrl(), copy: true },
+        { label: 'Webhook events', value: POLAR_EVENTS.join(', '), copy: true },
+        ...paid.map((p) => ({ label: `${p.name} Polar product`, value: polarProducts[p.key] || 'not linked', copy: !!polarProducts[p.key] })),
+      ],
+      links: [
+        { label: 'Polar dashboard', url: polarDash },
       ],
     }));
 
@@ -351,6 +386,12 @@ async function findProduct(stripe, planKey) {
 r.post('/paddle/provision', requirePermission('admin.billing', 'admin.settings'), ah(async (req, res) => {
   const report = await provisionPaddle(req.user.id);
   await audit(req, 'admin.paddle_provisioned', { details: { environment: report.environment, plans: report.plans.map((p) => `${p.plan}:${p.action}`), webhook: report.webhook?.action } });
+  res.json({ report, checklist: await buildChecklist(req) });
+}));
+
+r.post('/polar/provision', requirePermission('admin.billing', 'admin.settings'), ah(async (req, res) => {
+  const report = await provisionPolar(req.user.id);
+  await audit(req, 'admin.polar_provisioned', { details: { environment: report.environment, plans: report.plans.map((p) => `${p.plan}:${p.action}`), webhook: report.webhook?.action } });
   res.json({ report, checklist: await buildChecklist(req) });
 }));
 

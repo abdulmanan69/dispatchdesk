@@ -18,6 +18,7 @@ function contactLine({ supportEmail, appUrl }) {
 export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '', provider = 'stripe' } = {}) {
   const n = esc(appName);
   const paddle = provider === 'paddle';
+  const polar = provider === 'polar';
   return `<article class="prose-dd mx-auto max-w-3xl px-4 py-14 text-[15px]" data-legal="privacy">
 <h1>Privacy policy</h1>
 <p>Last updated: ${LEGAL_UPDATED}</p>
@@ -43,7 +44,9 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <h3>Usage and technical information</h3>
 <p>Session records (to keep you signed in), security and audit logs (for example sign-ins and changes to sensitive settings), IP address and browser details for security and rate limiting, and basic error logs. We do not use third-party advertising or tracking cookies.</p>
 <h3>Payments</h3>
-<p>${paddle
+<p>${polar
+  ? `Paid plans are sold through Polar (polar.sh), our online reseller and Merchant of Record. Card and other payment details are entered in Polar's checkout and are never stored by ${n}; Polar shares with us your name, email address, country, the plan you bought and the payment status, and we keep the subscription status and plan. Polar's own privacy policy applies to the information it collects.`
+  : paddle
   ? `Paid plans are sold through Paddle.com, our online reseller and Merchant of Record. Card and other payment details are entered in Paddle's checkout and are never stored by ${n}; Paddle shares with us your name, email address, country, the plan you bought and the payment status, and we keep the subscription status and plan. Paddle's own privacy policy applies to the information it collects.`
   : `Paid plans are processed by Stripe. Card details are entered on Stripe's pages and are never stored by ${n}; we keep the subscription status and plan.`}</p>
 
@@ -75,7 +78,7 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <ul>
 <li>Hosting and storage provider (servers where the app and database run).</li>
 <li>Brevo (service email such as verification and password reset).</li>
-<li>${paddle ? 'Paddle.com (our Merchant of Record: checkout, payments, tax and invoices for paid plans).' : 'Stripe (payments for paid plans).'}</li>
+<li>${polar ? 'Polar (polar.sh; our Merchant of Record: checkout, payments, tax and invoices for paid plans).' : paddle ? 'Paddle.com (our Merchant of Record: checkout, payments, tax and invoices for paid plans).' : 'Stripe (payments for paid plans).'}</li>
 <li>Google and Microsoft (sign-in and the mailboxes you connect).</li>
 <li>Map and routing services based on OpenStreetMap (map tiles, routing and address search). They receive coordinates and place names needed to draw maps and routes, not your account details.</li>
 <li>Browser push services (if you turn on notifications on a device).</li>
@@ -151,13 +154,14 @@ ${legalName ? `<p>${n} is operated by ${esc(legalName)}.</p>
 <p>You own the records and files you put into ${n}. You give us permission to store and process them only to provide the service, as described in the <a href="${esc(appUrl)}/privacy">privacy policy</a>. You can export or delete your data at any time.</p>
 
 <h2>Public and third-party data</h2>
-<p>Carrier, broker and fuel information from public sources (FMCSA, EIA and others), map and route information, and estimates such as ETAs, legal ETAs and rate calculations are provided for convenience and may be incomplete, delayed or wrong. Always confirm authority, insurance, bonds, appointments and rates before you rely on them. Third-party services you connect (mailboxes, phone services) and our payment provider${provider === 'paddle' ? ' (Paddle.com)' : ' (Stripe)'} have their own terms.</p>
+<p>Carrier, broker and fuel information from public sources (FMCSA, EIA and others), map and route information, and estimates such as ETAs, legal ETAs and rate calculations are provided for convenience and may be incomplete, delayed or wrong. Always confirm authority, insurance, bonds, appointments and rates before you rely on them. Third-party services you connect (mailboxes, phone services) and our payment provider${provider === 'paddle' ? ' (Paddle.com)' : provider === 'polar' ? ' (Polar)' : ' (Stripe)'} have their own terms.</p>
 
 <h2>Plans and payment</h2>
 <ul>
 <li>New accounts get a free trial with no card. When the trial ends, the account becomes read-only (you can view and export your data) until you choose a paid plan. Paid plans are billed in advance and renew until cancelled.</li>
 <li>You can cancel at any time in Billing; the plan stays active until the end of the paid period. Refunds follow our <a href="${esc(appUrl)}/refunds">refund policy</a>.</li>
 ${provider === 'paddle' ? `<li>Our order process is conducted by our online reseller Paddle.com. Paddle.com is the Merchant of Record for all our orders. Paddle provides all customer service inquiries and handles returns.</li>
+` : provider === 'polar' ? `<li>Our order process is conducted by our online reseller Polar (polar.sh). Polar is the Merchant of Record for all our orders and handles payments, taxes and returns.</li>
 ` : ''}
 <li>We may change prices with at least 30 days' notice before your next renewal.</li>
 </ul>
@@ -210,7 +214,7 @@ export function refundsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <p>You can cancel at any time in Billing. Your plan stays active until the end of the period you paid for and then does not renew. A renewal payment is refunded if you ask within 14 days of the renewal and have not used the service since it renewed.</p>
 
 <h2>How refunds are paid</h2>
-<p>Refunds go back to the payment method you used.${provider === 'paddle' ? ' Payments are processed by Paddle.com, our online reseller and Merchant of Record, which issues the refund.' : ''} Your bank may take 5 to 10 business days to show it.</p>
+<p>Refunds go back to the payment method you used.${provider === 'paddle' ? ' Payments are processed by Paddle.com, our online reseller and Merchant of Record, which issues the refund.' : provider === 'polar' ? ' Payments are processed by Polar (polar.sh), our online reseller and Merchant of Record, which issues the refund.' : ''} Your bank may take 5 to 10 business days to show it.</p>
 
 <h2>How to ask</h2>
 <p>To ask for a refund, ${contactLine({ supportEmail, appUrl })} from the email address of your account.</p>

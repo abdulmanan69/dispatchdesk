@@ -36,13 +36,13 @@ function CopyValue({ v }) {
 
 function StripeReport({ report, onClose }) {
   return (
-    <Modal open onClose={onClose} title={report.provider === 'paddle' ? `Paddle set up (${report.environment})` : `Stripe set up (${report.mode} mode)`} size="md" footer={<Button onClick={onClose}>Done</Button>}>
+    <Modal open onClose={onClose} title={report.provider === 'paddle' ? `Paddle set up (${report.environment})` : report.provider === 'polar' ? `Polar set up (${report.environment})` : `Stripe set up (${report.mode} mode)`} size="md" footer={<Button onClick={onClose}>Done</Button>}>
       <ul className="space-y-2 text-sm">
         {report.plans.map((p) => (
           <li key={p.plan} className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-2">
             <span className="font-medium capitalize">{p.plan}</span>
             <span className="text-fg-2">{p.action}{p.reason ? ` (${p.reason})` : ''}</span>
-            {p.priceId && <span className="w-full font-mono text-xs text-muted">{p.priceId}</span>}
+            {(p.priceId || p.productId) && <span className="w-full font-mono text-xs text-muted">{p.priceId || p.productId}</span>}
           </li>
         ))}
         {report.webhook && (
@@ -168,6 +168,10 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
     invalidate: [['admin', 'setup'], ['admin', 'plans'], ['plans']],
     onSuccess: (d) => { setReport(d); qc.invalidateQueries({ queryKey: ['admin', 'settings'] }); },
   });
+  const polarSetup = useApiMutation(() => api.post('/api/admin/setup/polar/provision'), {
+    invalidate: [['admin', 'setup'], ['admin', 'plans'], ['plans']],
+    onSuccess: (d) => { setReport({ ...d.report, provider: 'polar' }); qc.invalidateQueries({ queryKey: ['admin', 'settings'] }); },
+  });
   const paddleSetup = useApiMutation(() => api.post('/api/admin/setup/paddle/provision'), {
     invalidate: [['admin', 'setup'], ['admin', 'plans'], ['plans']],
     onSuccess: (d) => { setReport({ ...d.report, provider: 'paddle' }); qc.invalidateQueries({ queryKey: ['admin', 'settings'] }); },
@@ -222,6 +226,13 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
                 onClick={async () => {
                   if (await confirm({ title: 'Set up Paddle?', message: 'For each paid plan without a Paddle price, a product and a monthly or yearly price are created in Paddle from the plan’s price, and the webhook is created for this site with its signing secret saved here. Existing ones are reused.', confirmLabel: 'Set up Paddle' })) paddleSetup.mutate();
                 }}>Set up Paddle</Button>
+            )}
+            {it.key === 'polar' && (
+              <Button size="sm" icon={Wand2} loading={polarSetup.isPending} disabled={!it.canProvisionPolar}
+                title={it.canProvisionPolar ? undefined : 'Needs a saved Polar access token and an https APP_URL'}
+                onClick={async () => {
+                  if (await confirm({ title: 'Set up Polar?', message: 'For each paid plan without a Polar product, a monthly or yearly product is created in Polar from the plan’s price (per seat for Teams), and the webhook is created for this site with its signing secret saved here. Existing ones are kept.', confirmLabel: 'Set up Polar' })) polarSetup.mutate();
+                }}>Set up Polar</Button>
             )}
             {it.links.map((l) => (
               <a key={l.url} href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[13px] text-brand-700 hover:underline dark:text-brand-300">

@@ -61,13 +61,19 @@ export const SETTING_DEFS = {
   'usda.marsApiKey': { group: 'integrations', secret: true, default: () => process.env.USDA_MARS_API_KEY || '' },
   'stripe.secretKey': { group: 'billing', secret: true, default: () => config.stripe.secretKey },
   'stripe.webhookSecret': { group: 'billing', secret: true, default: () => config.stripe.webhookSecret },
-  // Who sells the plans: stripe | paddle. Paddle is the merchant of record (works for sellers Stripe does not serve).
+  // Who sells the plans: stripe | paddle | polar. Paddle and Polar are merchants of record (they work for sellers Stripe
+  // does not serve; Polar pays out to Pakistan through Stripe Connect Express).
   'billing.provider': { group: 'billing', default: () => process.env.BILLING_PROVIDER || 'stripe' },
   'paddle.environment': { group: 'billing', default: () => process.env.PADDLE_ENVIRONMENT || 'live' }, // live | sandbox
   'paddle.apiKey': { group: 'billing', secret: true, default: () => process.env.PADDLE_API_KEY || '' },
   // Client-side token (live_… / test_…) for Paddle.js in the browser: public by design, not a secret.
   'paddle.clientToken': { group: 'billing', default: () => process.env.PADDLE_CLIENT_TOKEN || '' },
   'paddle.webhookSecret': { group: 'billing', secret: true, default: () => '' },
+  'polar.environment': { group: 'billing', default: () => process.env.POLAR_ENVIRONMENT || 'production' }, // production | sandbox
+  'polar.accessToken': { group: 'billing', secret: true, default: () => process.env.POLAR_ACCESS_TOKEN || '' },
+  'polar.webhookSecret': { group: 'billing', secret: true, default: () => '' },
+  // { planKey: productId } for the Polar products made by Admin → Setup → "Set up Polar".
+  'polar.products': { group: 'billing', default: () => '' },
 };
 
 let cache = null;

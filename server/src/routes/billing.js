@@ -16,6 +16,8 @@ import { trialSettings } from '../services/billing/trial.js';
 import { redeemPlanCode } from '../services/billing/coupons.js';
 import { billingProvider, paddleConfig, paddleMode } from '../services/paddle.js';
 import { paddleCheckout, paddleCancel, paddleResume, paddleChangePlan, paddlePortalUrl, paddleInvoiceUrl } from '../services/billing/paddleBilling.js';
+import { polarConfig, polarMode } from '../services/polar.js';
+import { polarCheckout, polarCancel, polarResume, polarChangePlan, polarPortalUrl } from '../services/billing/polarBilling.js';
 
 const r = Router();
 // Signature verification is a local HMAC check and needs no real API key.
@@ -44,10 +46,10 @@ export function planFeatures(p) {
   return f;
 }
 
-const publicPlan = (p, provider = 'stripe') => ({
+const publicPlan = (p, provider = 'stripe', polarProducts = {}) => ({
   id: p.id, key: p.key, name: p.name, description: p.description, priceCents: p.priceCents, interval: p.interval,
   perSeat: p.perSeat, minSeats: p.minSeats, trialDays: p.trialDays,
-  purchasable: p.key !== 'free' && !!(provider === 'paddle' ? p.paddlePriceId : p.stripePriceId),
+  purchasable: p.key !== 'free' && !!(provider === 'paddle' ? p.paddlePriceId : provider === 'polar' ? polarProducts[p.key] : p.stripePriceId),
   limits: {
     maxCarriers: p.maxCarriers, dailyEmailLimit: p.dailyEmailLimit, monthlyAiMessages: p.monthlyAiMessages, maxSequences: p.maxSequences,
     maxAutomations: p.maxAutomations, maxDiscoveryPerDay: p.maxDiscoveryPerDay,
@@ -62,8 +64,9 @@ const publicPlan = (p, provider = 'stripe') => ({
 /** The active payment provider and whether it can take payments. */
 async function paymentSetup() {
   const provider = await billingProvider();
-  const mode = provider === 'paddle' ? await paddleMode() : await stripeMode();
-  return { provider, mode, enabled: mode !== 'unconfigured' };
+  const mode = provider === 'paddle' ? await paddleMode() : provider === 'polar' ? await polarMode() : await stripeMode();
+  const polarProducts = provider === 'polar' ? (await polarConfig()).products : {};
+  return { provider, mode, enabled: mode !== 'unconfigured', polarProducts };
 }
 
 /** With the free trial on, the Free plan is shown as the trial: the trial plan's features for a number of days. */
@@ -81,7 +84,7 @@ r.get('/plans', ah(async (req, res) => {
   const [plans, t, pay] = await Promise.all([prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }), trialSettings(), paymentSetup()]);
   const trialPlan = t.days ? plans.find((p) => p.key === t.planKey) : null;
   res.json({
-    plans: plans.map((p) => (p.key === 'free' && trialPlan ? trialCard(p, trialPlan, t.days) : publicPlan(p, pay.provider))),
+    plans: plans.map((p) => (p.key === 'free' && trialPlan ? trialCard(p, trialPlan, t.days) : publicPlan(p, pay.provider, pay.polarProducts))),
     trial: trialPlan ? { days: t.days, planKey: trialPlan.key } : null,
     provider: pay.provider,
     paymentsEnabled: pay.enabled,
@@ -104,7 +107,7 @@ r.get('/me', ah(async (req, res) => {
   const paddle = pay.provider === 'paddle' ? await paddleConfig() : null;
   const teamOwned = subscription?.teamId && subscription.userId !== req.user.id;
   res.json({
-    plan: publicPlan(plan, pay.provider),
+    plan: publicPlan(plan, pay.provider, pay.polarProducts),
     provider: pay.provider,
     paymentsEnabled: pay.enabled,
     ...(paddle ? { paddle: { environment: paddle.environment, clientToken: paddle.clientToken || null } } : {}),
@@ -121,6 +124,7 @@ r.get('/me', ah(async (req, res) => {
     storage: { usedBytes: storage.usedBytes, limitBytes: storage.limitBytes, scope: storage.scope },
     payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.provider === 'paddle' ? `/api/billing/payments/${p.id}/invoice` : p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
     stripeMode: mode,
+    paymentMode: pay.mode,
   });
 }));
 
@@ -183,6 +187,12 @@ r.post('/checkout', ah(async (req, res) => {
     await audit(req, 'billing.checkout_started', { entityType: 'subscription', entityId: out.localSubscriptionId, details: { plan: plan.key, seats, provider: 'paddle' } });
     return res.json({ provider: 'paddle', checkout: out.checkout });
   }
+  // Polar: the browser is sent to Polar's hosted checkout; the plan activates from Polar's signed webhook.
+  if ((await billingProvider()) === 'polar') {
+    const out = await polarCheckout(req.user, plan, { seats, teamId });
+    await audit(req, 'billing.checkout_started', { entityType: 'subscription', entityId: out.localSubscriptionId, details: { plan: plan.key, seats, provider: 'polar' } });
+    return res.json({ provider: 'polar', url: out.url });
+  }
   if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet. An administrator must set its Stripe price ID (Admin → Plans).`);
   const stripe = await requireStripe();
 
@@ -225,7 +235,9 @@ async function ownedLiveSubscription(user) {
 r.post('/portal', ah(async (req, res) => {
   const latest = await prisma.subscription.findFirst({ where: { userId: req.user.id, stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' }, select: { provider: true } });
   // Paddle customers (or anyone on a Paddle install without a Stripe customer) use Paddle's portal.
-  if (latest?.provider === 'paddle' || (!latest && (await billingProvider()) === 'paddle')) return res.json({ url: await paddlePortalUrl(req.user) });
+  const active = latest?.provider || (await billingProvider());
+  if (active === 'paddle') return res.json({ url: await paddlePortalUrl(req.user) });
+  if (active === 'polar') return res.json({ url: await polarPortalUrl(req.user) });
   const stripe = await requireStripe();
   const customer = await customerIdFor(req.user);
   if (!customer) throw notFound('No billing account yet — start a subscription first');
@@ -241,8 +253,8 @@ r.post('/cancel', ah(async (req, res) => {
   const details = { plan: null, reason: why.reason || null, comment: why.comment || null };
   const sub = await ownedLiveSubscription(req.user);
   details.plan = sub.plan?.key || null;
-  if (sub.provider === 'paddle') {
-    const row = await paddleCancel(sub);
+  if (sub.provider === 'paddle' || sub.provider === 'polar') {
+    const row = sub.provider === 'polar' ? await polarCancel(sub) : await paddleCancel(sub);
     await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id, details });
     return res.json({ ok: true, cancelAtPeriodEnd: !!row?.cancelAtPeriodEnd, message: 'Your subscription will end at the close of the current billing period.' });
   }
@@ -255,8 +267,8 @@ r.post('/cancel', ah(async (req, res) => {
 
 r.post('/resume', ah(async (req, res) => {
   const sub = await ownedLiveSubscription(req.user);
-  if (sub.provider === 'paddle') {
-    const row = await paddleResume(sub);
+  if (sub.provider === 'paddle' || sub.provider === 'polar') {
+    const row = sub.provider === 'polar' ? await polarResume(sub) : await paddleResume(sub);
     await audit(req, 'billing.resumed', { entityType: 'subscription', entityId: sub.id });
     return res.json({ ok: true, cancelAtPeriodEnd: !!row?.cancelAtPeriodEnd });
   }
@@ -274,15 +286,15 @@ r.post('/change-plan', ah(async (req, res) => {
   if (!plan || !plan.active || plan.key === 'free') throw badRequest('Choose a paid plan. To move to Free, cancel your subscription.');
   if (plan.perSeat !== sub.plan.perSeat) throw badRequest('Switching between individual and team plans requires canceling and starting a new subscription.');
   if (plan.id === sub.planId && !seats) throw badRequest('You are already on this plan');
-  if (sub.provider === 'paddle') {
+  if (sub.provider === 'paddle' || sub.provider === 'polar') {
     let quantity = sub.seats || 1;
     if (plan.perSeat && seats) {
       const members = await prisma.teamMember.count({ where: { teamId: sub.teamId } });
       if (seats < Math.max(plan.minSeats, members)) throw badRequest(`Seats must be at least ${Math.max(plan.minSeats, members)} (current members / plan minimum)`);
       quantity = seats;
     }
-    const row = await paddleChangePlan(sub, plan, quantity);
-    await audit(req, 'billing.plan_changed', { entityType: 'subscription', entityId: sub.id, details: { from: sub.plan.key, to: plan.key, quantity, provider: 'paddle' } });
+    const row = sub.provider === 'polar' ? await polarChangePlan(sub, plan, quantity) : await paddleChangePlan(sub, plan, quantity);
+    await audit(req, 'billing.plan_changed', { entityType: 'subscription', entityId: sub.id, details: { from: sub.plan.key, to: plan.key, quantity, provider: sub.provider } });
     return res.json({ ok: true, status: row?.status });
   }
   if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet.`);

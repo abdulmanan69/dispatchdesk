@@ -65,12 +65,12 @@ function PlanEditor({ plan, onClose }) {
 }
 
 /** Which provider price a plan checks out with, or why checkout is off for it. */
-function PriceLink({ plan, provider }) {
+function PriceLink({ plan, provider, polarProducts = {} }) {
   if (plan.key === 'free') return <span className="text-muted">No checkout needed</span>;
-  const paddle = provider === 'paddle';
-  const id = paddle ? plan.paddlePriceId : plan.stripePriceId;
+  const name = provider === 'paddle' ? 'Paddle' : provider === 'polar' ? 'Polar' : 'Stripe';
+  const id = provider === 'paddle' ? plan.paddlePriceId : provider === 'polar' ? polarProducts[plan.key] : plan.stripePriceId;
   if (id) return <span className="font-mono text-muted">{id}</span>;
-  return <span className="text-amber-700 dark:text-amber-300">No {paddle ? 'Paddle' : 'Stripe'} price linked — checkout disabled</span>;
+  return <span className="text-amber-700 dark:text-amber-300">No {name} {provider === 'polar' ? 'product' : 'price'} linked — checkout disabled</span>;
 }
 
 export default function AdminPlans() {
@@ -78,7 +78,9 @@ export default function AdminPlans() {
   const q = useQuery({ queryKey: ['admin', 'plans'], queryFn: () => api.get('/api/admin/plans') });
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted">Prices and limits are configurable. Plan limits take effect immediately. {q.data?.provider === 'paddle'
+      <p className="text-sm text-muted">Prices and limits are configurable. Plan limits take effect immediately. {q.data?.provider === 'polar'
+        ? 'Plans are sold through Polar: Setup → "Set up Polar" creates a Polar product for each paid plan and links it here.'
+        : q.data?.provider === 'paddle'
         ? 'Plans are sold through Paddle: Setup → "Set up Paddle" creates a Paddle price for each paid plan and links it here.'
         : 'To charge customers, create a recurring price in your Stripe dashboard and paste its price ID here.'}</p>
       <QueryState query={q}>
@@ -88,7 +90,7 @@ export default function AdminPlans() {
               <Card key={p.id} title={<div className="flex items-center gap-2"><span className="text-sm font-medium">{p.name}</span>{!p.active && <Badge>Inactive</Badge>}</div>}
                 actions={<Button variant="ghost" size="sm" icon={Pencil} onClick={() => setEditing(p)}>Edit</Button>}>
                 <p className="text-xl font-medium tabular">{money(p.priceCents)} <span className="text-sm font-normal text-muted">/{p.interval}{p.perSeat ? ' per seat' : ''}</span></p>
-                <p className="mt-1 text-xs"><PriceLink plan={p} provider={d.provider} /></p>
+                <p className="mt-1 text-xs"><PriceLink plan={p} provider={d.provider} polarProducts={d.polarProducts} /></p>
                 <dl className="mt-3 space-y-1 text-xs">
                   {LIMITS.map(([k, l]) => <div key={k} className="flex justify-between"><dt className="text-muted">{l}</dt><dd className="tabular">{p[k] < 0 ? '∞' : p[k].toLocaleString('en-US')}</dd></div>)}
                   <div className="flex justify-between"><dt className="text-muted">Subscriptions</dt><dd className="tabular">{p._count.subscriptions}</dd></div>

@@ -19,7 +19,8 @@ let fetchImpl = (...a) => globalThis.fetch(...a);
 export function __setPaddleFetch(f) { fetchImpl = f || ((...a) => globalThis.fetch(...a)); }
 
 export async function billingProvider() {
-  return (await getSettings(['billing.provider']))['billing.provider'] === 'paddle' ? 'paddle' : 'stripe';
+  const p = (await getSettings(['billing.provider']))['billing.provider'];
+  return p === 'paddle' || p === 'polar' ? p : 'stripe';
 }
 
 export async function paddleConfig() {

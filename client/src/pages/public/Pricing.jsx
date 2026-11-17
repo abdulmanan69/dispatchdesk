@@ -80,8 +80,10 @@ export default function Pricing() {
           <div className="mt-8 grid gap-6 text-sm text-muted sm:grid-cols-2 lg:grid-cols-4">
             <p><span className="font-medium text-fg">Payments.</span> {q.data.provider === 'paddle'
               ? 'Orders are processed by Paddle.com, our online reseller and Merchant of Record. Pay by card or PayPal; we never see or store your card number.'
-              : 'Card payments are processed securely by Stripe. We never see or store your card number.'}</p>
-            <p><span className="font-medium text-fg">Taxes.</span> Prices are in USD. {q.data.provider === 'paddle' ? 'Any sales tax or VAT for your location is shown at checkout.' : 'They exclude applicable taxes.'}</p>
+              : q.data.provider === 'polar'
+                ? 'Orders are processed by Polar (polar.sh), our online reseller and Merchant of Record. We never see or store your card number.'
+                : 'Card payments are processed securely by Stripe. We never see or store your card number.'}</p>
+            <p><span className="font-medium text-fg">Taxes.</span> Prices are in USD. {['paddle', 'polar'].includes(q.data.provider) ? 'Any sales tax or VAT for your location is shown at checkout.' : 'They exclude applicable taxes.'}</p>
             <p><span className="font-medium text-fg">Cancel anytime.</span> Paid plans stay active until the end of the billing period. After that the account is read-only: your data stays and you can still view and export it.</p>
             <p><span className="font-medium text-fg">Refunds.</span> Full refund within 14 days of your first payment. <Link to="/refunds" className="text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">Refund policy</Link></p>
           </div>

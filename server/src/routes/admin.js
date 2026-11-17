@@ -12,7 +12,8 @@ import { LockBusyError } from '../lib/locks.js';
 import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
-import { paddleApi, paddleConfig } from '../services/paddle.js';
+import { paddleApi, paddleConfig, billingProvider } from '../services/paddle.js';
+import { polarApi, polarConfig } from '../services/polar.js';
 import { grantPlan, planPhrase } from '../services/billing/grant.js';
 import { trialSettings, trialState } from '../services/billing/trial.js';
 import { COUPON_KINDS, DISCOUNT_DURATIONS, CODE_RE, normCode, createStripeDiscount, setStripeDiscountActive, stripeRedemptions, findCoupon } from '../services/billing/coupons.js';
@@ -434,7 +435,7 @@ r.get('/payments', requirePermission('admin.billing'), ah(async (req, res) => {
 
 r.get('/plans', requirePermission('admin.billing'), ah(async (req, res) => {
   const plans = await prisma.plan.findMany({ orderBy: { sortOrder: 'asc' }, include: { _count: { select: { subscriptions: true } } } });
-  res.json({ plans, provider: (await getSetting('billing.provider')) === 'paddle' ? 'paddle' : 'stripe' });
+  res.json({ plans, provider: await billingProvider(), polarProducts: (await polarConfig()).products });
 }));
 
 const limit = optInt(-1, 10_000_000);
@@ -612,6 +613,13 @@ const TESTS = {
     const tokenEnv = c.clientToken.startsWith('test_') ? 'sandbox' : c.clientToken.startsWith('live_') ? 'live' : null;
     const clash = tokenEnv && tokenEnv !== c.environment ? ` The client-side token is a ${tokenEnv} token but the environment is ${c.environment}.` : '';
     return { ok: !clash, message: `Connected to Paddle (${c.environment}).${missing.length ? ` Missing: ${missing.join(', ')}.` : ''}${clash}` };
+  },
+  async polar() {
+    const c = await polarConfig();
+    if (!c.accessToken) return { ok: false, message: 'Polar access token is not set' };
+    await polarApi('GET', '/products/?limit=1');
+    const missing = !c.webhookSecret ? ' Missing: webhook secret (press Set up Polar in Admin → Setup).' : '';
+    return { ok: true, message: `Connected to Polar (${c.environment}).${missing}` };
   },
   async search() {
     const s = await getSettings(['search.provider', 'search.apiKey']);
