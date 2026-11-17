@@ -23,6 +23,8 @@ export const OAUTH_PROVIDERS = {
     authorizeUrl: (tenant) => `https://login.microsoftonline.com/${tenant || 'common'}/oauth2/v2.0/authorize`,
     tokenUrl: (tenant) => `https://login.microsoftonline.com/${tenant || 'common'}/oauth2/v2.0/token`,
     scope: 'offline_access openid email User.Read Mail.Send',
+    // Asked for only when the user turns on reply and bounce detection for this mailbox (incremental consent).
+    readScope: 'Mail.Read',
     extraAuthParams: { response_mode: 'query', prompt: 'select_account' },
     profileUrl: 'https://graph.microsoft.com/v1.0/me',
     profileEmail: (p) => p.mail || p.userPrincipalName,
@@ -46,12 +48,14 @@ export async function oauthAvailability() {
   return out;
 }
 
-export async function buildAuthUrl(provider, state) {
+/** `read`: also ask for permission to read the inbox (providers with a readScope only). */
+export async function buildAuthUrl(provider, state, { read = false } = {}) {
   const def = OAUTH_PROVIDERS[provider];
   const c = await credentials(provider);
   if (c.missing.length) return { missing: c.missing };
+  const scope = read && def.readScope ? `${def.scope} ${def.readScope}` : def.scope;
   const params = new URLSearchParams({
-    client_id: c.clientId, redirect_uri: redirectUri(provider), response_type: 'code', scope: def.scope, state, ...def.extraAuthParams,
+    client_id: c.clientId, redirect_uri: redirectUri(provider), response_type: 'code', scope, state, ...def.extraAuthParams,
   });
   return { url: `${def.authorizeUrl(c.tenant)}?${params}` };
 }
@@ -86,7 +90,14 @@ export async function exchangeCode(provider, code) {
     accessToken: tok.access_token,
     refreshToken: tok.refresh_token || null,
     expiresAt: new Date(Date.now() + (Number(tok.expires_in) || 3600) * 1000),
+    scope: String(tok.scope || ''),
   };
+}
+
+/** Whether a granted-scope string (space separated, bare or as Graph URIs) contains `scope`. */
+export function hasScope(granted, scope) {
+  const want = String(scope).toLowerCase();
+  return String(granted || '').toLowerCase().split(/\s+/).some((s) => s === want || s.endsWith(`/${want}`));
 }
 
 /** Return a valid access token, refreshing (and persisting) when expired. */
@@ -115,9 +126,39 @@ export async function getAccessToken(account) {
   return tok.access_token;
 }
 
+const firstLine = (s) => String(s).split('\n')[0].replace(/\s*Trace ID:.*$/i, '').slice(0, 200);
+
+/**
+ * Microsoft checks the authorization code before the client secret, so the code exchange above passes with a wrong
+ * secret (a pasted Secret ID, say). A client-credentials request checks the secret first: a wrong one gets
+ * AADSTS7000215 (invalid) or AADSTS7000222 (expired). Any other answer means the secret was accepted.
+ * Returns null when the secret is fine, else the reason.
+ */
+async function microsoftSecretProblem(c, fetchImpl) {
+  let res;
+  try {
+    res = await fetchImpl(OAUTH_PROVIDERS.outlook.tokenUrl(c.tenant), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: c.clientId, client_secret: c.clientSecret, grant_type: 'client_credentials', scope: 'https://graph.microsoft.com/.default' }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err) {
+    return `Microsoft token endpoint unreachable: ${err.message}`;
+  }
+  const data = await res.json().catch(() => ({}));
+  const desc = String(data.error_description || '');
+  if (/AADSTS7000222/.test(desc)) return 'The Microsoft client secret has expired. Create a new secret in Azure and paste its Value.';
+  if (/AADSTS7000215/.test(desc) || (data.error === 'invalid_client' && /secret/i.test(desc))) {
+    return 'Microsoft rejected the client secret. Paste the secret Value from Azure, not the Secret ID.';
+  }
+  return null;
+}
+
 /**
  * Check the OAuth client registration without a user: exchange a deliberately invalid code.
  * A valid client gets "invalid_grant" (bad code); a wrong client ID/secret gets "invalid_client" or an AADSTS client error.
+ * For Microsoft the secret is then checked on its own (microsoftSecretProblem).
  */
 export async function checkOAuthClient(provider, fetchImpl = globalThis.fetch) {
   const def = OAUTH_PROVIDERS[provider];
@@ -143,9 +184,13 @@ export async function checkOAuthClient(provider, fetchImpl = globalThis.fetch) {
   const err = String(data.error || '');
   const desc = String(data.error_description || '');
   const clientBad = err === 'invalid_client' || err === 'unauthorized_client' || /AADSTS(700016|7000215|7000222|90002)/.test(desc);
-  if (clientBad) return { ok: false, message: `${name} rejected the client ID or secret: ${(desc || err).split('\n')[0].slice(0, 200)}` };
+  if (clientBad) return { ok: false, message: `${name} rejected the client ID or secret: ${firstLine(desc || err)}` };
   if (err === 'invalid_grant' || /AADSTS(9002313|70000|54005)/.test(desc)) {
+    if (provider === 'outlook') {
+      const problem = await microsoftSecretProblem(c, fetchImpl);
+      if (problem) return { ok: false, message: problem };
+    }
     return { ok: true, message: [`${name} accepted the client credentials. Make sure ${redirectUri(provider)} is registered as a redirect URI.`, ...notes].join(' ') };
   }
-  return { ok: false, message: `${name} responded ${res.status}: ${(desc || err || 'unexpected response').split('\n')[0].slice(0, 200)}` };
+  return { ok: false, message: `${name} responded ${res.status}: ${firstLine(desc || err || 'unexpected response')}` };
 }

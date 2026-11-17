@@ -6,13 +6,16 @@ import { resolvePublicHost } from '../../lib/netguard.js';
 import { withLock, LockBusyError } from '../../lib/locks.js';
 import { imapPresetFor } from './smtp.js';
 import { recordReply, recordBounce, recordGoogleVoice, contactsForAddresses } from './replies.js';
+import { listInboxMessages, messageSource } from './graphInbox.js';
 
 /**
  * Reply, bounce and Google Voice detection over IMAP (opt-in per mailbox, EmailAccount.imapEnabled).
  *
  * - Works for mailboxes connected with an app password (Gmail with 2-Step Verification, Yahoo, AOL, Zoho, iCloud,
- *   Hostinger, GoDaddy, Fastmail, other IMAP hosts). Mailboxes connected with Google or Microsoft sign-in only have
- *   permission to SEND mail (gmail.send / Mail.Send), which cannot open IMAP, so they are not polled.
+ *   Hostinger, GoDaddy, Fastmail, other IMAP hosts).
+ * - Outlook mailboxes connected with Microsoft sign-in are read through Microsoft Graph instead (pollOutlookMailbox),
+ *   once the user has allowed Mail.Read. Google sign-in mailboxes only have gmail.send (reading Gmail needs a restricted
+ *   scope and a paid security review), so they are not polled.
  * - Read-only: the inbox is opened with EXAMINE, messages are read with BODY.PEEK (nothing is marked read), and
  *   nothing is ever sent back.
  * - Incremental: only UIDs above EmailAccount.imapLastUid; headers first, the body only for bounces and Google Voice.
@@ -37,17 +40,21 @@ export const IMAP_LIMITS = {
   bodyBytes: 256 * 1024,
 };
 
-const OAUTH = new Set(['gmail', 'outlook']);
+// Sign-in mailboxes that cannot be polled at all.
+const SEND_ONLY = ['gmail'];
 
 /** Can this mailbox use reply detection? { supported, note } — honest about why not. */
 export function imapSupport(account) {
-  if (OAUTH.has(account.provider)) {
+  if (SEND_ONLY.includes(account.provider)) {
     return {
       supported: false,
-      note: `${account.provider === 'gmail' ? 'Google' : 'Microsoft'} sign-in connections can only send mail. To detect replies and bounces, connect this mailbox with an app password (IMAP) instead.`,
+      note: 'Google sign-in connections can only send mail. To detect replies and bounces, connect this mailbox with an app password (IMAP) instead.',
     };
   }
   if (!account.secretEnc) return { supported: false, note: 'Reconnect the mailbox first.' };
+  if (account.provider === 'outlook') {
+    return { supported: true, note: 'Uses your Microsoft sign-in. Microsoft asks you once to let DispatchDesk read mail in this inbox.' };
+  }
   const preset = imapPresetFor(account.provider);
   return { supported: true, note: preset?.note || null };
 }
@@ -149,7 +156,8 @@ export function isAutoReply(headers, subject) {
   return AUTO_SUBJECT.test(String(subject || '').trim());
 }
 
-const BOUNCE_FROM = /^(mailer-daemon|postmaster|mail-daemon|mailerdaemon)@/i;
+// MicrosoftExchange<32 hex>@… sends Exchange Online (Microsoft 365) non-delivery reports.
+const BOUNCE_FROM = /^(mailer-daemon|postmaster|mail-daemon|mailerdaemon|microsoftexchange[0-9a-f]{32})@/i;
 const BOUNCE_SUBJECT = /(undeliverable|undelivered mail|delivery status notification|delivery (has )?failed|failure notice|returned mail|mail delivery failed|could not be delivered|delivery failure)/i;
 
 /** Delivery status notifications (multipart/report) and classic bounce mail. */
@@ -259,8 +267,12 @@ async function threadsFor(user, batch) {
   return map;
 }
 
-/** Handle one fetched message for `account` (owner `user`). `senders` = contactsForAddresses() of the batch. */
-async function handleMessage({ client, account, user, msg, stats, senders, threads = null }) {
+/**
+ * Handle one fetched message for `account` (owner `user`). `senders` = contactsForAddresses() of the batch.
+ * `loadBody()` resolves to the parsed message (mailparser) or null; it is called only for bounces, Google Voice notices
+ * and negotiation replies.
+ */
+async function handleMessage({ loadBody, account, user, msg, stats, senders, threads = null }) {
   const env = msg.envelope || {};
   const from = (env.from?.[0]?.address || '').toLowerCase();
   if (!from || from === account.fromEmail.toLowerCase()) return null;
@@ -269,14 +281,14 @@ async function handleMessage({ client, account, user, msg, stats, senders, threa
   const at = msg.internalDate ? new Date(msg.internalDate) : new Date();
 
   if (GV_FROM.test(from)) {
-    const parsed = await readBody(client, msg.uid);
+    const parsed = await loadBody();
     const gv = parseGoogleVoice({ from, subject, text: parsed?.text || '' });
     if (gv && await recordGoogleVoice({ user, ...gv, at })) { stats.googleVoice++; return 'google_voice'; }
     return null;
   }
 
   if (looksLikeBounce({ from, subject, headers })) {
-    const parsed = await readBody(client, msg.uid);
+    const parsed = await loadBody();
     if (!parsed) return null;
     const parts = [];
     let originalHeaders = '';
@@ -327,7 +339,7 @@ async function handleMessage({ client, account, user, msg, stats, senders, threa
   const auto = isAutoReply(headers, subject);
   // A broker's answer in a rate negotiation: read the body (only the new part) so the negotiation can read their number.
   let text = null;
-  if (email?.negotiationId && !auto) text = replyText((await readBody(client, msg.uid).catch(() => null))?.text);
+  if (email?.negotiationId && !auto) text = replyText((await loadBody().catch(() => null))?.text);
   await recordReply({ user, email, carrierId: carrier?.id || email?.carrierId || null, brokerId: broker?.id || email?.brokerId || null, fromEmail: from, subject, at, auto, text });
   stats[auto ? 'autoReplies' : 'replies']++;
   return auto ? 'auto_reply' : 'reply';
@@ -337,7 +349,8 @@ async function handleMessage({ client, account, user, msg, stats, senders, threa
  * Poll one mailbox once. Returns { checked, replies, autoReplies, bounces, googleVoice, lastUid }.
  * `clientFactory` is injectable for tests.
  */
-export async function pollMailbox(account, { clientFactory = createImapClient, now = new Date() } = {}) {
+export async function pollMailbox(account, { clientFactory = createImapClient, now = new Date(), fetchImpl } = {}) {
+  if (account.provider === 'outlook') return pollOutlookMailbox(account, { now, fetchImpl });
   const stats = { checked: 0, replies: 0, autoReplies: 0, bounces: 0, googleVoice: 0, lastUid: account.imapLastUid ?? null };
   const settings = imapSettings(account);
   if (!settings.host) throw new Error('IMAP server is not set');
@@ -366,7 +379,7 @@ export async function pollMailbox(account, { clientFactory = createImapClient, n
       const senders = await contactsForAddresses(user, unthreaded.map((m) => m.envelope?.from?.[0]?.address));
       for (const msg of batch) {
         try {
-          await handleMessage({ client, account, user, msg, stats, senders, threads });
+          await handleMessage({ loadBody: () => readBody(client, msg.uid), account, user, msg, stats, senders, threads });
         } catch (err) {
           console.error(`[imap] ${account.id} uid ${msg.uid}: ${err.message}`);
         }
@@ -384,6 +397,60 @@ export async function pollMailbox(account, { clientFactory = createImapClient, n
   }
 }
 
+/** A Graph message in the shape handleMessage reads: `uid` is the received time in epoch seconds. */
+export function graphMessage(m) {
+  const at = new Date(m.receivedDateTime);
+  const headers = (m.internetMessageHeaders || [])
+    .filter((h) => HEADER_FIELDS.includes(String(h.name || '').toLowerCase()))
+    .map((h) => `${h.name}: ${h.value}`)
+    .join('\r\n');
+  return {
+    id: m.id, uid: Math.floor(at.getTime() / 1000), internalDate: at, headers,
+    envelope: { from: [{ address: m.from?.emailAddress?.address || '' }], subject: m.subject || '' },
+  };
+}
+
+const parseSource = (buf) => (buf?.length ? simpleParser(buf, { skipHtmlToText: false, skipTextToHtml: true, skipImageLinks: true }) : null);
+
+/**
+ * Poll an Outlook mailbox connected with Microsoft sign-in, through Microsoft Graph (needs Mail.Read). Same handling as
+ * IMAP. `imapLastUid` holds the received time (epoch seconds) of the last message handled, so the next run asks for
+ * messages received after it.
+ */
+export async function pollOutlookMailbox(account, { now = new Date(), fetchImpl = globalThis.fetch } = {}) {
+  const stats = { checked: 0, replies: 0, autoReplies: 0, bounces: 0, googleVoice: 0, lastUid: account.imapLastUid ?? null };
+  const user = await prisma.user.findUnique({ where: { id: account.userId }, include: { teamMembership: true } });
+  if (!user) return stats;
+  const since = account.imapLastUid ?? null;
+  const { messages, more } = await listInboxMessages(account, {
+    since, limit: IMAP_LIMITS.messagesPerMailbox, lookback: IMAP_LIMITS.firstRunLookback, fetchImpl,
+  });
+  let batch = messages.map(graphMessage).filter((m) => m.id && Number.isFinite(m.uid));
+  // More are waiting: leave the messages of this batch's last second for the next run, which asks for messages
+  // received after the last handled second (otherwise a second split across two runs would lose its tail).
+  if (more && batch.length) {
+    const cut = batch.findIndex((m) => m.uid === batch.at(-1).uid);
+    if (cut > 0) batch = batch.slice(0, cut);
+  }
+  const threads = await threadsFor(user, batch);
+  const unthreaded = threads ? batch.filter((m) => !refsOf(m).some((r) => threads.has(r))) : batch;
+  const senders = await contactsForAddresses(user, unthreaded.map((m) => m.envelope.from[0].address));
+  for (const msg of batch) {
+    const loadBody = () => messageSource(account, msg.id, { maxBytes: IMAP_LIMITS.bodyBytes, fetchImpl }).then(parseSource);
+    try {
+      await handleMessage({ loadBody, account, user, msg, stats, senders, threads });
+    } catch (err) {
+      console.error(`[inbox] ${account.id} message at ${msg.uid}: ${err.message}`);
+    }
+    stats.checked++;
+    stats.lastUid = msg.uid;
+  }
+  // First check of an empty inbox: start from now.
+  if (stats.lastUid == null) stats.lastUid = Math.floor(now.getTime() / 1000);
+  await prisma.emailAccount.update({ where: { id: account.id }, data: { imapLastUid: stats.lastUid, imapCheckedAt: now, imapError: null } });
+  return stats;
+}
+
 const AUTH_ERROR_PREFIX = 'Sign-in failed';
 
 /**
@@ -395,7 +462,7 @@ export async function dueMailboxes(now = new Date()) {
   const ago = (ms) => new Date(now.getTime() - ms);
   return prisma.emailAccount.findMany({
     where: {
-      imapEnabled: true, status: 'connected', provider: { notIn: [...OAUTH] }, secretEnc: { not: null },
+      imapEnabled: true, status: 'connected', provider: { notIn: SEND_ONLY }, secretEnc: { not: null },
       AND: [
         {
           OR: [
@@ -414,7 +481,7 @@ export async function dueMailboxes(now = new Date()) {
 }
 
 /** One polling run over due mailboxes (the `imap-replies` job). */
-export async function pollDueMailboxes(now = new Date(), { clientFactory } = {}) {
+export async function pollDueMailboxes(now = new Date(), { clientFactory, fetchImpl } = {}) {
   const started = Date.now();
   const due = await dueMailboxes(now);
   const total = { mailboxes: 0, errors: 0, checked: 0, replies: 0, autoReplies: 0, bounces: 0, googleVoice: 0 };
@@ -423,7 +490,7 @@ export async function pollDueMailboxes(now = new Date(), { clientFactory } = {})
     while (i < due.length && Date.now() - started < IMAP_LIMITS.runBudgetMs) {
       const account = due[i++];
       try {
-        const s = await withLock(`imap.${account.id}`, 5 * MIN, () => pollMailbox(account, { clientFactory, now }));
+        const s = await withLock(`imap.${account.id}`, 5 * MIN, () => pollMailbox(account, { clientFactory, now, fetchImpl }));
         total.mailboxes++;
         for (const k of ['checked', 'replies', 'autoReplies', 'bounces', 'googleVoice']) total[k] += s[k];
       } catch (err) {

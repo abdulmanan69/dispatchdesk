@@ -53,6 +53,29 @@ describe('ImapSettingsModal', () => {
     expect(screen.queryByText('Working')).not.toBeInTheDocument();
   });
 
+  it('turns detection on for a Microsoft mailbox through Microsoft sign-in, with no server to fill in', async () => {
+    api.get.mockReset().mockResolvedValue({ url: 'https://login.microsoftonline.test/authorize' });
+    const outlook = { ...SMTP, provider: 'outlook', fromEmail: 'me@outlook.test', imapHost: null, imapNote: 'Uses your Microsoft sign-in.' };
+    setup(outlook);
+    expect(screen.queryByLabelText(/IMAP server/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/allow DispatchDesk to read your mail/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /turn on with microsoft/i }));
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/email/oauth/outlook/start?read=1'));
+  });
+
+  it('tests and turns off detection on a Microsoft mailbox', async () => {
+    api.post.mockResolvedValue({ ok: true, message: 'Signed in through Microsoft. The inbox has 4 messages.' });
+    api.patch.mockResolvedValue({ account: {} });
+    const { onClose } = setup({ ...SMTP, provider: 'outlook', imapHost: null, imapEnabled: true, imapCheckedAt: new Date().toISOString() });
+    expect(screen.getByText('Working')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    expect(await screen.findByText(/The inbox has 4 messages/)).toBeInTheDocument();
+    expect(api.post).toHaveBeenCalledWith('/api/email/accounts/a1/imap/test', {});
+    fireEvent.click(screen.getByRole('button', { name: /turn off/i }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/api/email/accounts/a1', { imapEnabled: false }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   it('summarizes the state for the mailbox card', () => {
     expect(imapSummary({ ...SMTP })).toMatch(/off/);
     expect(imapSummary({ ...SMTP, imapEnabled: true, imapError: 'Sign-in failed' })).toMatch(/attention/);

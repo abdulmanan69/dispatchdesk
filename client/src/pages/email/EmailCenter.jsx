@@ -456,9 +456,10 @@ export default function EmailCenter() {
     const connected = params.get('connected');
     const error = params.get('error');
     const email = params.get('email');
-    if (connected) toast.success(`${email || (connected === 'gmail' ? 'Google mailbox' : 'Microsoft mailbox')} connected`);
+    const who = email || (connected === 'gmail' ? 'Google mailbox' : 'Microsoft mailbox');
+    if (connected) toast.success(params.get('replies') === 'on' ? `Reply detection is on for ${who}` : `${who} connected`);
     if (error) toast.error(error);
-    if (connected || error) { params.delete('connected'); params.delete('error'); params.delete('email'); setParams(params, { replace: true }); }
+    if (connected || error) { for (const k of ['connected', 'error', 'email', 'replies']) params.delete(k); setParams(params, { replace: true }); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setTab = (t) => setParams({ tab: t });

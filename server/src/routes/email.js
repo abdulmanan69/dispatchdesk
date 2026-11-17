@@ -14,9 +14,10 @@ import { onlySent } from '../services/carriers/normalize.js';
 import { SMTP_PRESETS, SMTP_PROVIDERS, SMTP_PROVIDER_KEYS, SMTP_PORTS, verifySmtp, smtpErrorMessage } from '../services/email/smtp.js';
 import { sendWithAccount, pickAccount, blockedReason, deliverEmail, mailboxSentToday } from '../services/email/index.js';
 import { renderContent, MERGE_FIELDS } from '../services/email/render.js';
-import { OAUTH_PROVIDERS, buildAuthUrl, exchangeCode, oauthAvailability } from '../services/email/oauth.js';
+import { OAUTH_PROVIDERS, buildAuthUrl, exchangeCode, oauthAvailability, hasScope } from '../services/email/oauth.js';
 import { resolveAttachments, parseAttachments, MAX_ATTACHMENTS } from '../services/email/attachments.js';
 import { imapSupport, imapSettings, testImap, assertPublicHost } from '../services/email/imap.js';
+import { testOutlookInbox } from '../services/email/graphInbox.js';
 import { recordReply } from '../services/email/replies.js';
 import { logActivity } from '../lib/activity.js';
 import { invalidateQueueCount, AI_NOTE_PREFIX } from '../services/sequenceEngine.js';
@@ -64,6 +65,9 @@ r.get('/oauth/:provider/callback', ah(async (req, res) => {
     const t = await exchangeCode(provider, String(req.query.code));
     const existing = await prisma.emailAccount.findFirst({ where: { userId: req.user.id, provider, fromEmail: t.email } });
     const count = await prisma.emailAccount.count({ where: { userId: req.user.id, status: 'connected' } });
+    // Started from "Turn on reply detection": on only when the provider really granted the read permission.
+    const readAsked = !!state.r && !!OAUTH_PROVIDERS[provider].readScope;
+    const readGranted = readAsked && hasScope(t.scope, OAUTH_PROVIDERS[provider].readScope);
     const data = {
       label: `${provider === 'gmail' ? 'Gmail' : 'Outlook'} — ${t.email}`,
       fromEmail: t.email,
@@ -74,13 +78,17 @@ r.get('/oauth/:provider/callback', ah(async (req, res) => {
       lastError: null,
       lastVerifiedAt: new Date(),
       ...(t.refreshToken ? { secretEnc: encrypt(t.refreshToken) } : {}),
+      // Turning detection on starts fresh from the newest messages.
+      ...(readGranted ? { imapEnabled: true, imapLastUid: null, imapError: null, imapCheckedAt: null } : {}),
     };
     if (!t.refreshToken && !existing?.secretEnc) throw new Error('Provider did not return a refresh token. Remove app access in your account settings and connect again.');
     const account = existing
       ? await prisma.emailAccount.update({ where: { id: existing.id }, data })
       : await prisma.emailAccount.create({ data: { ...data, userId: req.user.id, provider, isDefault: count === 0, dailyLimit: provider === 'gmail' ? 400 : 300 } });
     await audit(req, 'email.account_connected', { entityType: 'email_account', entityId: account.id, details: { provider, email: t.email } });
-    return back({ connected: provider, email: t.email });
+    if (readGranted && !existing?.imapEnabled) await audit(req, 'email.imap_enabled', { entityType: 'email_account', entityId: account.id });
+    if (readAsked && !readGranted) return back({ error: 'Microsoft did not allow DispatchDesk to read mail, so reply detection is still off.' });
+    return back({ connected: provider, email: t.email, ...(readGranted ? { replies: 'on' } : {}) });
   } catch (err) {
     return back({ error: err.message.slice(0, 200) });
   }
@@ -213,6 +221,11 @@ r.post('/accounts/:id/imap/test', ah(async (req, res) => {
   const a = await ownAccount(req);
   const sup = imapSupport(a);
   if (!sup.supported) throw badRequest(sup.note);
+  if (a.provider === 'outlook') {
+    const out = await testOutlookInbox(a);
+    if (!out.ok) throw badRequest(out.message);
+    return res.json({ ok: true, message: out.message });
+  }
   const b = parse(z.object(imapFields), req.body || {});
   const settings = imapSettings(a, { host: b.imapHost, port: b.imapPort, secure: b.imapSecure });
   if (!settings.host) throw badRequest('Enter the IMAP server for this mailbox');
@@ -269,14 +282,19 @@ r.patch('/accounts/:id', ah(async (req, res) => {
     ...imapFields,
   }), req.body), req.body);
   const data = clean(b);
+  // Outlook sign-in mailboxes are read through Microsoft Graph: there is no IMAP server to set.
+  const viaGraph = a.provider === 'outlook';
+  if (viaGraph) for (const k of ['imapHost', 'imapPort', 'imapSecure']) delete data[k];
   const serverChanged = ['imapHost', 'imapPort', 'imapSecure'].some((k) => k in data && data[k] !== a[k]);
   if (data.imapEnabled || (a.imapEnabled && serverChanged)) {
     const sup = imapSupport(a);
     if (!sup.supported) throw badRequest(sup.note);
-    const s = imapSettings(a, { host: data.imapHost, port: data.imapPort, secure: data.imapSecure });
-    if (!s.host) throw badRequest('Enter the IMAP server to detect replies and bounces');
-    await assertPublicHost(s.host);
-    Object.assign(data, { imapHost: s.host, imapPort: s.port, imapSecure: !!s.secure });
+    if (!viaGraph) {
+      const s = imapSettings(a, { host: data.imapHost, port: data.imapPort, secure: data.imapSecure });
+      if (!s.host) throw badRequest('Enter the IMAP server to detect replies and bounces');
+      await assertPublicHost(s.host);
+      Object.assign(data, { imapHost: s.host, imapPort: s.port, imapSecure: !!s.secure });
+    }
   }
   // Turning detection on, or pointing it at another server, starts fresh from the newest messages.
   if ((data.imapEnabled && !a.imapEnabled) || serverChanged) Object.assign(data, { imapLastUid: null, imapError: null, imapCheckedAt: null });
@@ -308,8 +326,10 @@ r.delete('/accounts/:id', ah(async (req, res) => {
 r.get('/oauth/:provider/start', ah(async (req, res) => {
   const provider = String(req.params.provider);
   if (!OAUTH_PROVIDERS[provider]) throw notFound('Unknown provider');
-  const state = signPayload({ u: req.user.id, p: provider, n: randomToken(8) }, 600);
-  const out = await buildAuthUrl(provider, state);
+  // ?read=1: also ask for permission to read the inbox (reply and bounce detection), where the provider offers it.
+  const read = req.query.read === '1' && !!OAUTH_PROVIDERS[provider].readScope;
+  const state = signPayload({ u: req.user.id, p: provider, n: randomToken(8), ...(read ? { r: 1 } : {}) }, 600);
+  const out = await buildAuthUrl(provider, state, { read });
   if (out.missing) throw unavailable(`${provider === 'gmail' ? 'Gmail' : 'Outlook'} connection is not configured. An admin must set ${out.missing.join(' and ')} in Admin → Settings.`, { missing: out.missing });
   res.json({ url: out.url, redirectUri: `${config.appUrl}/api/email/oauth/${provider}/callback` });
 }));

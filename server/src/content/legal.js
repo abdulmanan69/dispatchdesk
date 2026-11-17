@@ -31,7 +31,7 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <p>If you connect a mailbox so ${n} can send email on your behalf:</p>
 <ul>
 <li><strong>Gmail:</strong> with your permission we request the <code>gmail.send</code> scope, which lets ${n} send the emails you write or schedule from your Gmail account. We do not read, index or store your Gmail inbox through this permission.</li>
-<li><strong>Outlook / Microsoft 365:</strong> we request <code>Mail.Send</code> to send the emails you write or schedule.</li>
+<li><strong>Outlook / Microsoft 365:</strong> we request <code>Mail.Send</code> to send the emails you write or schedule. Only if you turn on reply detection for that mailbox, we also request <code>Mail.Read</code> and use it to check new inbox messages for replies and bounces to emails sent from ${n}, and for Google Voice notices. We keep only what records the reply on your carrier or broker (sender, subject and time, plus the text of a broker's reply in a rate negotiation); we do not store your other mail.</li>
 <li><strong>SMTP and optional IMAP:</strong> if you enter mail server details, we use them to send your emails and, only if you turn on reply detection, to check new messages for replies and bounces to emails sent from ${n}.</li>
 </ul>
 <p>Access tokens and mailbox passwords are encrypted at rest (AES-256-GCM) and used only to provide these features.</p>

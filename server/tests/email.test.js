@@ -142,6 +142,73 @@ describe('connect mailbox options', () => {
     await setSetting('google.clientId', '');
     await setSetting('google.clientSecret', '');
   });
+
+  it('admin check catches a wrong Microsoft secret that the code exchange lets through', async () => {
+    const { checkOAuthClient } = await import('../src/services/email/oauth.js');
+    await setSetting('microsoft.clientId', 'ms-client');
+    await setSetting('microsoft.clientSecret', 'secret-id-pasted-by-mistake');
+    const reply = (status, body) => ({ ok: status < 300, status, json: async () => body });
+    // Microsoft checks the fake code first (AADSTS70000), then the client-credentials request checks the secret.
+    const codeOk = () => reply(400, { error: 'invalid_grant', error_description: 'AADSTS70000: The provided value for the code parameter is not valid.' });
+    const wrong = vi.fn().mockImplementationOnce(async () => codeOk())
+      .mockImplementationOnce(async () => reply(401, { error: 'invalid_client', error_description: 'AADSTS7000215: Invalid client secret provided. Trace ID: x' }));
+    const r = await checkOAuthClient('outlook', wrong);
+    expect(r).toMatchObject({ ok: false });
+    expect(r.message).toMatch(/not the Secret ID/);
+    expect(String(wrong.mock.calls[1][1].body)).toContain('grant_type=client_credentials');
+    const expired = vi.fn().mockImplementationOnce(async () => codeOk())
+      .mockImplementationOnce(async () => reply(401, { error: 'invalid_client', error_description: 'AADSTS7000222: The provided client secret keys are expired.' }));
+    expect((await checkOAuthClient('outlook', expired)).message).toMatch(/expired/);
+    const good = vi.fn().mockImplementationOnce(async () => codeOk()).mockImplementationOnce(async () => reply(200, { access_token: 'app-token' }));
+    expect(await checkOAuthClient('outlook', good)).toMatchObject({ ok: true });
+    await setSetting('microsoft.clientId', '');
+    await setSetting('microsoft.clientSecret', '');
+  });
+
+  it('asks Microsoft for Mail.Read only when reply detection is being turned on', async () => {
+    const { agent: a } = await registerUser();
+    await setSetting('microsoft.clientId', 'ms-client');
+    await setSetting('microsoft.clientSecret', 'ms-secret');
+    const plain = await a.get('/api/email/oauth/outlook/start');
+    expect(decodeURIComponent(plain.body.url)).not.toContain('Mail.Read');
+    const read = await a.get('/api/email/oauth/outlook/start?read=1');
+    expect(decodeURIComponent(read.body.url).replace(/\+/g, ' ')).toContain('Mail.Send Mail.Read');
+    await setSetting('google.clientId', 'g');
+    await setSetting('google.clientSecret', 'g');
+    const gmail = await a.get('/api/email/oauth/gmail/start?read=1');
+    expect(decodeURIComponent(gmail.body.url)).not.toMatch(/readonly|Mail\.Read/);
+    for (const k of ['microsoft.clientId', 'microsoft.clientSecret', 'google.clientId', 'google.clientSecret']) await setSetting(k, '');
+  });
+
+  it('turns on Outlook reply detection after Microsoft grants Mail.Read, and only then', async () => {
+    const { signPayload } = await import('../src/lib/crypto.js');
+    const { agent: a, user } = await registerUser();
+    await setSetting('microsoft.clientId', 'ms-client');
+    await setSetting('microsoft.clientSecret', 'ms-secret');
+    let granted = 'Mail.Read Mail.Send User.Read openid email profile';
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/oauth2/v2.0/token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 'at', refresh_token: 'rt', expires_in: 3600, scope: granted }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ mail: 'Me@Outlook.test', displayName: 'Me' }) };
+    }));
+    const state = (r) => signPayload({ u: user.id, p: 'outlook', n: 'n', ...(r ? { r: 1 } : {}) }, 600);
+    const on = await a.get(`/api/email/oauth/outlook/callback?code=c&state=${encodeURIComponent(state(true))}`);
+    expect(on.headers.location).toMatch(/connected=outlook/);
+    expect(on.headers.location).toMatch(/replies=on/);
+    let row = await prisma.emailAccount.findFirst({ where: { userId: user.id, provider: 'outlook' } });
+    expect(row).toMatchObject({ fromEmail: 'me@outlook.test', imapEnabled: true, imapLastUid: null });
+
+    // A plain reconnect keeps the setting; a consent without Mail.Read does not turn it on.
+    await prisma.emailAccount.update({ where: { id: row.id }, data: { imapEnabled: false } });
+    granted = 'Mail.Send User.Read openid email';
+    const refused = await a.get(`/api/email/oauth/outlook/callback?code=c&state=${encodeURIComponent(state(true))}`);
+    expect(new URLSearchParams(refused.headers.location.split('?')[1]).get('error')).toMatch(/did not allow DispatchDesk to read mail/);
+    row = await prisma.emailAccount.findUnique({ where: { id: row.id } });
+    expect(row).toMatchObject({ imapEnabled: false, status: 'connected' });
+    await setSetting('microsoft.clientId', '');
+    await setSetting('microsoft.clientSecret', '');
+  });
 });
 
 describe('composing and sending', () => {

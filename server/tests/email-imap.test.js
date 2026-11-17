@@ -225,6 +225,123 @@ describe('inbox polling', () => {
   });
 });
 
+describe('Outlook inbox through Microsoft Graph', () => {
+  // Fake Graph: queued list pages, MIME sources by message id, and a record of every request.
+  const graph = { pages: [], sources: new Map(), calls: [], error: null };
+  const fetchImpl = vi.fn(async (url, opts) => {
+    const u = String(url);
+    graph.calls.push({ url: u, auth: opts?.headers?.Authorization });
+    if (graph.error) return { ok: false, status: graph.error.status, json: async () => ({ error: graph.error }) };
+    const m = u.match(/\/me\/messages\/([^/]+)\/\$value$/);
+    if (m) return { ok: true, status: 200, body: null, arrayBuffer: async () => new TextEncoder().encode(graph.sources.get(decodeURIComponent(m[1])) || '').buffer };
+    return { ok: true, status: 200, json: async () => graph.pages.shift() || { value: [] } };
+  });
+  const iso = (s) => new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const gmsg = (id, { from, subject = 'Re: Loads', headers = [], at }) => ({ id, subject, from: { emailAddress: { address: from } }, receivedDateTime: at, internetMessageHeaders: headers });
+  let A; let outlook; let sent;
+  const fresh = () => prisma.emailAccount.findUnique({ where: { id: outlook.id } });
+
+  beforeAll(async () => {
+    A = await registerUser();
+    await smtpAccount(A.agent);
+    sent = {};
+    for (const k of ['o1', 'o2', 'o3']) {
+      const c = await makeCarrier(A.user.id, { email: `${k}@carrier.test` });
+      sent[k] = (await A.agent.post('/api/email/messages').send({ carrierId: c.id, subject: 'Loads for you', body: 'b', mode: 'send' })).body.email;
+    }
+    outlook = await prisma.emailAccount.create({
+      data: {
+        userId: A.user.id, provider: 'outlook', label: 'Outlook', fromEmail: 'me@outlook.test', status: 'connected', imapEnabled: true,
+        secretEnc: encrypt('refresh'), accessTokenEnc: encrypt('access'), tokenExpiresAt: new Date(Date.now() + 3600000),
+      },
+    });
+  });
+  beforeEach(() => Object.assign(graph, { pages: [], sources: new Map(), calls: [], error: null }));
+
+  it('handles replies, automatic replies and bounces, then asks only for newer mail', async () => {
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    graph.pages = [{
+      value: [ // newest first, as Graph returns them for the first check
+        gmsg('m3', { from: 'postmaster@outlook.com', subject: 'Undeliverable: Loads for you', headers: [{ name: 'Content-Type', value: 'multipart/report; report-type=delivery-status; boundary="B"' }], at: iso(t0 + 30) }),
+        gmsg('m2', { from: 'o2@carrier.test', subject: 'Automatic reply: Loads', headers: [{ name: 'Auto-Submitted', value: 'auto-replied' }], at: iso(t0 + 20) }),
+        gmsg('m1', { from: 'o1@carrier.test', subject: 'Re: Loads for you', headers: [{ name: 'Received', value: 'from mx' }, { name: 'In-Reply-To', value: sent.o1.messageId }], at: iso(t0 + 10) }),
+      ],
+    }];
+    graph.sources.set('m3', dsn('o3@carrier.test', sent.o3.messageId));
+    const stats = await pollMailbox(outlook, { fetchImpl });
+    expect(stats).toMatchObject({ checked: 3, replies: 1, autoReplies: 1, bounces: 1, lastUid: t0 + 30 });
+    expect(graph.calls[0].url).toContain('/me/mailFolders/inbox/messages?$select=');
+    expect(graph.calls[0].url).toContain('$orderby=receivedDateTime%20desc');
+    expect(graph.calls[0].auth).toBe('Bearer access');
+    // Only the bounce needed its full source.
+    expect(graph.calls.filter((c) => c.url.endsWith('/$value')).map((c) => c.url)).toEqual([expect.stringContaining('/me/messages/m3/$value')]);
+    expect((await prisma.email.findUnique({ where: { id: sent.o1.id } })).repliedAt).not.toBeNull();
+    expect((await prisma.email.findUnique({ where: { id: sent.o3.id } })).bounceReason).toMatch(/User unknown/);
+    expect(await prisma.emailSuppression.findUnique({ where: { ownerId_email: { ownerId: A.user.id, email: 'o3@carrier.test' } } })).not.toBeNull();
+
+    const acc = await fresh();
+    expect(acc).toMatchObject({ imapLastUid: t0 + 30, imapError: null });
+    graph.calls = [];
+    const again = await pollMailbox(acc, { fetchImpl });
+    expect(again.checked).toBe(0);
+    expect(decodeURIComponent(graph.calls[0].url)).toContain(`$filter=receivedDateTime gt ${iso(t0 + 30)}`);
+    expect((await fresh()).imapLastUid).toBe(t0 + 30);
+  });
+
+  it('leaves a second split across two runs for the next run', async () => {
+    const acc = await fresh();
+    const base = acc.imapLastUid;
+    const keep = imapLib.IMAP_LIMITS.messagesPerMailbox;
+    imapLib.IMAP_LIMITS.messagesPerMailbox = 2;
+    graph.pages = [{
+      value: [gmsg('n1', { from: 'x@y.test', at: iso(base + 5) }), gmsg('n2', { from: 'x@y.test', at: iso(base + 9) }), gmsg('n3', { from: 'x@y.test', at: iso(base + 9) })],
+      '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=2',
+    }];
+    try {
+      expect(await pollMailbox(acc, { fetchImpl })).toMatchObject({ checked: 1, lastUid: base + 5 });
+      expect(graph.calls[0].url).toContain('$top=2');
+    } finally {
+      imapLib.IMAP_LIMITS.messagesPerMailbox = keep;
+    }
+  });
+
+  it('records a missing permission or a missing mailbox as a sign-in problem and backs off', async () => {
+    const due = () => prisma.emailAccount.update({ where: { id: outlook.id }, data: { imapCheckedAt: null, imapError: null, lastSentAt: new Date() } });
+    await due();
+    graph.error = { status: 403, code: 'ErrorAccessDenied', message: 'Access is denied.' };
+    await imapLib.pollDueMailboxes(new Date(), { fetchImpl });
+    expect((await fresh()).imapError).toMatch(/^Sign-in failed: DispatchDesk is not allowed to read this mailbox/);
+    expect((await dueMailboxes(new Date())).some((a) => a.id === outlook.id)).toBe(false);
+
+    await due();
+    graph.error = { status: 404, code: 'MailboxNotEnabledForRESTAPI', message: 'The mailbox is either inactive, soft-deleted, or is hosted on-premise.' };
+    await imapLib.pollDueMailboxes(new Date(), { fetchImpl });
+    expect((await fresh()).imapError).toMatch(/has no Outlook mailbox/);
+  });
+
+  it('turns detection on without a server and tests the inbox through Graph', async () => {
+    await prisma.emailAccount.update({ where: { id: outlook.id }, data: { imapEnabled: false } });
+    const list = await A.agent.get('/api/email/accounts');
+    expect(list.body.items.find((x) => x.id === outlook.id)).toMatchObject({ imapSupported: true, imapHost: null });
+    const on = await A.agent.patch(`/api/email/accounts/${outlook.id}`).send({ imapEnabled: true, imapHost: 'imap.ignored.test' });
+    expect(on.status).toBe(200);
+    expect(on.body.account).toMatchObject({ imapEnabled: true, imapHost: null });
+    expect((await fresh()).imapLastUid).toBeNull();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ totalItemCount: 7 }) })));
+      const ok = await A.agent.post(`/api/email/accounts/${outlook.id}/imap/test`).send({});
+      expect(ok.status).toBe(200);
+      expect(ok.body.message).toMatch(/7 messages/);
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: { code: 'MailboxNotEnabledForRESTAPI', message: 'x' } }) })));
+      const none = await A.agent.post(`/api/email/accounts/${outlook.id}/imap/test`).send({});
+      expect(none.status).toBe(400);
+      expect(none.body.error).toMatch(/no Outlook mailbox/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('mailbox reply-detection settings', () => {
   it('turns detection on with the provider preset, and refuses sign-in mailboxes honestly', async () => {
     const A = await registerUser();
