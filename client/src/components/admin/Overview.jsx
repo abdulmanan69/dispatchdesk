@@ -6,6 +6,39 @@ import { money, num, label } from '../../lib/format.js';
 import { Card, StatCard, QueryState, DataTable, Badge, EmptyState } from '../ui.jsx';
 import { ChartBox, ThemedTooltip, useChartTheme, axisProps, shortDate, PALETTE } from '../dashboard/charts.jsx';
 
+const CANCEL_REASON = {
+  too_expensive: 'It costs too much',
+  missing_feature: 'A feature is missing',
+  not_using: 'Not using it enough',
+  switching: 'Moving to another tool',
+  business_paused: 'Business paused or closed',
+  other: 'Something else',
+  none: 'No reason given',
+};
+
+/** Why subscribers canceled in the last 90 days (reasons from the cancel dialog; comments are in the audit log). */
+function CancelReasons({ rows }) {
+  if (!rows?.length) return null;
+  const total = rows.reduce((n, r) => n + r.count, 0);
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="mb-2 flex items-baseline justify-between text-xs text-muted">
+        <span>Why people canceled, last 90 days</span>
+        <span className="tabular-nums">{num(total)} total</span>
+      </div>
+      <ul className="space-y-1.5">
+        {rows.map((r) => (
+          <li key={r.reason} className="grid grid-cols-[minmax(0,12rem)_1fr_2.5rem] items-center gap-3 text-sm">
+            <span className="truncate">{CANCEL_REASON[r.reason] || r.reason}</span>
+            <span className="h-1.5 overflow-hidden rounded-full bg-surface-2"><span className="block h-full rounded-full bg-brand-500" style={{ width: `${Math.round((r.count / total) * 100)}%` }} /></span>
+            <span className="text-right tabular-nums text-muted">{num(r.count)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function Overview({ onTab }) {
   const q = useQuery({ queryKey: ['admin', 'stats'], queryFn: () => api.get('/api/admin/stats') });
   const t = useChartTheme();
@@ -36,6 +69,7 @@ export default function Overview({ onTab }) {
                 <StatCard label="Trials ending in 7 days" value={num(d.billing.endingSoon)} icon={CalendarClock} tone={d.billing.endingSoon ? 'amber' : 'muted'} />
                 <StatCard label="Trials ended, no plan" value={num(d.billing.ended)} sub="read-only now" icon={Lock} tone={d.billing.ended ? 'red' : 'muted'} />
               </div>
+              <CancelReasons rows={d.billing.cancelReasons} />
             </Card>
           )}
           <div className="grid gap-4 lg:grid-cols-2">

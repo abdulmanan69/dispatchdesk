@@ -228,17 +228,23 @@ r.post('/portal', ah(async (req, res) => {
   res.json({ url: session.url });
 }));
 
+export const CANCEL_REASONS = ['too_expensive', 'missing_feature', 'not_using', 'switching', 'business_paused', 'other'];
+
 r.post('/cancel', ah(async (req, res) => {
+  // Why people leave (optional): kept in the audit log for the admin (Audit log, action billing.cancel_requested).
+  const why = parse(z.object({ reason: z.enum(CANCEL_REASONS).optional(), comment: z.string().trim().max(500).optional() }), req.body || {});
+  const details = { plan: null, reason: why.reason || null, comment: why.comment || null };
   const sub = await ownedLiveSubscription(req.user);
+  details.plan = sub.plan?.key || null;
   if (sub.provider === 'paddle') {
     const row = await paddleCancel(sub);
-    await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id });
+    await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id, details });
     return res.json({ ok: true, cancelAtPeriodEnd: !!row?.cancelAtPeriodEnd, message: 'Your subscription will end at the close of the current billing period.' });
   }
   const stripe = await requireStripe();
   const updated = await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
   await syncSubscription(updated);
-  await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id });
+  await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id, details });
   res.json({ ok: true, cancelAtPeriodEnd: !!updated.cancel_at_period_end, message: 'Your subscription will end at the close of the current billing period.' });
 }));
 

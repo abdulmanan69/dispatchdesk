@@ -12,7 +12,7 @@ const DURATIONS = [['1', '1 month'], ['3', '3 months'], ['6', '6 months'], ['12'
 /**
  * Gift a paid plan to the selected users, free of charge. With "Notify" on they get an email and, the next time they
  * open the app, a welcome card naming the plan, how long it lasts and the admin's message. Users who already pay
- * through Stripe are skipped (their plan is not touched).
+ * through Stripe or Paddle are skipped (their plan is not touched).
  */
 export default function GiftPlanModal({ users, onClose, onDone }) {
   const toast = useToast();
@@ -26,7 +26,7 @@ export default function GiftPlanModal({ users, onClose, onDone }) {
   const gift = useApiMutation((body) => api.post('/api/admin/subscriptions/gift', body), {
     invalidate: [['admin', 'subs'], ['admin', 'users']],
     onSuccess: (d) => {
-      const skipped = d.skipped?.length ? ` ${d.skipped.length} skipped (already paying through Stripe).` : '';
+      const skipped = d.skipped?.length ? ` ${d.skipped.length} skipped (already on a paid subscription).` : '';
       toast.success(`${plan?.name || 'Plan'} gifted to ${d.granted} user${d.granted === 1 ? '' : 's'}.${skipped}`);
       onDone?.();
       onClose();

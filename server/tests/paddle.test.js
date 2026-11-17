@@ -119,9 +119,14 @@ describe('selling plans through Paddle', () => {
     expect(pay).toMatchObject({ amountCents: pro.priceCents, status: 'paid', currency: 'usd' });
     expect(pay.invoiceUrl).toBe(`/api/billing/payments/${pay.id}/invoice`);
 
-    const cancel = await A.agent.post('/api/billing/cancel');
+    expect((await A.agent.post('/api/billing/cancel').send({ reason: 'not-a-reason' })).status).toBe(400);
+    const cancel = await A.agent.post('/api/billing/cancel').send({ reason: 'too_expensive', comment: '  Need a cheaper tier  ' });
     expect(cancel.status).toBe(200);
     expect(cancel.body.cancelAtPeriodEnd).toBe(true);
+    const log = await prisma.auditLog.findFirst({ where: { actorId: A.user.id, action: 'billing.cancel_requested' }, orderBy: { createdAt: 'desc' } });
+    expect(JSON.parse(log.details)).toMatchObject({ plan: 'pro', reason: 'too_expensive', comment: 'Need a cheaper tier' });
+    const stats = await (await createAdmin()).agent.get('/api/admin/stats');
+    expect(stats.body.billing.cancelReasons).toContainEqual({ reason: 'too_expensive', count: 1 });
     expect(paddle.calls.some((c) => c.method === 'POST' && c.path === '/subscriptions/sub_01paddletest/cancel' && c.body.effective_from === 'next_billing_period')).toBe(true);
 
     const ended = subscription({ status: 'canceled', canceled_at: new Date().toISOString() });

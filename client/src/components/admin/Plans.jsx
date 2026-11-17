@@ -64,12 +64,23 @@ function PlanEditor({ plan, onClose }) {
   );
 }
 
+/** Which provider price a plan checks out with, or why checkout is off for it. */
+function PriceLink({ plan, provider }) {
+  if (plan.key === 'free') return <span className="text-muted">No checkout needed</span>;
+  const paddle = provider === 'paddle';
+  const id = paddle ? plan.paddlePriceId : plan.stripePriceId;
+  if (id) return <span className="font-mono text-muted">{id}</span>;
+  return <span className="text-amber-700 dark:text-amber-300">No {paddle ? 'Paddle' : 'Stripe'} price linked — checkout disabled</span>;
+}
+
 export default function AdminPlans() {
   const [editing, setEditing] = useState(null);
   const q = useQuery({ queryKey: ['admin', 'plans'], queryFn: () => api.get('/api/admin/plans') });
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted">Prices and limits are configurable. Plan limits take effect immediately. To charge customers, create a recurring price in your Stripe dashboard and paste its price ID here.</p>
+      <p className="text-sm text-muted">Prices and limits are configurable. Plan limits take effect immediately. {q.data?.provider === 'paddle'
+        ? 'Plans are sold through Paddle: Setup → "Set up Paddle" creates a Paddle price for each paid plan and links it here.'
+        : 'To charge customers, create a recurring price in your Stripe dashboard and paste its price ID here.'}</p>
       <QueryState query={q}>
         {(d) => (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -77,7 +88,7 @@ export default function AdminPlans() {
               <Card key={p.id} title={<div className="flex items-center gap-2"><span className="text-sm font-medium">{p.name}</span>{!p.active && <Badge>Inactive</Badge>}</div>}
                 actions={<Button variant="ghost" size="sm" icon={Pencil} onClick={() => setEditing(p)}>Edit</Button>}>
                 <p className="text-xl font-medium tabular">{money(p.priceCents)} <span className="text-sm font-normal text-muted">/{p.interval}{p.perSeat ? ' per seat' : ''}</span></p>
-                <p className="mt-1 text-xs">{p.key === 'free' ? <span className="text-muted">No checkout needed</span> : p.stripePriceId ? <span className="font-mono text-muted">{p.stripePriceId}</span> : <span className="text-amber-700 dark:text-amber-300">No Stripe price linked — checkout disabled</span>}</p>
+                <p className="mt-1 text-xs"><PriceLink plan={p} provider={d.provider} /></p>
                 <dl className="mt-3 space-y-1 text-xs">
                   {LIMITS.map(([k, l]) => <div key={k} className="flex justify-between"><dt className="text-muted">{l}</dt><dd className="tabular">{p[k] < 0 ? '∞' : p[k].toLocaleString('en-US')}</dd></div>)}
                   <div className="flex justify-between"><dt className="text-muted">Subscriptions</dt><dd className="tabular">{p._count.subscriptions}</dd></div>

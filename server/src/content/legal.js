@@ -7,7 +7,7 @@
  */
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-export const LEGAL_UPDATED = 'November 11, 2026';
+export const LEGAL_UPDATED = 'November 17, 2026';
 
 function contactLine({ supportEmail, appUrl }) {
   return supportEmail
@@ -15,8 +15,9 @@ function contactLine({ supportEmail, appUrl }) {
     : `use the contact details on <a href="${esc(appUrl)}">${esc(appUrl)}</a>`;
 }
 
-export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '' } = {}) {
+export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '', provider = 'stripe' } = {}) {
   const n = esc(appName);
+  const paddle = provider === 'paddle';
   return `<article class="prose-dd mx-auto max-w-3xl px-4 py-14 text-[15px]" data-legal="privacy">
 <h1>Privacy policy</h1>
 <p>Last updated: ${LEGAL_UPDATED}</p>
@@ -42,7 +43,9 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <h3>Usage and technical information</h3>
 <p>Session records (to keep you signed in), security and audit logs (for example sign-ins and changes to sensitive settings), IP address and browser details for security and rate limiting, and basic error logs. We do not use third-party advertising or tracking cookies.</p>
 <h3>Payments</h3>
-<p>Paid plans are processed by Stripe. Card details are entered on Stripe's pages and are never stored by ${n}; we keep the subscription status and plan.</p>
+<p>${paddle
+  ? `Paid plans are sold through Paddle.com, our online reseller and Merchant of Record. Card and other payment details are entered in Paddle's checkout and are never stored by ${n}; Paddle shares with us your name, email address, country, the plan you bought and the payment status, and we keep the subscription status and plan. Paddle's own privacy policy applies to the information it collects.`
+  : `Paid plans are processed by Stripe. Card details are entered on Stripe's pages and are never stored by ${n}; we keep the subscription status and plan.`}</p>
 
 <h2>How we use information</h2>
 <ul>
@@ -69,7 +72,7 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <ul>
 <li>Hosting and storage provider (servers where the app and database run).</li>
 <li>Brevo (service email such as verification and password reset).</li>
-<li>Stripe (payments for paid plans).</li>
+<li>${paddle ? 'Paddle.com (our Merchant of Record: checkout, payments, tax and invoices for paid plans).' : 'Stripe (payments for paid plans).'}</li>
 <li>Google and Microsoft (sign-in and the mailboxes you connect).</li>
 <li>Map and routing services based on OpenStreetMap (map tiles, routing and address search). They receive coordinates and place names needed to draw maps and routes, not your account details.</li>
 <li>Browser push services (if you turn on notifications on a device).</li>
@@ -145,7 +148,7 @@ ${legalName ? `<p>${n} is operated by ${esc(legalName)}.</p>
 <p>You own the records and files you put into ${n}. You give us permission to store and process them only to provide the service, as described in the <a href="${esc(appUrl)}/privacy">privacy policy</a>. You can export or delete your data at any time.</p>
 
 <h2>Public and third-party data</h2>
-<p>Carrier, broker and fuel information from public sources (FMCSA, EIA and others), map and route information, and estimates such as ETAs, legal ETAs and rate calculations are provided for convenience and may be incomplete, delayed or wrong. Always confirm authority, insurance, bonds, appointments and rates before you rely on them. Third-party services you connect (mailboxes, phone services, Stripe) have their own terms.</p>
+<p>Carrier, broker and fuel information from public sources (FMCSA, EIA and others), map and route information, and estimates such as ETAs, legal ETAs and rate calculations are provided for convenience and may be incomplete, delayed or wrong. Always confirm authority, insurance, bonds, appointments and rates before you rely on them. Third-party services you connect (mailboxes, phone services) and our payment provider${provider === 'paddle' ? ' (Paddle.com)' : ' (Stripe)'} have their own terms.</p>
 
 <h2>Plans and payment</h2>
 <ul>

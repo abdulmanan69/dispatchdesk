@@ -5,9 +5,9 @@ import { ExternalLink, FileText, Info, Ticket } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { useConfirm } from '../../components/Modal.jsx';
+import { Modal, useConfirm } from '../../components/Modal.jsx';
 import { money, date, label } from '../../lib/format.js';
-import { Card, PageHeader, Badge, Button, Loading, ErrorState, EmptyState, DataTable, Input, cx } from '../../components/ui.jsx';
+import { Card, PageHeader, Badge, Button, Loading, ErrorState, EmptyState, DataTable, Input, Textarea, cx } from '../../components/ui.jsx';
 import PlanCard from '../../components/billing/PlanCard.jsx';
 import PlanCelebration from '../../components/billing/PlanCelebration.jsx';
 import { openPaddleCheckout } from '../../lib/paddle.js';
@@ -37,6 +37,46 @@ function Meter({ label: name, used, limit, format = count }) {
         <div className={cx('h-full rounded-full', ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.7 ? 'bg-signal-500' : 'bg-brand-500')} style={{ width: `${ratio * 100}%` }} />
       </div>
     </div>
+  );
+}
+
+const REASONS = [
+  ['too_expensive', 'It costs too much'],
+  ['missing_feature', 'A feature I need is missing'],
+  ['not_using', 'I am not using it enough'],
+  ['switching', 'I am moving to another tool'],
+  ['business_paused', 'My dispatch business is paused or closed'],
+  ['other', 'Something else'],
+];
+
+/** Cancel at the end of the period, with an optional reason (it helps us improve; never required). */
+function CancelModal({ readOnlyAfter, loading, onClose, onConfirm }) {
+  const [reason, setReason] = useState('');
+  const [comment, setComment] = useState('');
+  return (
+    <Modal open onClose={onClose} title="Cancel subscription?" size="sm"
+      footer={<>
+        <Button variant="secondary" onClick={onClose}>Keep my plan</Button>
+        <Button variant="danger" loading={loading} onClick={() => onConfirm({ ...(reason ? { reason } : {}), ...(comment.trim() ? { comment: comment.trim() } : {}) })}>Cancel subscription</Button>
+      </>}>
+      <div className="space-y-4">
+        <p className="text-sm text-fg-2">
+          Your plan stays active until the end of the current billing period. After that{readOnlyAfter ? ' your account becomes read-only until you choose a plan again' : ' your account moves to Free'}. Your data is kept.
+        </p>
+        <fieldset>
+          <legend className="mb-2 text-[13px] font-medium">Why are you leaving? (optional)</legend>
+          <div className="space-y-1.5">
+            {REASONS.map(([v, l]) => (
+              <label key={v} className="flex items-center gap-2 text-sm">
+                <input type="radio" name="cancel-reason" value={v} checked={reason === v} onChange={() => setReason(v)} className="size-4 accent-brand-600" />
+                {l}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <Textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} maxLength={500} placeholder="Anything we could do better? (optional)" aria-label="Comment" />
+      </div>
+    </Modal>
   );
 }
 
@@ -78,7 +118,10 @@ export default function Billing() {
   };
   const startCheckout = useApiMutation((planKey) => api.post('/api/billing/checkout', { planKey, seats: seats ? Number(seats) : undefined }), { onSuccess: onCheckout });
   const portal = useApiMutation(() => api.post('/api/billing/portal'), { onSuccess: go });
-  const cancel = useApiMutation(() => api.post('/api/billing/cancel'), { success: 'Cancellation scheduled for the end of the billing period', invalidate: [['billing']] });
+  const [canceling, setCanceling] = useState(false);
+  const cancel = useApiMutation((body) => api.post('/api/billing/cancel', body || {}), {
+    success: 'Cancellation scheduled for the end of the billing period', invalidate: [['billing']], onSuccess: () => setCanceling(false),
+  });
   const resume = useApiMutation(() => api.post('/api/billing/resume'), { success: 'Subscription will continue', invalidate: [['billing']] });
   const change = useApiMutation((planKey) => api.post('/api/billing/change-plan', { planKey }), { success: 'Plan change requested', invalidate: [['billing']] });
   const redeem = useApiMutation((c) => api.post('/api/billing/redeem', { code: c }), {
@@ -94,6 +137,12 @@ export default function Billing() {
   const paddle = d.provider === 'paddle';
   const activated = checkout === 'success' && sub && ['active', 'trialing'].includes(sub.status);
   const trial = d.trial;
+  const providerName = paddle ? 'Paddle' : 'Stripe';
+  const trialOn = !!plans.data?.trial;
+  // Monthly Pro subscribers: the yearly plan costs less per month (shown as a small offer under the current plan).
+  const annual = (plans.data?.plans || []).find((p) => p.key === 'annual' && p.purchasable);
+  const monthlyPro = d.plan.key === 'pro' && d.plan.interval === 'month';
+  const offerAnnual = !!(annual && monthlyPro && sub?.isOwner && !sub.granted && !sub.cancelAtPeriodEnd && !sub.managedByTeam && payable);
   const planList = (plans.data?.plans || []).filter((p) => !(trial?.enabled && p.key === 'free'));
 
   const actionFor = (p) => {
@@ -103,7 +152,7 @@ export default function Billing() {
     if (!p.purchasable || !payable) return <Button variant="secondary" className="w-full" disabled title="This plan is not available for online checkout yet">Not available yet</Button>;
     if (sub?.isOwner) {
       return <Button variant="secondary" className="w-full" loading={change.isPending && change.variables === p.key} onClick={async () => {
-        if (await confirm({ title: `Switch to ${p.name}?`, message: 'Stripe prorates the difference on your next invoice. Your plan updates once Stripe confirms the change.', confirmLabel: 'Switch plan' })) change.mutate(p.key);
+        if (await confirm({ title: `Switch to ${p.name}?`, message: `${providerName} charges or credits the difference for the rest of this billing period. Your plan updates once ${providerName} confirms the change.`, confirmLabel: 'Switch plan' })) change.mutate(p.key);
       }}>Switch to {p.name}</Button>;
     }
     if (sub?.managedByTeam) return null;
@@ -113,9 +162,7 @@ export default function Billing() {
     </Button>;
   };
 
-  async function onCancel() {
-    if (await confirm({ title: 'Cancel subscription?', message: 'Your plan stays active until the end of the current billing period, then your account moves to Free. Your data is kept.', confirmLabel: 'Cancel subscription', danger: true })) cancel.mutate();
-  }
+  function onCancel() { setCanceling(true); }
 
   return (
     <div className="space-y-5">
@@ -124,7 +171,7 @@ export default function Billing() {
       {checkout === 'success' && (
         <div className={cx('flex items-start gap-2 rounded-lg border px-4 py-3 text-sm', activated ? 'border-green-200 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-950/40 dark:text-green-200' : 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200')}>
           <Info className="mt-0.5 size-4 shrink-0" />
-          <div className="flex-1">{activated ? 'Your subscription is active. Thank you.' : polls >= 10 ? 'Stripe has not confirmed the subscription yet. It activates automatically as soon as Stripe sends confirmation — check back in a few minutes.' : 'Checkout finished. Waiting for Stripe to confirm your subscription…'}</div>
+          <div className="flex-1">{activated ? 'Your subscription is active. Thank you.' : polls >= 10 ? `${providerName} has not confirmed the subscription yet. It activates automatically as soon as ${providerName} sends confirmation — check back in a few minutes.` : `Checkout finished. Waiting for ${providerName} to confirm your subscription…`}</div>
           <button type="button" className="text-xs underline" onClick={() => setParams({})}>Dismiss</button>
         </div>
       )}
@@ -161,13 +208,22 @@ export default function Billing() {
             <p className="mt-4 text-sm text-muted">Free trial with {trial.planName || 'Pro'} features: {trial.daysLeft} day{trial.daysLeft === 1 ? '' : 's'} left (until {date(trial.endsAt)}). Choose a plan to keep going after that.</p>
           ) : <p className="mt-4 text-sm text-muted">Free forever. Upgrade any time for higher limits.</p>}
           {d.pendingSubscription && !sub && (
-            <p className="mt-3 rounded-md bg-surface-2 px-3 py-2 text-xs text-muted">A {label(d.pendingSubscription.planKey)} checkout started {date(d.pendingSubscription.createdAt)} is {label(d.pendingSubscription.status).toLowerCase()} — it activates only when Stripe confirms payment.</p>
+            <p className="mt-3 rounded-md bg-surface-2 px-3 py-2 text-xs text-muted">A {label(d.pendingSubscription.planKey)} checkout started {date(d.pendingSubscription.createdAt)} is {label(d.pendingSubscription.status).toLowerCase()} — it activates only when {providerName} confirms payment.</p>
           )}
           <div className="mt-4 flex flex-wrap gap-2">
             {sub?.isOwner && sub.hasPortal && <Button variant="secondary" size="sm" icon={ExternalLink} loading={portal.isPending} onClick={() => portal.mutate()}>Payment methods & invoices</Button>}
             {sub?.isOwner && !sub.cancelAtPeriodEnd && <Button variant="ghost" size="sm" className="text-red-600" loading={cancel.isPending} onClick={onCancel}>Cancel subscription</Button>}
             {sub?.isOwner && sub.cancelAtPeriodEnd && <Button size="sm" loading={resume.isPending} onClick={() => resume.mutate()}>Keep my subscription</Button>}
           </div>
+          {offerAnnual && (
+            <div className="mt-4 rounded-lg border border-brand-600/25 bg-brand-600/5 p-3 text-sm">
+              <p className="font-medium">Save with Annual</p>
+              <p className="mt-0.5 text-xs text-fg-2">{money(annual.priceCents)} a year instead of {money(d.plan.priceCents * 12)}. {annual.trainingIncluded && !d.plan.trainingIncluded ? 'Same features, plus the dispatch training entitlement.' : 'Same features.'}</p>
+              <Button size="sm" variant="secondary" className="mt-2" loading={change.isPending && change.variables === 'annual'} onClick={async () => {
+                if (await confirm({ title: 'Switch to Annual?', message: 'You pay the yearly price, minus a credit for the unused part of this month. You keep every feature.', confirmLabel: 'Switch to Annual' })) change.mutate('annual');
+              }}>Switch to Annual</Button>
+            </div>
+          )}
         </Card>
 
         <Card title="Usage" className="lg:col-span-2" actions={<span className="text-xs text-muted">Daily and monthly limits reset at midnight in your time zone{user?.timezone ? ` (${user.timezone.split('/').pop().replace(/_/g, ' ')})` : ''}</span>}>
@@ -225,7 +281,7 @@ export default function Billing() {
       <Card title="Payment history" bodyClass="p-0">
         <DataTable
           rows={d.payments}
-          empty={<EmptyState icon={FileText} title="No payments yet">Invoices appear here once Stripe confirms a payment.</EmptyState>}
+          empty={<EmptyState icon={FileText} title="No payments yet">Invoices appear here once {providerName} confirms a payment.</EmptyState>}
           columns={[
             { key: 'date', header: 'Date', render: (p) => date(p.paidAt || p.createdAt) },
             { key: 'description', header: 'Description', render: (p) => p.description || 'Subscription' },
@@ -236,6 +292,7 @@ export default function Billing() {
           ]}
         />
       </Card>
+      {canceling && <CancelModal readOnlyAfter={trialOn} loading={cancel.isPending} onClose={() => setCanceling(false)} onConfirm={(body) => cancel.mutate(body)} />}
       {celebrate && <PlanCelebration plan={celebrate.plan} note={celebrate.note} onClose={() => setCelebrate(null)} />}
     </div>
   );

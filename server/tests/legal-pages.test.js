@@ -61,4 +61,14 @@ describe('privacy policy, terms and home page for crawlers', () => {
     expect(termsHtml({ appName: '&' })).toContain('&amp;');
     expect(homeHtml({ appUrl: 'https://x.test' })).toContain('https://x.test/privacy');
   });
+
+  it('names the payment provider that actually takes the money', () => {
+    const paddle = privacyHtml({ provider: 'paddle' });
+    expect(paddle).toContain('Paddle.com');
+    expect(paddle).toContain('Merchant of Record');
+    expect(paddle).not.toContain('Stripe');
+    expect(termsHtml({ provider: 'paddle' })).not.toContain('Stripe');
+    expect(privacyHtml()).toContain('Stripe');
+    expect(privacyHtml()).not.toContain('Paddle');
+  });
 });

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router';
 import { Check, Minus } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -34,7 +35,7 @@ export default function Pricing() {
       <div className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
         <p className="mb-3 text-[13px] font-semibold text-c-teal">Pricing</p>
         <h1 className="text-[34px] font-semibold tracking-[-0.025em] text-fg sm:text-[46px]">Simple plans for dispatchers</h1>
-        <p className="mt-4 text-[17px] leading-7 text-fg-2">Try every Pro feature free for 14 days, no card needed. Then choose the plan that fits: higher limits, scheduled lead generation, the advanced AI dispatcher or a team.</p>
+        <p className="mt-4 text-[17px] leading-7 text-fg-2">Try every Pro feature free for {q.data?.trial?.days || 14} days, no card needed. Then choose the plan that fits: higher limits, scheduled lead generation, the advanced AI dispatcher or a team.</p>
       </div>
     </section>
     <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
@@ -76,10 +77,13 @@ export default function Pricing() {
             </table>
           </div>
 
-          <div className="mt-8 grid gap-6 text-sm text-muted sm:grid-cols-3">
-            <p><span className="font-medium text-fg">Payments.</span> Card payments are processed securely by Stripe. We never see or store your card number.</p>
-            <p><span className="font-medium text-fg">Taxes.</span> Prices are in USD and exclude applicable taxes.</p>
-            <p><span className="font-medium text-fg">Cancel anytime.</span> Paid plans stay active until the end of the billing period, then you return to Free — your data stays.</p>
+          <div className="mt-8 grid gap-6 text-sm text-muted sm:grid-cols-2 lg:grid-cols-4">
+            <p><span className="font-medium text-fg">Payments.</span> {q.data.provider === 'paddle'
+              ? 'Orders are processed by Paddle.com, our online reseller and Merchant of Record. Pay by card or PayPal; we never see or store your card number.'
+              : 'Card payments are processed securely by Stripe. We never see or store your card number.'}</p>
+            <p><span className="font-medium text-fg">Taxes.</span> Prices are in USD. {q.data.provider === 'paddle' ? 'Any sales tax or VAT for your location is shown at checkout.' : 'They exclude applicable taxes.'}</p>
+            <p><span className="font-medium text-fg">Cancel anytime.</span> Paid plans stay active until the end of the billing period. After that the account is read-only: your data stays and you can still view and export it.</p>
+            <p><span className="font-medium text-fg">Refunds.</span> Full refund within 14 days of your first payment. <Link to="/refunds" className="text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">Refund policy</Link></p>
           </div>
           {!q.data.paymentsEnabled && <p className="mt-6 text-center text-xs text-muted">Online checkout is not enabled on this installation yet.</p>}
         </>

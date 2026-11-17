@@ -40,9 +40,25 @@ const monthKey = (d) => new Date(d).toISOString().slice(0, 7);
  * Trial funnel for the overview: accounts on the free trial, trials ending within 7 days, trials that ended without a
  * plan (read-only now), paying and gifted subscriptions. Admin accounts are never on a trial.
  */
+/** Why people canceled in the last 90 days, from the optional reason on POST /api/billing/cancel. */
+async function cancelReasons() {
+  const rows = await prisma.auditLog.findMany({
+    where: { action: 'billing.cancel_requested', createdAt: { gte: new Date(Date.now() - 90 * DAY) } },
+    select: { details: true }, take: 5000,
+  });
+  const counts = new Map();
+  for (const r of rows) {
+    let reason = null;
+    try { reason = JSON.parse(r.details || '{}').reason || null; } catch { /* old rows */ }
+    const key = reason || 'none';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+}
+
 async function billingFunnel(activeSubs, paidSubs, roles) {
   const t = await trialSettings();
-  const out = { paying: paidSubs.length, gifted: activeSubs.length - paidSubs.length, trialDays: t.days, onTrial: 0, endingSoon: 0, ended: 0 };
+  const out = { paying: paidSubs.length, gifted: activeSubs.length - paidSubs.length, trialDays: t.days, onTrial: 0, endingSoon: 0, ended: 0, cancelReasons: await cancelReasons() };
   if (!t.days) return out;
   const withPlan = new Set(activeSubs.map((s) => s.userId));
   const adminRoleIds = new Set();
@@ -393,7 +409,7 @@ r.get('/payments', requirePermission('admin.billing'), ah(async (req, res) => {
 
 r.get('/plans', requirePermission('admin.billing'), ah(async (req, res) => {
   const plans = await prisma.plan.findMany({ orderBy: { sortOrder: 'asc' }, include: { _count: { select: { subscriptions: true } } } });
-  res.json({ plans });
+  res.json({ plans, provider: (await getSetting('billing.provider')) === 'paddle' ? 'paddle' : 'stripe' });
 }));
 
 const limit = optInt(-1, 10_000_000);

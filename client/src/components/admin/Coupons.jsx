@@ -39,7 +39,7 @@ function NewCode({ plans, onClose }) {
       <div className="space-y-4">
         <Field label="Type">
           <Select value={f.kind} onChange={set('kind')}>
-            <option value="discount">Discount at checkout (Stripe)</option>
+            <option value="discount">Discount at checkout</option>
             <option value="plan">Free plan months (redeemed in the app, no payment)</option>
           </Select>
         </Field>
@@ -78,7 +78,7 @@ function NewCode({ plans, onClose }) {
           <Field label="Max uses" hint="Blank: no limit"><Input type="number" min="1" value={f.maxRedemptions} onChange={set('maxRedemptions')} /></Field>
           <Field label="Expires on" hint="Blank: never"><Input type="date" value={f.expiresAt} onChange={set('expiresAt')} /></Field>
         </div>
-        {f.kind === 'discount' && <p className="text-xs text-muted">Customers type the code on the Stripe checkout page when they upgrade.</p>}
+        {f.kind === 'discount' && <p className="text-xs text-muted">Customers type the code in the checkout when they upgrade (Stripe or Paddle, whichever sells your plans).</p>}
         {f.kind === 'plan' && <p className="text-xs text-muted">Users enter the code under Billing → Have a code? Each user can use a code once.</p>}
       </div>
     </Modal>
