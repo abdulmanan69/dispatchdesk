@@ -36,7 +36,7 @@ function CopyValue({ v }) {
 
 function StripeReport({ report, onClose }) {
   return (
-    <Modal open onClose={onClose} title={`Stripe set up (${report.mode} mode)`} size="md" footer={<Button onClick={onClose}>Done</Button>}>
+    <Modal open onClose={onClose} title={report.provider === 'paddle' ? `Paddle set up (${report.environment})` : `Stripe set up (${report.mode} mode)`} size="md" footer={<Button onClick={onClose}>Done</Button>}>
       <ul className="space-y-2 text-sm">
         {report.plans.map((p) => (
           <li key={p.plan} className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-2">
@@ -168,6 +168,10 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
     invalidate: [['admin', 'setup'], ['admin', 'plans'], ['plans']],
     onSuccess: (d) => { setReport(d); qc.invalidateQueries({ queryKey: ['admin', 'settings'] }); },
   });
+  const paddleSetup = useApiMutation(() => api.post('/api/admin/setup/paddle/provision'), {
+    invalidate: [['admin', 'setup'], ['admin', 'plans'], ['plans']],
+    onSuccess: (d) => { setReport({ ...d.report, provider: 'paddle' }); qc.invalidateQueries({ queryKey: ['admin', 'settings'] }); },
+  });
   return (
     <Card className="overflow-hidden" bodyClass="p-0">
       <button type="button" onClick={onToggle} aria-expanded={open}
@@ -211,6 +215,13 @@ function SetupCard({ it, onOpenSettings, open, onToggle }) {
                   }}>Create products, prices and webhook</Button>
                 <Switch checked={recreate} onChange={setRecreate} label={<span className="text-xs text-fg-2">Replace existing webhook</span>} />
               </>
+            )}
+            {it.key === 'paddle' && (
+              <Button size="sm" icon={Wand2} loading={paddleSetup.isPending} disabled={!it.canProvisionPaddle}
+                title={it.canProvisionPaddle ? undefined : 'Needs a saved Paddle API key and an https APP_URL'}
+                onClick={async () => {
+                  if (await confirm({ title: 'Set up Paddle?', message: 'For each paid plan without a Paddle price, a product and a monthly or yearly price are created in Paddle from the plan’s price, and the webhook is created for this site with its signing secret saved here. Existing ones are reused.', confirmLabel: 'Set up Paddle' })) paddleSetup.mutate();
+                }}>Set up Paddle</Button>
             )}
             {it.links.map((l) => (
               <a key={l.url} href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[13px] text-brand-700 hover:underline dark:text-brand-300">

@@ -12,6 +12,8 @@ export const SETTING_DEFS = {
   'app.registrationOpen': { group: 'app', type: 'bool', default: () => 'true' },
   // Public contact address printed on the privacy policy and terms of service.
   'app.supportEmail': { group: 'app', default: () => process.env.SUPPORT_EMAIL || '' },
+  // Legal name of the business or owner selling the plans, printed in the terms (payment providers require it).
+  'app.legalName': { group: 'app', default: () => process.env.LEGAL_NAME || '' },
   'app.requireEmailVerification': { group: 'app', type: 'bool', default: () => 'false' },
   // Free trial (services/billing/trial.js): accounts without a plan get the trial plan's limits for this many days, then
   // become read-only until they choose a plan. 0 turns the trial off (Free plan forever).
@@ -55,6 +57,13 @@ export const SETTING_DEFS = {
   'usda.marsApiKey': { group: 'integrations', secret: true, default: () => process.env.USDA_MARS_API_KEY || '' },
   'stripe.secretKey': { group: 'billing', secret: true, default: () => config.stripe.secretKey },
   'stripe.webhookSecret': { group: 'billing', secret: true, default: () => config.stripe.webhookSecret },
+  // Who sells the plans: stripe | paddle. Paddle is the merchant of record (works for sellers Stripe does not serve).
+  'billing.provider': { group: 'billing', default: () => process.env.BILLING_PROVIDER || 'stripe' },
+  'paddle.environment': { group: 'billing', default: () => process.env.PADDLE_ENVIRONMENT || 'live' }, // live | sandbox
+  'paddle.apiKey': { group: 'billing', secret: true, default: () => process.env.PADDLE_API_KEY || '' },
+  // Client-side token (live_… / test_…) for Paddle.js in the browser: public by design, not a secret.
+  'paddle.clientToken': { group: 'billing', default: () => process.env.PADDLE_CLIENT_TOKEN || '' },
+  'paddle.webhookSecret': { group: 'billing', secret: true, default: () => '' },
 };
 
 let cache = null;

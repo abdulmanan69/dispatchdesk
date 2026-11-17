@@ -44,6 +44,7 @@ import marketplaceRoutes from './routes/marketplace.js';
 import communityRoutes from './routes/community.js';
 import teamRoutes from './routes/teams.js';
 import billingRoutes, { webhookHandler } from './routes/billing.js';
+import { paddleWebhookHandler } from './services/billing/paddleBilling.js';
 import adminRoutes from './routes/admin.js';
 import adminSetupRoutes from './routes/adminSetup.js';
 import settingsRoutes from './routes/settings.js';
@@ -124,15 +125,16 @@ export function createApp() {
         'default-src': ["'self'"],
         // 'wasm-unsafe-eval' lets WebAssembly compile (in-browser OCR of scanned rate cons, pdf.js image decoders);
         // it does not allow eval() or inline scripts. Scripts still come only from this origin.
-        'script-src': ["'self'", "'wasm-unsafe-eval'"],
+        // Paddle.js (checkout overlay) loads only from Paddle's CDN.
+        'script-src': ["'self'", "'wasm-unsafe-eval'", 'https://cdn.paddle.com'],
         'style-src': ["'self'", "'unsafe-inline'"],
         'font-src': ["'self'", 'data:'], // fonts are self-hosted under /assets
         'img-src': ["'self'", 'data:', 'blob:', 'https:'],
         'media-src': ["'self'", 'blob:'],
         // Map tiles, glyphs and sprites for the fleet map (OpenFreeMap, free and keyless).
-        'connect-src': ["'self'", 'https://tiles.openfreemap.org'],
+        'connect-src': ["'self'", 'https://tiles.openfreemap.org', 'https://*.paddle.com'],
         'worker-src': ["'self'", 'blob:'],
-        'frame-src': ['https://www.youtube.com', 'https://www.youtube-nocookie.com', 'https://player.vimeo.com', 'https://checkout.stripe.com'],
+        'frame-src': ['https://www.youtube.com', 'https://www.youtube-nocookie.com', 'https://player.vimeo.com', 'https://checkout.stripe.com', 'https://buy.paddle.com', 'https://sandbox-buy.paddle.com'],
         'form-action': ["'self'", 'https://checkout.stripe.com'],
         'upgrade-insecure-requests': config.cookieSecure ? [] : null,
       },
@@ -142,6 +144,7 @@ export function createApp() {
 
   // Stripe needs the raw body to verify webhook signatures: mount before the JSON parser.
   app.post('/api/billing/webhook', express.raw({ type: 'application/json', limit: '1mb' }), webhookHandler);
+  app.post('/api/billing/paddle/webhook', express.raw({ type: 'application/json', limit: '1mb' }), paddleWebhookHandler);
 
   // Only the lower-case /api prefix is the API. /API/... and /Api/... are refused outright, so no path-based check
   // (CSRF, API-token blocklist, verification) can be skipped by changing letter case.
@@ -221,13 +224,17 @@ export function createApp() {
   app.use('/api/public/calendar', calendarFeedRoutes); // private iCalendar feeds (token in URL, no session)
   app.use('/api/public/onboarding', publicOnboardingRoutes); // carrier onboarding + e-signature links (token in URL, no session)
   app.use('/api/public/carrier', carrierAccountRoutes); // carrier accounts (sign-in by FMCSA email code, dd_carrier cookie)
-  // Privacy policy and terms as HTML for the React pages (the same text the server writes into the page for crawlers).
+  /** What the privacy policy, terms and refund policy print: names, contact, and who processes payments. */
+  const legalArgs = async () => {
+    const s = await getSettings(['app.name', 'app.supportEmail', 'app.legalName', 'billing.provider']);
+    return { appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'], legalName: s['app.legalName'] || '', provider: s['billing.provider'] === 'paddle' ? 'paddle' : 'stripe' };
+  };
+  // Privacy policy, terms and refund policy as HTML for the React pages (the same text the server writes into the page for crawlers).
   app.get('/api/public/legal/:doc', async (req, res, next) => {
     try {
       const fn = LEGAL_DOCS[req.params.doc];
       if (!fn) return res.status(404).json({ error: 'Not found' });
-      const s = await getSettings(['app.name', 'app.supportEmail']);
-      res.set('Cache-Control', 'public, max-age=300').json({ html: fn({ appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'] }) });
+      res.set('Cache-Control', 'public, max-age=300').json({ html: fn(await legalArgs()) });
     } catch (err) { next(err); }
   });
   app.use('/api/public', publicRoutes);
@@ -309,7 +316,7 @@ export function createApp() {
     // Every other path gets index.html with that page's title, description and link-preview tags.
     // The home page, privacy policy and terms also carry their text in the HTML, for crawlers and reviewers (for example
     // Google's OAuth verification) that do not run JavaScript. React replaces it when the app starts.
-    const SSR = { '/': homeHtml, '/privacy': LEGAL_DOCS.privacy, '/terms': LEGAL_DOCS.terms };
+    const SSR = { '/': homeHtml, '/privacy': LEGAL_DOCS.privacy, '/terms': LEGAL_DOCS.terms, '/refunds': LEGAL_DOCS.refunds };
     app.get('*', async (req, res, next) => {
       try {
         const template = loadIndex();
@@ -317,8 +324,7 @@ export function createApp() {
         let { body, status } = renderIndex(template, req.path);
         const ssr = status === 200 && SSR[req.path.replace(/\/+$/, '') || '/'];
         if (ssr) {
-          const s = await getSettings(['app.name', 'app.supportEmail']);
-          const html = ssr({ appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'] });
+          const html = ssr(await legalArgs());
           body = body.replace('<div id="root"></div>', () => `<div id="root">${html}</div>`);
         }
         res.status(status).type('html').set('Cache-Control', 'no-cache').send(body);

@@ -24,6 +24,7 @@ const PAGES = [
   { match: /^\/register\/?$/, title: `Create your free account · ${SITE}`, description: 'Create a free DispatchDesk account. No card needed.', sitemap: { path: '/register', priority: '0.8' } },
   { match: /^\/terms\/?$/, title: `Terms of service · ${SITE}`, description: 'The terms for using DispatchDesk.', sitemap: { path: '/terms', priority: '0.2' } },
   { match: /^\/privacy\/?$/, title: `Privacy policy · ${SITE}`, description: 'How DispatchDesk handles your data.', sitemap: { path: '/privacy', priority: '0.2' } },
+  { match: /^\/refunds\/?$/, title: `Refund policy · ${SITE}`, description: 'When and how DispatchDesk refunds plan payments.', sitemap: { path: '/refunds', priority: '0.2' } },
   { match: /^\/track\/.+/, title: `Trip check-in link · ${SITE}`, description: 'From your dispatcher. Open this on the phone in your truck to share your location and check in at pickup and delivery. Works on one phone, and you can stop anytime.', image: IMG.track, noindex: true, alt: 'Trip check-in link: share your location from the phone in your truck' },
   { match: /^\/t\/.+/, title: `Load tracking · ${SITE}`, description: 'Live status and estimated arrival for one load, shared by the dispatcher.', image: IMG.load, noindex: true, alt: 'Load tracking link' },
   { match: /^\/onboard\/.+/, title: `Carrier onboarding · ${SITE}`, description: 'Review and sign your dispatch agreement and send your carrier documents.', noindex: true },

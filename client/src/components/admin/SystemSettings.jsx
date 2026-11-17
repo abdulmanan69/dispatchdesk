@@ -15,7 +15,7 @@ const GROUPS = [
   { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
   { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
   { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
-  { key: 'billing', title: 'Billing (Stripe)', test: ['stripe'] },
+  { key: 'billing', title: 'Billing (Stripe or Paddle)', test: ['stripe', 'paddle'], help: 'Billing provider picks who sells the plans. Paddle is the merchant of record and pays out to Pakistan; Stripe needs a business in a Stripe country.' },
 ];
 
 const LABELS = {
@@ -30,6 +30,9 @@ const LABELS = {
   'microsoft.clientId': 'Microsoft OAuth client ID', 'microsoft.clientSecret': 'Microsoft OAuth client secret', 'microsoft.tenant': 'Microsoft tenant',
   'fmcsa.webKey': 'FMCSA QCMobile webKey', 'fmcsa.socrataAppToken': 'data.transportation.gov app token', 'eia.apiKey': 'EIA API key (diesel and gasoline prices, free at eia.gov/opendata)', 'fred.apiKey': 'FRED API key (truck tonnage index, free at fred.stlouisfed.org)', 'usda.marsApiKey': 'USDA My Market News API key (produce truck rates, free at mymarketnews.ams.usda.gov)',
   'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
+  'billing.provider': 'Billing provider', 'paddle.environment': 'Paddle environment', 'paddle.apiKey': 'Paddle API key',
+  'paddle.clientToken': 'Paddle client-side token', 'paddle.webhookSecret': 'Paddle webhook secret (Set up Paddle saves it)',
+  'app.legalName': 'Legal name (business or owner, shown in the terms)',
 };
 // Short explanations shown under a setting.
 const HINTS = {
@@ -42,7 +45,7 @@ const HINTS = {
   'ai.provider': "Users without their own key use this provider, within their plan's monthly AI limit. Users can add their own key in Settings → AI.",
   'ai.model': 'For Claude, leave it empty or enter a claude- model; anything else uses claude-opus-5-5.',
 };
-const TEST_LABEL = { smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
+const TEST_LABEL = { paddle: 'Test Paddle', smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
 const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
 
 const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 }, 'app.trialDays': { min: 0, max: 365 } };
@@ -52,6 +55,12 @@ function SettingInput({ s, value, onChange, id }) {
   if (s.type === 'bool') return <Switch checked={value === 'true'} onChange={(v) => onChange(String(v))} label={LABELS[s.key] || s.key} />;
   if (s.key === 'ai.provider') {
     return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
+  }
+  if (s.key === 'billing.provider') {
+    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option></Select>;
+  }
+  if (s.key === 'paddle.environment') {
+    return <Select id={id} value={value || 'live'} onChange={(e) => onChange(e.target.value)}><option value="live">Live</option><option value="sandbox">Sandbox (test)</option></Select>;
   }
   if (s.key === 'announcement.tone') {
     return <Select id={id} value={value || 'info'} onChange={(e) => onChange(e.target.value)}><option value="info">Teal (news)</option><option value="success">Green (good news)</option><option value="warning">Amber (warning)</option></Select>;

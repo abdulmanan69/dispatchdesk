@@ -245,6 +245,7 @@ model Plan {
   minSeats            Int            @default(1)
   trialDays           Int            @default(0)
   stripePriceId       String?
+  paddlePriceId       String? // Paddle pri_… (billing.provider = paddle)
   stripeBasePriceId   String?
   maxCarriers         Int            @default(500)
   dailyEmailLimit     Int            @default(20)
@@ -272,6 +273,8 @@ model Subscription {
   planId               Int
   status               String // incomplete | trialing | active | past_due | canceled | unpaid
   seats                Int       @default(1)
+  // stripe | paddle. The stripe* ID columns hold the provider's IDs (Paddle ctm_…, sub_… when provider = paddle).
+  provider             String    @default("stripe")
   stripeCustomerId     String?
   stripeSubscriptionId String?   @unique
   stripeCheckoutId     String?   @unique
@@ -295,7 +298,8 @@ model Payment {
   id              String        @id @default(cuid())
   userId          String
   subscriptionId  String?
-  stripeInvoiceId String?       @unique
+  stripeInvoiceId String?       @unique // Stripe in_… or Paddle txn_…
+  provider        String        @default("stripe")
   amountCents     Int
   currency        String        @default("usd")
   status          String // paid | open | void | uncollectible | failed
@@ -575,6 +579,9 @@ model Coupon {
   redemptions           Int                @default(0) // plan codes; Stripe counts discount codes
   expiresAt             DateTime?
   active                Boolean            @default(true)
+  // Discount codes live with the payment provider: Stripe coupon + promotion code, or a Paddle discount (dsc_… in
+  // stripeCouponId).
+  provider              String?
   stripeCouponId        String?
   stripePromotionCodeId String?
   createdById           String?

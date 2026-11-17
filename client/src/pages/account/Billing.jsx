@@ -10,6 +10,8 @@ import { money, date, label } from '../../lib/format.js';
 import { Card, PageHeader, Badge, Button, Loading, ErrorState, EmptyState, DataTable, Input, cx } from '../../components/ui.jsx';
 import PlanCard from '../../components/billing/PlanCard.jsx';
 import PlanCelebration from '../../components/billing/PlanCelebration.jsx';
+import { openPaddleCheckout } from '../../lib/paddle.js';
+import { useToast } from '../../components/Toast.jsx';
 
 const STATUS_COLOR = { active: 'green', trialing: 'blue', past_due: 'amber', incomplete: 'amber', unpaid: 'red', canceled: 'gray' };
 
@@ -67,12 +69,18 @@ export default function Billing() {
     setCelebrate({ plan, note: 'Your payment went through. Thank you for upgrading.' });
   }, [justActivated]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const toast = useToast();
   const go = (r) => { if (r?.url) window.location.assign(r.url); };
-  const startCheckout = useApiMutation((planKey) => api.post('/api/billing/checkout', { planKey, seats: seats ? Number(seats) : undefined }), { onSuccess: go });
+  // Stripe returns a page to go to; Paddle returns what its checkout overlay needs.
+  const onCheckout = (r) => {
+    if (r?.provider !== 'paddle') return go(r);
+    openPaddleCheckout(r.checkout).catch((e) => toast.error(e.message));
+  };
+  const startCheckout = useApiMutation((planKey) => api.post('/api/billing/checkout', { planKey, seats: seats ? Number(seats) : undefined }), { onSuccess: onCheckout });
   const portal = useApiMutation(() => api.post('/api/billing/portal'), { onSuccess: go });
   const cancel = useApiMutation(() => api.post('/api/billing/cancel'), { success: 'Cancellation scheduled for the end of the billing period', invalidate: [['billing']] });
   const resume = useApiMutation(() => api.post('/api/billing/resume'), { success: 'Subscription will continue', invalidate: [['billing']] });
-  const change = useApiMutation((planKey) => api.post('/api/billing/change-plan', { planKey }), { success: 'Plan change sent to Stripe', invalidate: [['billing']] });
+  const change = useApiMutation((planKey) => api.post('/api/billing/change-plan', { planKey }), { success: 'Plan change requested', invalidate: [['billing']] });
   const redeem = useApiMutation((c) => api.post('/api/billing/redeem', { code: c }), {
     invalidate: [['billing']],
     onSuccess: (r) => { setCode(''); setCelebrate({ plan: r.plan, note: `${r.phrase}. No payment needed.` }); },
@@ -82,7 +90,8 @@ export default function Billing() {
   if (me.isError) return <ErrorState error={me.error} onRetry={me.refetch} />;
   const d = me.data;
   const sub = d.subscription;
-  const payable = d.stripeMode !== 'unconfigured';
+  const payable = d.paymentsEnabled ?? d.stripeMode !== 'unconfigured';
+  const paddle = d.provider === 'paddle';
   const activated = checkout === 'success' && sub && ['active', 'trialing'].includes(sub.status);
   const trial = d.trial;
   const planList = (plans.data?.plans || []).filter((p) => !(trial?.enabled && p.key === 'free'));
@@ -127,7 +136,7 @@ export default function Billing() {
       )}
       {!payable && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-          Online payments are not configured on this installation. An administrator needs to add Stripe keys before plans can be purchased.
+          Online payments are not set up yet. An administrator needs to connect {paddle ? 'Paddle' : 'Stripe'} before plans can be purchased.
         </div>
       )}
 
@@ -195,7 +204,11 @@ export default function Billing() {
             {planList.map((p) => <PlanCard key={p.key} plan={p} current={p.key === d.plan.key && !trial?.active} highlight={p.key === 'pro' && !sub} action={actionFor(p)} />)}
           </div>
         )}
-        <p className="mt-3 text-xs text-muted">Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</p>
+        <p className="mt-3 text-xs text-muted">
+          {paddle
+            ? <>Payments are processed by Paddle.com, our reseller and merchant of record, which adds sales tax or VAT where it applies{d.paddle?.environment === 'sandbox' ? ' (sandbox: use Paddle test cards)' : ''}. See our <a href="/refunds" className="underline">refund policy</a>.</>
+            : <>Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</>}
+        </p>
       </section>
 
       {(!sub || sub.granted) && !sub?.managedByTeam && (

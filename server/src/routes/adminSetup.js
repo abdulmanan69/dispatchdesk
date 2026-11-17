@@ -9,6 +9,8 @@ import { getSettings, setSetting } from '../lib/settings.js';
 import { OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { platformMailStatus } from '../services/email/system.js';
 import { getStripe } from '../services/stripe.js';
+import { provisionPaddle, paddleWebhookUrl } from '../services/billing/paddleProvision.js';
+import { PADDLE_EVENTS } from '../services/paddle.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { listBackups, runBackup, backupPath } from '../services/backup.js';
 import { JOBS, jobStatuses, runJob } from '../jobs/maintenance.js';
@@ -34,7 +36,7 @@ export const STRIPE_WEBHOOK_EVENTS = [
 
 const KEYS = [
   'smtp.host', 'smtp.port', 'smtp.user', 'smtp.pass', 'smtp.from', 'brevo.apiKey', 'app.requireEmailVerification', 'app.registrationOpen',
-  'stripe.secretKey', 'stripe.webhookSecret',
+  'stripe.secretKey', 'stripe.webhookSecret', 'billing.provider', 'paddle.environment', 'paddle.apiKey', 'paddle.clientToken', 'paddle.webhookSecret', 'app.legalName',
   'google.clientId', 'google.clientSecret', 'microsoft.clientId', 'microsoft.clientSecret',
   'eia.apiKey', 'fred.apiKey', 'usda.marsApiKey', 'ai.apiKey', 'ai.baseUrl', 'ai.model',
   'search.provider', 'search.apiKey', 'fmcsa.socrataAppToken', 'fmcsa.webKey',
@@ -142,6 +144,42 @@ export async function buildChecklist(req) {
       links: [
         { label: 'Stripe API keys', url: 'https://dashboard.stripe.com/test/apikeys' },
         { label: 'Stripe webhooks', url: 'https://dashboard.stripe.com/test/webhooks' },
+      ],
+    }));
+
+  // 3b. Paddle (merchant of record)
+  const paddleOn = s['billing.provider'] === 'paddle';
+  const paddleKey = set('paddle.apiKey');
+  const noPaddlePrice = paid.filter((p) => !p.paddlePriceId && p.priceCents && !p.basePriceCents);
+  const paddleReady = paddleKey && set('paddle.clientToken') && set('paddle.webhookSecret') && !noPaddlePrice.length;
+  items.push(item('paddle', 'Payments (Paddle)', !paddleKey ? 'todo' : paddleReady && paddleOn ? 'done' : 'partial',
+    !paddleKey ? 'Not configured. Paddle is the merchant of record: it sells the plans and pays you out (wire or Payoneer), including to Pakistan.'
+      : `${s['paddle.environment'] === 'sandbox' ? 'Sandbox' : 'Live'} API key saved.`
+        + (set('paddle.clientToken') ? ' Client-side token saved.' : ' Client-side token missing.')
+        + (set('paddle.webhookSecret') ? ' Webhook secret saved.' : ' Webhook not created yet.')
+        + (noPaddlePrice.length ? ` ${noPaddlePrice.length} paid plan(s) have no Paddle price.` : ' All paid plans are linked to Paddle prices.')
+        + (paddleOn ? ' Paddle sells the plans.' : ' Set Billing provider to paddle to sell through it.')
+        + (set('app.legalName') ? '' : ' Add your legal name (System settings → Application) for the terms.'), {
+      required: false,
+      testService: 'paddle',
+      settingsGroup: 'billing',
+      canProvisionPaddle: paddleKey && https,
+      steps: [
+        'In Paddle: **Developer tools → Authentication**. Create an **API key** (all permissions) and a **client-side token**.',
+        'In **System settings → Billing**: paste the API key and the client-side token, set **Paddle environment** (live or sandbox, matching the keys) and set **Billing provider** to `paddle`.',
+        'Press **Set up Paddle** on this card. It creates a product and a monthly or yearly price for each paid plan, links them, and creates the webhook with its signing secret.',
+        'In Paddle: **Checkout → Checkout settings**, set the **default payment link** to your site address, and request **domain approval** for it. Paddle reviews the site (pricing, terms, refund policy, privacy).',
+        'Finish **account verification** in Paddle (identity, business and payout details). Live payments start once Paddle approves.',
+      ],
+      values: [
+        { label: 'Webhook URL', value: paddleWebhookUrl(), copy: true },
+        { label: 'Webhook events', value: PADDLE_EVENTS.join(', '), copy: true },
+        { label: 'Default payment link', value: config.appUrl, copy: true },
+        ...paid.map((p) => ({ label: `${p.name} Paddle price`, value: p.paddlePriceId || 'not linked', copy: !!p.paddlePriceId })),
+      ],
+      links: [
+        { label: 'Paddle authentication', url: s['paddle.environment'] === 'sandbox' ? 'https://sandbox-vendors.paddle.com/authentication-v2' : 'https://vendors.paddle.com/authentication-v2' },
+        { label: 'Paddle checkout settings', url: s['paddle.environment'] === 'sandbox' ? 'https://sandbox-vendors.paddle.com/checkout-settings' : 'https://vendors.paddle.com/checkout-settings' },
       ],
     }));
 
@@ -309,6 +347,12 @@ async function findProduct(stripe, planKey) {
   const list = await stripe.products.list({ limit: 100, active: true });
   return list.data.find((p) => p.metadata?.dispatchdesk_plan === planKey) || null;
 }
+
+r.post('/paddle/provision', requirePermission('admin.billing', 'admin.settings'), ah(async (req, res) => {
+  const report = await provisionPaddle(req.user.id);
+  await audit(req, 'admin.paddle_provisioned', { details: { environment: report.environment, plans: report.plans.map((p) => `${p.plan}:${p.action}`), webhook: report.webhook?.action } });
+  res.json({ report, checklist: await buildChecklist(req) });
+}));
 
 r.post('/stripe/provision', requirePermission('admin.billing', 'admin.settings'), ah(async (req, res) => {
   const body = parse(z.object({ recreateWebhook: z.boolean().default(false) }), req.body);

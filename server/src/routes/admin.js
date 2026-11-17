@@ -12,6 +12,7 @@ import { LockBusyError } from '../lib/locks.js';
 import { SETTING_DEFS, listSettingsForAdmin, setSetting, getSetting, getSettings } from '../lib/settings.js';
 import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/email/oauth.js';
 import { getStripe } from '../services/stripe.js';
+import { paddleApi, paddleConfig } from '../services/paddle.js';
 import { grantPlan, planPhrase } from '../services/billing/grant.js';
 import { COUPON_KINDS, DISCOUNT_DURATIONS, CODE_RE, normCode, createStripeDiscount, setStripeDiscountActive, stripeRedemptions, findCoupon } from '../services/billing/coupons.js';
 import { notify } from '../lib/activity.js';
@@ -270,7 +271,7 @@ r.post('/subscriptions/gift', requirePermission('admin.billing'), ah(async (req,
 r.post('/subscriptions/:id/revoke', requirePermission('admin.billing'), ah(async (req, res) => {
   const sub = await prisma.subscription.findUnique({ where: { id: String(req.params.id) } });
   if (!sub) throw notFound('Subscription not found');
-  if (sub.stripeSubscriptionId) throw badRequest('This plan is paid through Stripe. Cancel it in Stripe or from their billing page.');
+  if (sub.stripeSubscriptionId) throw badRequest(`This plan is paid through ${sub.provider === 'paddle' ? 'Paddle' : 'Stripe'}. Cancel it there or from their billing page.`);
   await prisma.subscription.update({ where: { id: sub.id }, data: { status: 'canceled', currentPeriodEnd: new Date() } });
   invalidatePlans();
   await audit(req, 'admin.plan_revoked', { entityType: 'subscription', entityId: sub.id });
@@ -465,6 +466,11 @@ r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
     if (key === 'ai.provider' && !['', 'openai', 'anthropic'].includes(value)) throw badRequest('AI provider must be openai or anthropic');
     if (key === 'app.supportEmail' && value && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(value)) throw badRequest('Support email must be a valid email address');
+    if (key === 'billing.provider' && !['', 'stripe', 'paddle'].includes(value)) throw badRequest('Billing provider must be stripe or paddle');
+    if (key === 'paddle.environment' && !['', 'live', 'sandbox'].includes(value)) throw badRequest('Paddle environment must be live or sandbox');
+    if (key === 'paddle.clientToken' && value && !/^(live|test)_[A-Za-z0-9]{8,}$/.test(value)) throw badRequest('The Paddle client-side token starts with live_ or test_');
+    if (key === 'paddle.apiKey' && value && !/^pdl_(live|sdbx)_apikey_[A-Za-z0-9_]{10,}$/.test(value) && !/^[A-Za-z0-9_]{20,}$/.test(value)) throw badRequest('That does not look like a Paddle API key (pdl_live_apikey_…)');
+    if (key === 'app.legalName' && value.length > 120) throw badRequest('Keep the legal name under 120 characters');
     if (key === 'app.trialDays' && value && !(/^\d{1,3}$/.test(value) && Number(value) <= 365)) throw badRequest('Free trial days must be a whole number from 0 to 365');
     if (key === 'app.trialPlan' && value && !(await prisma.plan.findUnique({ where: { key: value } }))) throw badRequest(`There is no plan with the key ${value}`);
     if (key === 'announcement.tone' && !['', 'info', 'success', 'warning'].includes(value)) throw badRequest('Announcement color must be info, success or warning');
@@ -513,6 +519,15 @@ const TESTS = {
     const bal = await stripe.balance.retrieve();
     const wh = (await getSettings(['stripe.webhookSecret']))['stripe.webhookSecret'];
     return { ok: true, message: `Connected (${bal.livemode ? 'live' : 'test'} mode).${wh ? '' : ' Webhook secret is NOT set — subscriptions will not activate until it is.'}` };
+  },
+  async paddle() {
+    const c = await paddleConfig();
+    if (!c.apiKey) return { ok: false, message: 'Paddle API key is not set' };
+    await paddleApi('GET', '/event-types');
+    const missing = [!c.clientToken && 'client-side token', !c.webhookSecret && 'webhook secret (press Set up Paddle in Admin → Setup)'].filter(Boolean);
+    const tokenEnv = c.clientToken.startsWith('test_') ? 'sandbox' : c.clientToken.startsWith('live_') ? 'live' : null;
+    const clash = tokenEnv && tokenEnv !== c.environment ? ` The client-side token is a ${tokenEnv} token but the environment is ${c.environment}.` : '';
+    return { ok: !clash, message: `Connected to Paddle (${c.environment}).${missing.length ? ` Missing: ${missing.join(', ')}.` : ''}${clash}` };
   },
   async search() {
     const s = await getSettings(['search.provider', 'search.apiKey']);

@@ -44,6 +44,7 @@ export const router = createBrowserRouter([
         { path: '/unsubscribe', lazy: page(() => import('./pages/public/Unsubscribe.jsx')) },
         { path: '/terms', lazy: page(() => import('./pages/public/Terms.jsx')) },
         { path: '/privacy', lazy: page(() => import('./pages/public/Privacy.jsx')) },
+        { path: '/refunds', lazy: page(() => import('./pages/public/Refunds.jsx')) },
         { path: '*', element: <NotFound /> },
       ],
     }],

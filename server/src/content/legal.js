@@ -112,13 +112,14 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 </article>`;
 }
 
-export function termsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '' } = {}) {
+export function termsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '', legalName = '', provider = 'stripe' } = {}) {
   const n = esc(appName);
   return `<article class="prose-dd mx-auto max-w-3xl px-4 py-14 text-[15px]" data-legal="terms">
 <h1>Terms of service</h1>
 <p>Last updated: ${LEGAL_UPDATED}</p>
 <p>These terms govern your use of ${n} (${esc(appUrl)}). By creating an account or using the service you agree to them. If you use ${n} for a company, you accept these terms for that company.</p>
-
+${legalName ? `<p>${n} is operated by ${esc(legalName)}.</p>
+` : ''}
 <h2>The service</h2>
 <p>${n} is software for truck dispatchers: a CRM for carrier leads, calling and email outreach, and a dispatch desk for loads, trucks, invoices and documents. ${n} is not a freight broker or motor carrier, does not arrange transportation, and is not a party to any agreement between you, carriers, brokers or shippers.</p>
 
@@ -149,7 +150,9 @@ export function termsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail 
 <h2>Plans and payment</h2>
 <ul>
 <li>New accounts get a free trial with no card. When the trial ends, the account becomes read-only (you can view and export your data) until you choose a paid plan. Paid plans are billed in advance and renew until cancelled.</li>
-<li>You can cancel at any time in Billing; the plan stays active until the end of the paid period. Fees are not refunded except where the law requires.</li>
+<li>You can cancel at any time in Billing; the plan stays active until the end of the paid period. Refunds follow our <a href="${esc(appUrl)}/refunds">refund policy</a>.</li>
+${provider === 'paddle' ? `<li>Our order process is conducted by our online reseller Paddle.com. Paddle.com is the Merchant of Record for all our orders. Paddle provides all customer service inquiries and handles returns.</li>
+` : ''}
 <li>We may change prices with at least 30 days' notice before your next renewal.</li>
 </ul>
 
@@ -186,4 +189,25 @@ export function homeHtml({ appName = 'DispatchDesk', appUrl = '' } = {}) {
 </main>`;
 }
 
-export const LEGAL_DOCS = { privacy: privacyHtml, terms: termsHtml };
+export function refundsHtml({ appName = 'DispatchDesk', appUrl = '', supportEmail = '', provider = 'stripe' } = {}) {
+  const n = esc(appName);
+  return `<article class="prose-dd mx-auto max-w-3xl px-4 py-14 text-[15px]" data-legal="refunds">
+<h1>Refund policy</h1>
+<p>Last updated: ${LEGAL_UPDATED}</p>
+<p>Every new ${n} account starts with a free trial with all features and no card, so you can see whether it fits your work before you pay.</p>
+
+<h2>First payment</h2>
+<p>If ${n} is not right for you, ask for a full refund within 14 days of your first payment for a plan.</p>
+
+<h2>Renewals and cancelling</h2>
+<p>You can cancel at any time in Billing. Your plan stays active until the end of the period you paid for and then does not renew. A renewal payment is refunded if you ask within 14 days of the renewal and have not used the service since it renewed.</p>
+
+<h2>How refunds are paid</h2>
+<p>Refunds go back to the payment method you used.${provider === 'paddle' ? ' Payments are processed by Paddle.com, our online reseller and Merchant of Record, which issues the refund.' : ''} Your bank may take 5 to 10 business days to show it.</p>
+
+<h2>How to ask</h2>
+<p>To ask for a refund, ${contactLine({ supportEmail, appUrl })} from the email address of your account.</p>
+</article>`;
+}
+
+export const LEGAL_DOCS = { privacy: privacyHtml, terms: termsHtml, refunds: refundsHtml };

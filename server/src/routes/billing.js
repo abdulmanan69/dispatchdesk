@@ -13,6 +13,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { getStripe, requireStripe, stripeMode } from '../services/stripe.js';
 import { trialSettings } from '../services/billing/trial.js';
 import { redeemPlanCode } from '../services/billing/coupons.js';
+import { billingProvider, paddleConfig, paddleMode } from '../services/paddle.js';
+import { paddleCheckout, paddleCancel, paddleResume, paddleChangePlan, paddlePortalUrl, paddleInvoiceUrl } from '../services/billing/paddleBilling.js';
 
 const r = Router();
 // Signature verification is a local HMAC check and needs no real API key.
@@ -41,9 +43,10 @@ export function planFeatures(p) {
   return f;
 }
 
-const publicPlan = (p) => ({
+const publicPlan = (p, provider = 'stripe') => ({
   id: p.id, key: p.key, name: p.name, description: p.description, priceCents: p.priceCents, interval: p.interval,
-  perSeat: p.perSeat, minSeats: p.minSeats, trialDays: p.trialDays, purchasable: p.key !== 'free' && !!p.stripePriceId,
+  perSeat: p.perSeat, minSeats: p.minSeats, trialDays: p.trialDays,
+  purchasable: p.key !== 'free' && !!(provider === 'paddle' ? p.paddlePriceId : p.stripePriceId),
   limits: {
     maxCarriers: p.maxCarriers, dailyEmailLimit: p.dailyEmailLimit, monthlyAiMessages: p.monthlyAiMessages, maxSequences: p.maxSequences,
     maxAutomations: p.maxAutomations, maxDiscoveryPerDay: p.maxDiscoveryPerDay,
@@ -55,6 +58,13 @@ const publicPlan = (p) => ({
   features: planFeatures(p),
 });
 
+/** The active payment provider and whether it can take payments. */
+async function paymentSetup() {
+  const provider = await billingProvider();
+  const mode = provider === 'paddle' ? await paddleMode() : await stripeMode();
+  return { provider, mode, enabled: mode !== 'unconfigured' };
+}
+
 /** With the free trial on, the Free plan is shown as the trial: the trial plan's features for a number of days. */
 const trialCard = (free, trialPlan, days) => ({
   ...publicPlan(free), name: 'Free trial', description: `Every ${trialPlan.name} feature free for ${days} days. No card needed.`,
@@ -62,30 +72,37 @@ const trialCard = (free, trialPlan, days) => ({
 });
 
 r.get('/plans', ah(async (req, res) => {
-  const [plans, t] = await Promise.all([prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }), trialSettings()]);
+  const [plans, t, pay] = await Promise.all([prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: 'asc' } }), trialSettings(), paymentSetup()]);
   const trialPlan = t.days ? plans.find((p) => p.key === t.planKey) : null;
   res.json({
-    plans: plans.map((p) => (p.key === 'free' && trialPlan ? trialCard(p, trialPlan, t.days) : publicPlan(p))),
+    plans: plans.map((p) => (p.key === 'free' && trialPlan ? trialCard(p, trialPlan, t.days) : publicPlan(p, pay.provider))),
     trial: trialPlan ? { days: t.days, planKey: trialPlan.key } : null,
-    paymentsEnabled: (await stripeMode()) !== 'unconfigured',
+    provider: pay.provider,
+    paymentsEnabled: pay.enabled,
   });
 }));
 
 r.use(requireAuth);
 
 r.get('/me', ah(async (req, res) => {
-  const [{ plan, subscription, trial }, u, storage, payments, pending, mode] = await Promise.all([
+  const [{ plan, subscription, trial }, u, storage, payments, pending, mode, pay] = await Promise.all([
     effectivePlan(req.user),
     usage(req.user),
     storageStatus(req.user),
     prisma.payment.findMany({ where: { userId: req.user.id }, orderBy: { createdAt: 'desc' }, take: 50 }),
     prisma.subscription.findFirst({ where: { userId: req.user.id, status: { in: ['incomplete', 'past_due', 'unpaid'] } }, include: { plan: true }, orderBy: { createdAt: 'desc' } }),
     stripeMode(),
+    paymentSetup(),
   ]);
+  const paddle = pay.provider === 'paddle' ? await paddleConfig() : null;
   const teamOwned = subscription?.teamId && subscription.userId !== req.user.id;
   res.json({
-    plan: publicPlan(plan),
+    plan: publicPlan(plan, pay.provider),
+    provider: pay.provider,
+    paymentsEnabled: pay.enabled,
+    ...(paddle ? { paddle: { environment: paddle.environment, clientToken: paddle.clientToken || null } } : {}),
     subscription: subscription && {
+      provider: subscription.provider,
       id: subscription.id, status: subscription.status, seats: subscription.seats, planKey: subscription.plan.key,
       currentPeriodEnd: subscription.currentPeriodEnd, trialEndsAt: subscription.trialEndsAt, cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
       managedByTeam: !!teamOwned, isOwner: subscription.userId === req.user.id, hasPortal: !!subscription.stripeCustomerId,
@@ -95,7 +112,7 @@ r.get('/me', ah(async (req, res) => {
     pendingSubscription: pending && { id: pending.id, status: pending.status, planKey: pending.plan.key, createdAt: pending.createdAt },
     usage: u,
     storage: { usedBytes: storage.usedBytes, limitBytes: storage.limitBytes, scope: storage.scope },
-    payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
+    payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.provider === 'paddle' ? `/api/billing/payments/${p.id}/invoice` : p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
     stripeMode: mode,
   });
 }));
@@ -123,6 +140,15 @@ r.get('/celebration', ah(async (req, res) => {
   res.json({ celebration: { notificationId: n.id, plan: publicPlan(plan), headline: n.title, message: n.body } });
 }));
 
+/** The invoice of one of the user's payments (Paddle invoices are fetched as a short-lived link). */
+r.get('/payments/:id/invoice', ah(async (req, res) => {
+  const p = await prisma.payment.findFirst({ where: { id: String(req.params.id), userId: req.user.id } });
+  if (!p) throw notFound('Payment not found');
+  if (p.provider === 'paddle' && p.stripeInvoiceId) return res.redirect(await paddleInvoiceUrl(p.stripeInvoiceId));
+  if (p.invoiceUrl) return res.redirect(p.invoiceUrl);
+  throw notFound('No invoice for this payment');
+}));
+
 async function customerIdFor(user) {
   const prev = await prisma.subscription.findFirst({ where: { userId: user.id, stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' } });
   return prev?.stripeCustomerId || null;
@@ -135,9 +161,6 @@ r.post('/checkout', ah(async (req, res) => {
   if (plan.key === 'free') throw badRequest('The Free plan does not need checkout');
   const { subscription: current } = await effectivePlan(req.user);
   if (current) throw conflict('You already have an active subscription. Use "Change plan" or manage it in the billing portal.');
-  if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet. An administrator must set its Stripe price ID (Admin → Plans).`);
-  const stripe = await requireStripe();
-
   let teamId = null;
   let seats = 1;
   if (plan.perSeat) {
@@ -147,6 +170,14 @@ r.post('/checkout', ah(async (req, res) => {
     const members = await prisma.teamMember.count({ where: { teamId } });
     seats = Math.max(plan.minSeats, members, body.seats || 0);
   }
+  // Paddle: the browser opens Paddle's checkout overlay with these details; the plan activates from Paddle's webhook.
+  if ((await billingProvider()) === 'paddle') {
+    const out = await paddleCheckout(req.user, plan, { seats, teamId });
+    await audit(req, 'billing.checkout_started', { entityType: 'subscription', entityId: out.localSubscriptionId, details: { plan: plan.key, seats, provider: 'paddle' } });
+    return res.json({ provider: 'paddle', checkout: out.checkout });
+  }
+  if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet. An administrator must set its Stripe price ID (Admin → Plans).`);
+  const stripe = await requireStripe();
 
   const local = await prisma.subscription.create({ data: { userId: req.user.id, teamId, planId: plan.id, status: 'incomplete', seats } });
   const customer = await customerIdFor(req.user);
@@ -185,6 +216,8 @@ async function ownedLiveSubscription(user) {
 }
 
 r.post('/portal', ah(async (req, res) => {
+  const latest = await prisma.subscription.findFirst({ where: { userId: req.user.id, stripeCustomerId: { not: null } }, orderBy: { createdAt: 'desc' }, select: { provider: true } });
+  if (latest?.provider === 'paddle') return res.json({ url: await paddlePortalUrl(req.user) });
   const stripe = await requireStripe();
   const customer = await customerIdFor(req.user);
   if (!customer) throw notFound('No billing account yet — start a subscription first');
@@ -193,8 +226,13 @@ r.post('/portal', ah(async (req, res) => {
 }));
 
 r.post('/cancel', ah(async (req, res) => {
-  const stripe = await requireStripe();
   const sub = await ownedLiveSubscription(req.user);
+  if (sub.provider === 'paddle') {
+    const row = await paddleCancel(sub);
+    await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id });
+    return res.json({ ok: true, cancelAtPeriodEnd: !!row?.cancelAtPeriodEnd, message: 'Your subscription will end at the close of the current billing period.' });
+  }
+  const stripe = await requireStripe();
   const updated = await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
   await syncSubscription(updated);
   await audit(req, 'billing.cancel_requested', { entityType: 'subscription', entityId: sub.id });
@@ -202,8 +240,13 @@ r.post('/cancel', ah(async (req, res) => {
 }));
 
 r.post('/resume', ah(async (req, res) => {
-  const stripe = await requireStripe();
   const sub = await ownedLiveSubscription(req.user);
+  if (sub.provider === 'paddle') {
+    const row = await paddleResume(sub);
+    await audit(req, 'billing.resumed', { entityType: 'subscription', entityId: sub.id });
+    return res.json({ ok: true, cancelAtPeriodEnd: !!row?.cancelAtPeriodEnd });
+  }
+  const stripe = await requireStripe();
   const updated = await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: false });
   await syncSubscription(updated);
   await audit(req, 'billing.resumed', { entityType: 'subscription', entityId: sub.id });
@@ -212,13 +255,24 @@ r.post('/resume', ah(async (req, res) => {
 
 r.post('/change-plan', ah(async (req, res) => {
   const { planKey, seats } = parse(z.object({ planKey: reqStr(40), seats: z.coerce.number().int().min(1).max(500).optional() }), req.body);
-  const stripe = await requireStripe();
   const sub = await ownedLiveSubscription(req.user);
   const plan = await prisma.plan.findUnique({ where: { key: planKey } });
   if (!plan || !plan.active || plan.key === 'free') throw badRequest('Choose a paid plan. To move to Free, cancel your subscription.');
-  if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet.`);
   if (plan.perSeat !== sub.plan.perSeat) throw badRequest('Switching between individual and team plans requires canceling and starting a new subscription.');
   if (plan.id === sub.planId && !seats) throw badRequest('You are already on this plan');
+  if (sub.provider === 'paddle') {
+    let quantity = sub.seats || 1;
+    if (plan.perSeat && seats) {
+      const members = await prisma.teamMember.count({ where: { teamId: sub.teamId } });
+      if (seats < Math.max(plan.minSeats, members)) throw badRequest(`Seats must be at least ${Math.max(plan.minSeats, members)} (current members / plan minimum)`);
+      quantity = seats;
+    }
+    const row = await paddleChangePlan(sub, plan, quantity);
+    await audit(req, 'billing.plan_changed', { entityType: 'subscription', entityId: sub.id, details: { from: sub.plan.key, to: plan.key, quantity, provider: 'paddle' } });
+    return res.json({ ok: true, status: row?.status });
+  }
+  if (!plan.stripePriceId) throw unavailable(`The ${plan.name} plan is not linked to a Stripe price yet.`);
+  const stripe = await requireStripe();
   const remote = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId);
   const item = remote.items.data[0];
   let quantity = item.quantity || 1;

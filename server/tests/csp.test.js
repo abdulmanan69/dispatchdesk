@@ -9,11 +9,14 @@ async function policy(url = '/api/health') {
   return Object.fromEntries(header.split(';').map((d) => d.trim().split(/\s+/)).filter((d) => d[0]).map(([name, ...sources]) => [name, sources]));
 }
 
+const SCRIPTS = ["'self'", "'wasm-unsafe-eval'", 'https://cdn.paddle.com'];
+
 describe('content security policy', () => {
-  it('runs scripts only from this origin: no inline scripts, no eval, no third-party script hosts', async () => {
+  it('runs scripts only from this origin and the Paddle checkout CDN: no inline scripts, no eval', async () => {
     const csp = await policy();
-    // WebAssembly compilation is the only addition (in-browser OCR of scanned rate cons, served from /ocr/).
-    expect(csp['script-src']).toEqual(["'self'", "'wasm-unsafe-eval'"]);
+    // WebAssembly compilation (in-browser OCR of scanned rate cons, served from /ocr/) and Paddle.js (checkout overlay,
+    // loaded on demand from cdn.paddle.com only) are the only additions.
+    expect(csp['script-src']).toEqual(SCRIPTS);
     expect(csp['script-src-attr']).toEqual(["'none'"]);
     expect(csp['default-src']).toEqual(["'self'"]);
     expect(csp['object-src']).toEqual(["'none'"]);
@@ -34,6 +37,6 @@ describe('content security policy', () => {
 
   it('sends the policy with every response, including the OCR worker script path', async () => {
     const page = await policy('/ocr/worker.min.js');
-    expect(page['script-src']).toEqual(["'self'", "'wasm-unsafe-eval'"]);
+    expect(page['script-src']).toEqual(SCRIPTS);
   });
 });
