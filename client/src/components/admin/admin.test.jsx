@@ -55,7 +55,7 @@ describe('Admin setup: platform email', () => {
 
 describe('System settings', () => {
   it('labels each field and offers the platform mail budget as a whole number', async () => {
-    renderWithQuery(<SystemSettings />);
+    renderWithQuery(<SystemSettings group="email" />);
     const limit = await screen.findByLabelText(/Platform emails per day/);
     expect(limit).toHaveAttribute('type', 'number');
     expect(limit).toHaveAttribute('min', '1');

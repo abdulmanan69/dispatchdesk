@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { Users, UserCheck, UserPlus, CreditCard, DollarSign, Truck, UsersRound, Flag, GraduationCap, Store, MessagesSquare, Gift, Hourglass, CalendarClock, Lock } from 'lucide-react';
+import { Users, UserCheck, UserPlus, CreditCard, DollarSign, Truck, UsersRound, Flag, GraduationCap, Store, MessagesSquare, Gift, Hourglass, CalendarClock, Lock, Wallet, ListChecks, Server, CheckCircle2, ChevronRight } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { money, num, label } from '../../lib/format.js';
-import { Card, StatCard, QueryState, DataTable, Badge, EmptyState } from '../ui.jsx';
+import { Card, StatCard, QueryState, DataTable, Badge, EmptyState, cx } from '../ui.jsx';
 import { ChartBox, ThemedTooltip, useChartTheme, axisProps, shortDate, PALETTE } from '../dashboard/charts.jsx';
 
 const CANCEL_REASON = {
@@ -39,13 +39,49 @@ function CancelReasons({ rows }) {
   );
 }
 
-export default function Overview({ onTab }) {
+/** What needs an admin now (from /api/admin/attention), each a shortcut to its page. */
+function NeedsAttention({ counts, onTab }) {
+  if (!counts) return null;
+  const items = [
+    { n: counts.paymentsToCheck, one: 'payment to check', many: 'payments to check', tab: 'payments', icon: Wallet, tone: 'amber' },
+    { n: counts.openReports, one: 'open report', many: 'open reports', tab: 'moderation', icon: Flag, tone: 'amber' },
+    { n: counts.setupTodo, one: 'setup step to do', many: 'setup steps to do', tab: 'setup', icon: ListChecks, tone: 'amber' },
+    { n: counts.failedJobs, one: 'background job failing', many: 'background jobs failing', tab: 'system', icon: Server, tone: 'red' },
+  ].filter((it) => it.n > 0);
+  if (!items.length) {
+    return (
+      <p className="flex items-center gap-2 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-fg-2">
+        <CheckCircle2 className="size-4 text-c-green" aria-hidden />Nothing needs your attention right now.
+      </p>
+    );
+  }
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((it) => (
+        <button key={it.tab} type="button" onClick={() => onTab(it.tab)}
+          className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-left transition-ui hover:bg-surface-2">
+          <span className={cx('flex size-9 shrink-0 items-center justify-center rounded-lg', it.tone === 'red' ? 'bg-c-red-soft text-c-red' : 'bg-c-amber-soft text-c-amber')}>
+            <it.icon className="size-[18px]" aria-hidden />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-lg font-medium leading-6 tabular">{it.n}</span>
+            <span className="block truncate text-sm text-fg-2">{it.n === 1 ? it.one : it.many}</span>
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-muted" aria-hidden />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export default function Overview({ onTab, attention }) {
   const q = useQuery({ queryKey: ['admin', 'stats'], queryFn: () => api.get('/api/admin/stats') });
   const t = useChartTheme();
   return (
     <QueryState query={q}>
       {(d) => (
         <div className="space-y-5">
+          <NeedsAttention counts={attention} onTab={onTab} />
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
             <StatCard label="Total users" value={num(d.users.total)} icon={Users} />
             <StatCard label="Active (30 days)" value={num(d.users.active30d)} icon={UserCheck} tone="green" />

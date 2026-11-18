@@ -23,7 +23,7 @@ export default function DieselCard({ state }) {
     if (!admin) return null;
     return (
       <div className="rounded-xl border border-dashed border-line px-4 py-3 text-xs text-muted">
-        Diesel price needs an EIA key. <Link to="/app/admin?tab=settings" className="text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">Admin → Settings</Link>
+        Diesel price needs an EIA key. <Link to="/app/admin?tab=settings&section=integrations&focus=eia.apiKey" className="text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">Admin → Settings</Link>
       </div>
     );
   }

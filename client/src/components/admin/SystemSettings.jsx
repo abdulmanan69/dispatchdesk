@@ -1,59 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { PlugZap, Copy } from 'lucide-react';
+import { ChevronDown, Copy, PlugZap } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../Toast.jsx';
 import { dateTime } from '../../lib/format.js';
-import { Card, QueryState, Badge, Button, Field, Input, Select, Switch, Textarea, cx } from '../ui.jsx';
+import { Badge, Button, Field, Input, QueryState, Select, Switch, Textarea, cx } from '../ui.jsx';
 import OAuthSetupGuide from './OAuthSetupGuide.jsx';
 import AiUsage from './AiUsage.jsx';
+import { HINTS, LABELS, settingsPage } from './settingsMeta.js';
 
-const GROUPS = [
-  { key: 'app', title: 'Application', test: null },
-  { key: 'announcement', title: 'Announcement bar', test: null, help: 'A one-line message across the top of the app, the website, or both. Each viewer can close it; changing the text shows it again to everyone.' },
-  { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
-  { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
-  { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
-  { key: 'billing', title: 'Billing (Stripe, Paddle, Polar or manual)', test: ['stripe', 'paddle', 'polar'], help: 'Billing provider picks who sells the plans. Manual: customers pay by bank wire, USDT or Taptap Send with a reference, report it, and you approve it in Admin → Payments; fill in the details of each method you offer. Paddle and Polar are merchants of record; Stripe needs a business in a Stripe country.' },
-];
-
-const LABELS = {
-  'app.name': 'Application name', 'app.marketplace': 'Marketplace (community listings)', 'app.trainingProgram': 'Live training program (seat requests and trainer messages)', 'app.trialDays': 'Free trial days', 'app.trialPlan': 'Trial plan (features during the trial)',
-  'announcement.enabled': 'Show the announcement', 'announcement.text': 'Message', 'announcement.linkUrl': 'Link (optional)', 'announcement.linkLabel': 'Link text',
-  'announcement.tone': 'Color', 'announcement.audience': 'Show it to', 'app.supportEmail': 'Support email (shown on the privacy policy and terms)', 'app.registrationOpen': 'Allow new registrations', 'app.requireEmailVerification': 'Require verified email',
-  'ai.provider': 'AI provider', 'ai.baseUrl': 'API base URL (OpenAI-compatible only)', 'ai.apiKey': 'API key', 'ai.model': 'Chat model', 'ai.embeddingModel': 'Embedding model (optional, OpenAI-compatible only)',
-  'search.provider': 'Web search provider', 'search.apiKey': 'Search API key',
-  'smtp.host': 'SMTP host', 'smtp.port': 'Port', 'smtp.secure': 'Use TLS (port 465)', 'smtp.user': 'Username', 'smtp.pass': 'Password', 'smtp.from': 'From address',
-  'smtp.dailyLimit': 'Platform emails per day', 'brevo.apiKey': 'Brevo API key (optional, replaces SMTP)',
-  'google.clientId': 'Google OAuth client ID', 'google.clientSecret': 'Google OAuth client secret',
-  'microsoft.clientId': 'Microsoft OAuth client ID', 'microsoft.clientSecret': 'Microsoft OAuth client secret', 'microsoft.tenant': 'Microsoft tenant',
-  'fmcsa.webKey': 'FMCSA QCMobile webKey', 'fmcsa.socrataAppToken': 'data.transportation.gov app token', 'eia.apiKey': 'EIA API key (diesel and gasoline prices, free at eia.gov/opendata)', 'fred.apiKey': 'FRED API key (truck tonnage index, free at fred.stlouisfed.org)', 'usda.marsApiKey': 'USDA My Market News API key (produce truck rates, free at mymarketnews.ams.usda.gov)',
-  'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
-  'billing.provider': 'Billing provider', 'paddle.environment': 'Paddle environment', 'paddle.apiKey': 'Paddle API key',
-  'paddle.clientToken': 'Paddle client-side token', 'paddle.webhookSecret': 'Paddle webhook secret (Set up Paddle saves it)',
-  'manual.usdtAutoConfirm': 'Manual: confirm USDT (TRC20) payments automatically on the TRON chain', 'manual.trongridKey': 'Manual: TronGrid API key (optional, raises the TRON lookup limit)',
-  'manual.bank': 'Manual: bank wire details (bank, account name, IBAN, SWIFT)', 'manual.usdt': 'Manual: USDT wallet address and network', 'manual.taptapsend': 'Manual: Taptap Send details (receiver name, number or account)', 'manual.note': 'Manual: note shown under the payment details (optional)',
-  'polar.environment': 'Polar environment', 'polar.accessToken': 'Polar organization access token', 'polar.webhookSecret': 'Polar webhook secret (Set up Polar saves it)', 'polar.products': 'Polar products (Set up Polar saves them)',
-  'app.legalName': 'Legal name (business or owner, shown in the terms)',
-};
-// Short explanations shown under a setting.
-const HINTS = {
-  'app.requireEmailVerification': 'Applies once platform email (SMTP) works. Unverified accounts can sign in and look around, but cannot save changes until they open the verification link. Admins are never blocked.',
-  'app.registrationOpen': 'When off, nobody can create a new account. Existing users can still sign in.',
-  'app.marketplace': 'Off by default: the payment provider (Paddle) sells DispatchDesk as software only and does not accept a marketplace on the site. Turning it on shows /marketplace and the Marketplace menu.',
-  'app.trainingProgram': 'Off by default for the same reason. The self-paced course library is always on; this adds the public /training page with seat requests and trainer messaging.',
-  'app.trialDays': 'Accounts without a plan get this many days with the trial plan, then become read-only until they choose a plan. 0 turns the trial off (Free plan forever).',
-  'app.trialPlan': 'Plan key whose limits apply during the trial, for example pro.',
-  'announcement.linkUrl': 'A page in the app (/app/billing) or a full https:// address.',
-  'smtp.dailyLimit': 'Most messages platform email sends per day (UTC), counted across all servers. Part of it is kept for verification and password reset mail. Match it to the daily quota of your SMTP provider.',
-  'ai.provider': "Users without their own key use this provider, within their plan's monthly AI limit. Users can add their own key in Settings → AI.",
-  'ai.model': 'For Claude, leave it empty or enter a claude- model; anything else uses claude-opus-5-5.',
-};
 const TEST_LABEL = { polar: 'Test Polar', paddle: 'Test Paddle', smtp: 'Test SMTP', ai: 'Test AI', fmcsa: 'Test FMCSA', search: 'Test search', stripe: 'Test Stripe', google: 'Check Google', microsoft: 'Check Microsoft' };
-const SOURCE = { database: 'brand', environment: 'blue', unset: 'gray' };
-
 const NUMERIC = { 'smtp.port': { min: 1, max: 65535 }, 'smtp.dailyLimit': { min: 1, max: 9999999 }, 'app.trialDays': { min: 0, max: 365 } };
+const MULTILINE = ['manual.bank', 'manual.usdt', 'manual.taptapsend', 'manual.note'];
+const WIDE = [...MULTILINE, 'announcement.text', 'polar.products', 'billing.provider'];
 
 // `id` comes from the surrounding Field, so its label names the control.
 function SettingInput({ s, value, onChange, id }) {
@@ -62,9 +22,9 @@ function SettingInput({ s, value, onChange, id }) {
     return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
   }
   if (s.key === 'billing.provider') {
-    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option><option value="manual">Manual (bank wire, USDT, Taptap Send; you approve)</option></Select>;
+    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="manual">Manual: bank wire, USDT, Taptap Send (you approve)</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option><option value="stripe">Stripe</option></Select>;
   }
-  if (['manual.bank', 'manual.usdt', 'manual.taptapsend', 'manual.note'].includes(s.key)) {
+  if (MULTILINE.includes(s.key)) {
     return <Textarea id={id} rows={3} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={s.key === 'manual.note' ? 'For example: payments are checked Monday to Friday.' : 'Leave empty to not offer this method'} />;
   }
   if (s.key === 'polar.environment') {
@@ -90,78 +50,194 @@ function SettingInput({ s, value, onChange, id }) {
     placeholder={s.secret ? (s.isSet ? `${s.preview} — leave blank to keep` : 'Not set') : ''} />;
 }
 
-export default function SystemSettings() {
+/** One setting: its control, its explanation, where its value comes from, and "Remove saved value" for secrets. */
+function SettingRow({ s, value, onChange, onClear, flash }) {
+  const label = LABELS[s.key] || s.key;
+  const fromServer = s.source === 'environment' && <span className="text-[11px] font-normal text-muted" title="Set on the server. Saving a value here replaces it.">server default</span>;
+  return (
+    <div id={`setting-${s.key}`}
+      className={cx('scroll-mt-24 rounded-lg transition-shadow duration-500', (s.type === 'bool' || WIDE.includes(s.key)) && 'sm:col-span-2',
+        flash && 'ring-2 ring-brand-500/60 ring-offset-4 ring-offset-surface')}>
+      {s.type === 'bool' ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2"><SettingInput s={s} value={value} onChange={onChange} />{fromServer}</div>
+          {HINTS[s.key] && <p className="mt-1 pl-[2.875rem] text-xs text-muted">{HINTS[s.key]}</p>}
+        </>
+      ) : (
+        <Field label={<span className="flex flex-wrap items-center gap-2">{label}{fromServer}</span>} hint={HINTS[s.key]}>
+          <SettingInput s={s} value={value} onChange={onChange} />
+        </Field>
+      )}
+      {s.secret && s.source === 'database' && (
+        <button type="button" className="mt-1 text-xs text-red-600 hover:underline dark:text-red-400" onClick={onClear}>Remove saved value</button>
+      )}
+    </div>
+  );
+}
+
+/** A titled block of settings; with `collapsed` set it shows only its header until opened. */
+function SettingsSection({ section, badge, collapsed, onToggle, tests, children }) {
+  const head = (
+    <span className="flex min-w-0 flex-wrap items-center gap-2">
+      <h3 className="text-sm font-medium">{section.title}</h3>
+      {badge}
+    </span>
+  );
+  return (
+    <section className="rounded-xl border border-line bg-surface">
+      <header className={cx('flex min-h-12 items-center justify-between gap-3 px-5 py-2', !collapsed && 'border-b border-line')}>
+        {onToggle ? (
+          <button type="button" onClick={onToggle} aria-expanded={!collapsed} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <ChevronDown className={cx('size-4 shrink-0 text-muted transition-transform', collapsed && '-rotate-90')} aria-hidden />
+            {head}
+          </button>
+        ) : head}
+        {!collapsed && tests}
+      </header>
+      {!collapsed && <div className="space-y-4 p-5">{children}</div>}
+    </section>
+  );
+}
+
+/**
+ * Admin → Settings → one page (`group`): its settings in sections, saved together with the bar that appears once
+ * something changes. On Payment settings only the active provider is open; the others fold away. `focus` (a setting
+ * key from the admin search) scrolls to that setting and highlights it.
+ */
+export default function SystemSettings({ group = 'app', focus = null }) {
   const toast = useToast();
+  const page = settingsPage(group);
   const q = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => api.get('/api/admin/settings') });
   const [values, setValues] = useState({});
+  const [initial, setInitial] = useState({});
+  const initialRef = useRef({});
   const [results, setResults] = useState({});
+  const [opened, setOpened] = useState({});
+  const [flash, setFlash] = useState(null);
+
+  // Fresh values from the server; anything being edited stays as typed.
   useEffect(() => {
-    if (q.data) setValues(Object.fromEntries(q.data.settings.map((s) => [s.key, s.secret ? '' : s.value])));
+    if (!q.data) return;
+    const fresh = Object.fromEntries(q.data.settings.map((s) => [s.key, s.secret ? '' : s.value]));
+    setValues((cur) => {
+      const next = { ...fresh };
+      for (const k of Object.keys(cur)) if (cur[k] !== initialRef.current[k]) next[k] = cur[k];
+      return next;
+    });
+    initialRef.current = fresh;
+    setInitial(fresh);
   }, [q.data]);
-  const save = useApiMutation((body) => api.put('/api/admin/settings', body), { success: 'Settings saved', invalidate: [['admin', 'settings']] });
+
+  const save = useApiMutation((body) => api.put('/api/admin/settings', body), {
+    success: 'Settings saved', invalidate: [['admin', 'settings'], ['admin', 'setup'], ['admin', 'attention']],
+    // Typed secrets are not kept in the page once saved.
+    onSuccess: (_d, body) => {
+      const secrets = (q.data?.settings || []).filter((s) => s.secret && body?.values && s.key in body.values).map((s) => s.key);
+      if (secrets.length) setValues((v) => ({ ...v, ...Object.fromEntries(secrets.map((k) => [k, ''])) }));
+    },
+  });
   const test = useApiMutation((service) => api.post(`/api/admin/settings/test/${service}`), {
     onSuccess: (d) => { setResults((r) => ({ ...r, [d.service]: d })); d.ok ? toast.success(d.message) : toast.error(d.message); },
   });
-
-  const saveGroup = (group, clear = []) => {
-    const keys = q.data.settings.filter((s) => s.group === group).map((s) => s.key);
-    save.mutate({ values: Object.fromEntries(keys.map((k) => [k, values[k] ?? ''])), clear });
-  };
   const copy = async (t) => { try { await navigator.clipboard.writeText(t); toast.success('Copied'); } catch { toast.error('Copy failed'); } };
+
+  const settings = (q.data?.settings || []).filter((s) => s.group === page.group);
+  const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
+  const placed = new Set(page.sections.flatMap((s) => s.keys));
+  const sections = [
+    ...page.sections.map((sec) => ({ ...sec, items: sec.keys.map((k) => byKey[k]).filter(Boolean) })),
+    { key: 'other', title: 'Other', items: settings.filter((s) => !placed.has(s.key)) },
+  ].filter((sec) => sec.items.length);
+  const provider = values['billing.provider'] || initial['billing.provider'] || 'stripe';
+  const isOpen = (sec) => !sec.provider || sec.provider === provider || opened[sec.key];
+  const dirtyKeys = settings.filter((s) => (values[s.key] ?? '') !== (initial[s.key] ?? '')).map((s) => s.key);
+
+  // A setting picked in the search: open its section, then scroll to it and highlight it for a moment.
+  useEffect(() => {
+    if (!focus || !q.data) return undefined;
+    const sec = page.sections.find((s) => s.keys.includes(focus));
+    if (sec?.provider) setOpened((o) => ({ ...o, [sec.key]: true }));
+    setFlash(focus);
+    const t = setTimeout(() => setFlash(null), 2500);
+    return () => clearTimeout(t);
+  }, [focus, q.data, page]);
+  useEffect(() => {
+    if (!flash) return;
+    const el = document.getElementById(`setting-${flash}`);
+    el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    el?.querySelector('input, textarea, button[role="switch"], button[aria-haspopup]')?.focus({ preventScroll: true });
+  }, [flash]);
+
+  const setValue = (k) => (v) => setValues((cur) => ({ ...cur, [k]: v }));
+  const onSave = () => save.mutate({ values: Object.fromEntries(dirtyKeys.map((k) => [k, values[k] ?? ''])) });
+
+  const renderSection = (sec) => {
+    const collapsed = !isOpen(sec);
+    const tests = sec.test?.length ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {sec.test.map((svc) => (
+          <Button key={svc} variant="secondary" size="sm" icon={PlugZap} loading={test.isPending && test.variables === svc} onClick={() => test.mutate(svc)}>{TEST_LABEL[svc] || svc}</Button>
+        ))}
+      </div>
+    ) : null;
+    return (
+      <SettingsSection key={sec.key} section={sec} collapsed={collapsed} tests={tests}
+        onToggle={sec.provider && sec.provider !== provider ? () => setOpened((o) => ({ ...o, [sec.key]: !o[sec.key] })) : undefined}
+        badge={sec.provider && sec.provider === provider ? <Badge color="green">In use</Badge> : null}>
+        {sec.desc && <p className="text-sm text-fg-2">{sec.desc}</p>}
+        {sec.key === 'stripe' && q.data && (
+          <div className="rounded-md bg-surface-2 p-3 text-xs">
+            <p className="text-muted">Webhook endpoint to add in Stripe (events: checkout.session.completed, customer.subscription.created, .updated and .deleted, invoice.paid, invoice.payment_failed):</p>
+            <div className="mt-1 flex items-center gap-2"><code className="break-all font-mono">{q.data.webhookUrl}</code><button type="button" aria-label="Copy webhook URL" onClick={() => copy(q.data.webhookUrl)} className="text-muted hover:text-fg"><Copy className="size-3.5" /></button></div>
+          </div>
+        )}
+        <div className="grid gap-4 sm:grid-cols-2">
+          {sec.items.map((s) => (
+            <SettingRow key={s.key} s={s} value={values[s.key] ?? ''} onChange={setValue(s.key)} flash={flash === s.key}
+              onClear={() => save.mutate({ clear: [s.key] })} />
+          ))}
+        </div>
+        {sec.test?.some((svc) => results[svc]) && (
+          <div className="space-y-0.5 text-xs">
+            {sec.test.map((svc) => results[svc] && (
+              <p key={svc} className={results[svc].ok ? 'text-green-700 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>{TEST_LABEL[svc] || svc}: {results[svc].message} <span className="text-muted">({dateTime(results[svc].testedAt)})</span></p>
+            ))}
+          </div>
+        )}
+      </SettingsSection>
+    );
+  };
+
+  const main = sections.filter((sec) => !sec.provider || sec.provider === provider);
+  const others = sections.filter((sec) => sec.provider && sec.provider !== provider);
 
   return (
     <QueryState query={q}>
       {(d) => (
-        <div className="space-y-4">
-          <p className="text-sm text-muted">Values saved here override environment variables. Secrets are encrypted at rest and never sent back to the browser.</p>
-          {GROUPS.map((g) => {
-            const items = d.settings.filter((s) => s.group === g.key);
-            return (
-              <Card key={g.key} title={g.title} actions={<>
-                {g.test?.map((svc) => (
-                  <Button key={svc} variant="secondary" size="sm" icon={PlugZap} loading={test.isPending && test.variables === svc} onClick={() => test.mutate(svc)}>{TEST_LABEL[svc] || svc}</Button>
-                ))}
-              </>}>
-                {g.help && <p className="mb-3 text-xs text-muted">{g.help}</p>}
-                {g.key === 'billing' && (
-                  <div className="mb-3 rounded-md bg-surface-2 p-3 text-xs">
-                    <p className="text-muted">Webhook endpoint to add in Stripe (events: checkout.session.completed, customer.subscription.created, .updated and .deleted, invoice.paid, invoice.payment_failed):</p>
-                    <div className="mt-1 flex items-center gap-2"><code className="font-mono">{d.webhookUrl}</code><button type="button" aria-label="Copy webhook URL" onClick={() => copy(d.webhookUrl)} className="text-muted hover:text-fg"><Copy className="size-3.5" /></button></div>
-                  </div>
-                )}
-                {g.key === 'integrations' && <OAuthSetupGuide oauth={d.oauth} appUrl={d.appUrl} />}
-                <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); saveGroup(g.key); }}>
-                  {items.map((s) => (
-                    <div key={s.key} className={cx(s.type === 'bool' && 'sm:col-span-2')}>
-                      {s.type === 'bool' ? (
-                        <>
-                          <SettingInput s={s} value={values[s.key] ?? ''} onChange={(v) => setValues({ ...values, [s.key]: v })} />
-                          {HINTS[s.key] && <p className="mt-1 pl-[2.875rem] text-xs text-muted">{HINTS[s.key]}</p>}
-                        </>
-                      ) : (
-                        <Field label={<span className="flex items-center gap-2">{LABELS[s.key] || s.key}<Badge color={SOURCE[s.source]}>{s.source}</Badge></span>} hint={HINTS[s.key]}>
-                          <SettingInput s={s} value={values[s.key] ?? ''} onChange={(v) => setValues({ ...values, [s.key]: v })} />
-                        </Field>
-                      )}
-                      {s.secret && s.source === 'database' && (
-                        <button type="button" className="mt-1 text-xs text-red-600 hover:underline" onClick={() => save.mutate({ clear: [s.key] })}>Remove saved value</button>
-                      )}
-                    </div>
-                  ))}
-                  <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2">
-                    <div className="text-xs">
-                      {g.test?.map((svc) => results[svc] && (
-                        <p key={svc} className={results[svc].ok ? 'text-green-700 dark:text-green-400' : 'text-red-600'}>{svc}: {results[svc].message} <span className="text-muted">({dateTime(results[svc].testedAt)})</span></p>
-                      ))}
-                    </div>
-                    <Button type="submit" loading={save.isPending}>Save {g.title.split(' ')[0].toLowerCase()} settings</Button>
-                  </div>
-                </form>
-                {g.key === 'ai' && <AiUsage />}
-              </Card>
-            );
-          })}
-        </div>
+        <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (dirtyKeys.length) onSave(); }}>
+          {page.group === 'integrations' && <OAuthSetupGuide oauth={d.oauth} appUrl={d.appUrl} />}
+          {main.map(renderSection)}
+          {others.length > 0 && (
+            <div className="space-y-3 pt-2">
+              <div>
+                <h3 className="text-sm font-medium">Other payment providers</h3>
+                <p className="text-sm text-fg-2">Not in use now. Open one to fill it in before you switch.</p>
+              </div>
+              {others.map(renderSection)}
+            </div>
+          )}
+          {page.group === 'ai' && <AiUsage />}
+          <p className="text-xs text-muted">Values saved here replace the server defaults. Secrets are encrypted at rest and never sent back to the browser.</p>
+          {dirtyKeys.length > 0 && (
+            <div role="region" aria-label="Unsaved changes" className="sticky bottom-4 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3 shadow-lg">
+              <span className="text-sm">{dirtyKeys.length === 1 ? '1 unsaved change' : `${dirtyKeys.length} unsaved changes`}</span>
+              <div className="flex gap-2">
+                <Button type="button" variant="ghost" onClick={() => setValues(initial)}>Discard</Button>
+                <Button type="submit" loading={save.isPending}>Save changes</Button>
+              </div>
+            </div>
+          )}
+        </form>
       )}
     </QueryState>
   );

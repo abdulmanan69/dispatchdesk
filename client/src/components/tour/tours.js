@@ -90,6 +90,14 @@ export const TOURS = {
       { body: 'Each row has Call, Email, Text, Done and Snooze. Tick several rows to complete, snooze or reschedule them together.', title: 'Act from the list' },
     ],
   },
+  admin: {
+    title: 'Admin',
+    admin: true,
+    steps: [
+      { el: q('input[aria-label="Find a page or setting"]'), title: 'Find anything', body: 'Type what you are looking for, like IBAN, trial, backup or webhook, and jump straight to that page or setting.', side: 'bottom' },
+      { el: q('nav[aria-label="Admin"]'), title: 'Everything in groups', body: 'People, Billing, Settings and System. A number next to a page means it needs you: payments to check, reports, setup steps or a failing job.', side: 'right' },
+    ],
+  },
   'admin-setup': {
     title: 'Admin setup',
     admin: true,
@@ -111,7 +119,8 @@ export function tourForPath(pathname, search, user) {
   if (pathname.startsWith('/app/follow-ups')) return 'follow-ups';
   if (pathname.startsWith('/app/admin') && user?.permissions?.includes('admin.settings')) {
     const tab = new URLSearchParams(search).get('tab');
-    if (!tab || tab === 'setup') return 'admin-setup';
+    if (tab === 'setup') return 'admin-setup';
+    if (!tab || tab === 'overview') return 'admin';
   }
   return null;
 }

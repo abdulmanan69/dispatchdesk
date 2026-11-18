@@ -58,7 +58,7 @@ function StripeReport({ report, onClose }) {
 }
 
 /** Backup list with "Back up now" and per-file download (admin only, audited on the server). */
-function BackupPanel({ initial }) {
+export function BackupPanel({ initial }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ['admin', 'backups'], queryFn: () => api.get('/api/admin/setup/backups'), initialData: initial ? { items: initial } : undefined });
   const run = useApiMutation(() => api.post('/api/admin/setup/backups'), {
@@ -90,7 +90,7 @@ function BackupPanel({ initial }) {
 }
 
 /** Background job status table with "Run now" (runs under a database lock on the server). */
-function JobsPanel({ initial }) {
+export function JobsPanel({ initial }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ['admin', 'jobs'], queryFn: () => api.get('/api/admin/setup/jobs'), initialData: initial ? { items: initial } : undefined, refetchInterval: 60_000 });
   const run = useApiMutation((name) => api.post(`/api/admin/setup/jobs/${name}/run`), {
@@ -149,7 +149,7 @@ function PlatformMailPanel({ mail }) {
       {mail.lastError && (
         <p className="break-words text-xs text-red-600 dark:text-red-400">Last error{mail.lastErrorAt ? ` (${dateTime(mail.lastErrorAt)})` : ''}: {mail.lastError}</p>
       )}
-      <p className="text-xs text-muted">Change the daily limit in System settings → Email (Platform emails per day).</p>
+      <p className="text-xs text-muted">Change the daily limit in Settings → Email (Platform emails per day).</p>
     </div>
   );
 }
@@ -271,7 +271,7 @@ export default function AdminSetup({ onTab }) {
               {pct === 100 && <p className="mt-2 flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400"><Check className="size-4" />All required setup is done. The rest is optional.</p>}
             </Card>
             {d.items.map((it) => (
-              <SetupCard key={it.key} it={it} open={firstOpen === it.key} onToggle={() => setOpenKey(firstOpen === it.key ? '' : it.key)} onOpenSettings={() => onTab('settings')} />
+              <SetupCard key={it.key} it={it} open={firstOpen === it.key} onToggle={() => setOpenKey(firstOpen === it.key ? '' : it.key)} onOpenSettings={() => onTab('settings', it.settingsGroup)} />
             ))}
           </div>
         );

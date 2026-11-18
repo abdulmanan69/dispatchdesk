@@ -5,7 +5,9 @@ import { prisma } from '../db.js';
 import { ah, badRequest, forbidden, notFound, conflict } from '../lib/errors.js';
 import { parse, z, pageQuery, paginate, pageResult, optStr, optInt, clean } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
-import { requirePermission, invalidateUserSessions } from '../middleware/auth.js';
+import { requirePermission, invalidateUserSessions, hasPermission } from '../middleware/auth.js';
+import { buildChecklist } from './adminSetup.js';
+import { jobStatuses } from '../jobs/maintenance.js';
 import { hashPassword } from '../middleware/passwordHash.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { LockBusyError } from '../lib/locks.js';
@@ -76,6 +78,23 @@ async function billingFunnel(activeSubs, paidSubs, roles) {
   }
   return out;
 }
+
+/**
+ * What needs an admin now, for the counts in the admin menu and on Overview. Each count needs its own permission:
+ * payments reported and waiting for a check, open content reports, required setup steps not done, failing jobs.
+ */
+r.get('/attention', ah(async (req, res) => {
+  const can = (k) => hasPermission(req, k);
+  const out = {};
+  if (can('admin.billing')) out.paymentsToCheck = await prisma.manualPayment.count({ where: { status: 'submitted' } });
+  if (can('admin.moderate')) out.openReports = await prisma.contentReport.count({ where: { status: 'open' } });
+  if (can('admin.settings')) {
+    const [setup, jobs] = await Promise.all([buildChecklist(req), jobStatuses()]);
+    out.setupTodo = setup.items.filter((i) => i.required && i.status !== 'done').length;
+    out.failedJobs = jobs.filter((j) => j.lastOk === false).length;
+  }
+  res.json(out);
+}));
 
 r.get('/stats', ah(async (req, res) => {
   const now = Date.now();
