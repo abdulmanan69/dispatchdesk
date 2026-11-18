@@ -25,7 +25,7 @@ function SettingInput({ s, value, onChange, id }) {
     return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="manual">Manual: bank wire, USDT, Taptap Send (you approve)</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option><option value="stripe">Stripe</option></Select>;
   }
   if (MULTILINE.includes(s.key)) {
-    return <Textarea id={id} rows={3} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={s.key === 'manual.note' ? 'For example: payments are checked Monday to Friday.' : 'Leave empty to not offer this method'} />;
+    return <Textarea id={id} rows={Math.min(10, Math.max(3, String(value || '').split('\n').length + 1))} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={s.key === 'manual.note' ? 'For example: payments are checked Monday to Friday.' : 'Leave empty to not offer this method'} />;
   }
   if (s.key === 'polar.environment') {
     return <Select id={id} value={value || 'production'} onChange={(e) => onChange(e.target.value)}><option value="production">Production</option><option value="sandbox">Sandbox (test)</option></Select>;

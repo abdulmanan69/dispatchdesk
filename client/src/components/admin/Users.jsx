@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Trash2, Gift, Mail } from 'lucide-react';
+import { Search, Trash2, Gift, Mail, MailCheck, KeyRound, Ban, UserCheck, BadgePlus } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -86,23 +86,27 @@ export default function AdminUsers() {
               { key: 'team', header: 'Team', render: (u) => u.team || '—' },
               { key: 'carriers', header: 'Carriers', className: 'text-right tabular' },
               { key: 'status', header: 'Status', render: (u) => <Badge color={u.status === 'active' ? 'green' : 'red'}>{u.status}</Badge> },
-              { key: 'lastLoginAt', header: 'Last login', render: (u) => (u.lastLoginAt ? relative(u.lastLoginAt) : 'never') },
-              { key: 'createdAt', header: 'Joined', render: (u) => date(u.createdAt) },
+              { key: 'activity', header: 'Activity', render: (u) => (
+                <div className="whitespace-nowrap text-xs">
+                  <p>Last login {u.lastLoginAt ? relative(u.lastLoginAt) : 'never'}</p>
+                  <p className="text-muted">Joined {date(u.createdAt)}</p>
+                </div>
+              ) },
               { key: 'actions', header: '', className: 'text-right whitespace-nowrap', render: (u) => u.id === me.id ? null : (
-                <>
-                  {!u.emailVerified && <Button variant="ghost" size="sm" onClick={() => update.mutate({ id: u.id, emailVerified: true })}>Verify</Button>}
-                  <Button variant="ghost" size="sm" onClick={() => setGrantFor(u)}>Grant plan</Button>
-                  <Button variant="ghost" size="sm" onClick={async () => {
+                <div className="inline-flex items-center gap-0.5">
+                  {!u.emailVerified && <IconButton icon={MailCheck} label={`Mark ${u.name}'s email as verified`} onClick={() => update.mutate({ id: u.id, emailVerified: true })} />}
+                  <IconButton icon={BadgePlus} label={`Give ${u.name} a plan`} onClick={() => setGrantFor(u)} />
+                  <IconButton icon={KeyRound} label={`Reset ${u.name}'s password`} onClick={async () => {
                     if (await confirm({ title: `Reset password for ${u.name}?`, message: 'A temporary password is generated and shown once. They are signed out everywhere.', confirmLabel: 'Reset password' })) resetPw.mutate({ id: u.id, name: u.name });
-                  }}>Reset password</Button>
-                  <Button variant="ghost" size="sm" onClick={async () => {
+                  }} />
+                  <IconButton icon={u.status === 'active' ? Ban : UserCheck} label={u.status === 'active' ? `Suspend ${u.name}` : `Reactivate ${u.name}`} onClick={async () => {
                     const suspend = u.status === 'active';
                     if (await confirm({ title: suspend ? `Suspend ${u.name}?` : `Reactivate ${u.name}?`, message: suspend ? 'They are signed out everywhere and cannot log in.' : 'They will be able to log in again.', confirmLabel: suspend ? 'Suspend' : 'Reactivate', danger: suspend })) update.mutate({ id: u.id, status: suspend ? 'suspended' : 'active' });
-                  }}>{u.status === 'active' ? 'Suspend' : 'Reactivate'}</Button>
-                  <IconButton icon={Trash2} label={`Delete ${u.name}`} onClick={async () => {
+                  }} />
+                  <IconButton icon={Trash2} label={`Delete ${u.name}`} className="hover:text-c-red" onClick={async () => {
                     if (await confirm({ title: `Delete ${u.name}?`, message: 'This permanently deletes the account and all of its data. This cannot be undone.', danger: true })) remove.mutate(u.id);
                   }} />
-                </>
+                </div>
               ) },
             ]} />
             <div className="border-t border-line px-3"><Pagination page={d.page} pages={d.pages} total={d.total} onPage={setPage} /></div>
