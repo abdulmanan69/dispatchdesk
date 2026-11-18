@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Copy } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
@@ -6,6 +6,27 @@ import { money } from '../../lib/format.js';
 import { useToast } from '../Toast.jsx';
 import { Modal } from '../Modal.jsx';
 import { Button, Field, Input, Select, Textarea, cx } from '../ui.jsx';
+
+/** A crypto wallet address in the payment details: TRON (TRC20, starts with T) or EVM (0x…). */
+export function walletAddress(details) {
+  const m = String(details || '').match(/\b(T[1-9A-HJ-NP-Za-km-z]{33}|0x[a-fA-F0-9]{40})\b/);
+  return m ? m[1] : null;
+}
+
+/** QR code of the wallet address for phone wallets to scan, drawn in the browser (the address goes to no QR service). */
+function AddressQr({ address }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let live = true;
+    import('qrcode')
+      .then((m) => (m.default || m).toString(address, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } }))
+      .then((svg) => { if (live) setSrc(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [address]);
+  if (!src) return null;
+  return <img src={src} alt={`QR code of wallet address ${address}`} width={152} height={152} className="size-38 shrink-0 rounded-md bg-white p-1.5" />;
+}
 
 /**
  * Pay for a plan outside the app: the amount, the reference to include, the details of each payment method the admin
@@ -17,6 +38,7 @@ export default function ManualPayModal({ claim, methods = [], note, onClose, onD
   const [transactionRef, setTransactionRef] = useState(claim.transactionRef || '');
   const [extra, setExtra] = useState('');
   const chosen = methods.find((m) => m.key === method);
+  const wallet = walletAddress(chosen?.details);
   const copy = async (text) => {
     try { await navigator.clipboard.writeText(text); toast.success('Copied'); } catch { toast.error('Copy failed'); }
   };
@@ -64,9 +86,20 @@ export default function ManualPayModal({ claim, methods = [], note, onClose, onD
             ))}
           </div>
           {chosen && (
-            <div className="mt-2 rounded-lg border border-line p-3">
-              <pre className="whitespace-pre-wrap break-words font-sans text-[13px] text-fg">{chosen.details}</pre>
-              <Button size="sm" variant="ghost" icon={Copy} className="mt-1" onClick={() => copy(chosen.details)}>Copy details</Button>
+            <div className="mt-2 flex flex-col gap-3 rounded-lg border border-line p-3 sm:flex-row sm:items-start">
+              <div className="min-w-0 flex-1">
+                <pre className="whitespace-pre-wrap break-words font-sans text-[13px] text-fg">{chosen.details}</pre>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {wallet && <Button size="sm" variant="ghost" icon={Copy} onClick={() => copy(wallet)}>Copy address</Button>}
+                  <Button size="sm" variant="ghost" icon={Copy} onClick={() => copy(chosen.details)}>Copy details</Button>
+                </div>
+              </div>
+              {wallet && (
+                <div className="flex flex-col items-center gap-1">
+                  <AddressQr address={wallet} />
+                  <p className="text-[11px] text-muted">Scan with your wallet app</p>
+                </div>
+              )}
             </div>
           )}
           {note && <p className="mt-2 text-xs text-muted">{note}</p>}
