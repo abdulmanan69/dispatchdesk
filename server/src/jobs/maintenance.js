@@ -1,6 +1,6 @@
 import { prisma } from '../db.js';
 import { runTrialReminders } from '../services/billing/trialReminders.js';
-import { runManualRenewalReminders } from '../services/billing/manual.js';
+import { runManualRenewalReminders, confirmUsdtPayments } from '../services/billing/manual.js';
 import { notify } from '../lib/activity.js';
 import { withLock, LockBusyError } from '../lib/locks.js';
 import { prunePings } from '../services/fleet/track.js';
@@ -87,6 +87,10 @@ export const JOBS = [
   {
     name: 'document-expiry', label: 'Remind about documents expiring in 30, 7 and 1 days', dailyAtUtc: 13, // 8 AM Central
     run: documentExpiry,
+  },
+  {
+    name: 'usdt-payments', label: 'Confirm USDT (TRC20) payments that arrived in the wallet', everyMs: 2 * MIN, lane: 'priority',
+    run: (now) => confirmUsdtPayments({ now }),
   },
   {
     name: 'manual-renewals', label: 'Remind customers who pay manually 3 days before their paid period ends', dailyAtUtc: 14,

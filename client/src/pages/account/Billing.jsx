@@ -94,8 +94,10 @@ export default function Billing() {
   const me = useQuery({
     queryKey: ['billing', 'me'],
     queryFn: () => api.get('/api/billing/me'),
-    // After returning from Stripe, refresh a few times while the webhook arrives.
-    refetchInterval: checkout === 'success' && polls < 10 ? 3000 : false,
+    // After returning from Stripe, refresh a few times while the webhook arrives. A USDT payment still open is
+    // confirmed on the chain by the server within minutes: refresh every 30 seconds until it is.
+    refetchInterval: (q) => (checkout === 'success' && polls < 10 ? 3000
+      : q.state.data?.manual?.claims?.some((c) => c.cryptoAmount && ['awaiting', 'submitted'].includes(c.status)) ? 30_000 : false),
   });
   const plans = useQuery({ queryKey: ['plans'], queryFn: () => api.get('/api/billing/plans') });
   useEffect(() => { if (checkout === 'success' && me.dataUpdatedAt) setPolls((n) => n + 1); }, [me.dataUpdatedAt, checkout]);
@@ -193,7 +195,7 @@ export default function Billing() {
           <Info className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
             {openClaim.status === 'submitted'
-              ? <>Payment under review: {money(openClaim.amountCents)} for {openClaim.planName} ({openClaim.reference}). We confirm it usually within one business day.</>
+              ? <>Payment under review: {money(openClaim.amountCents)} for {openClaim.planName} ({openClaim.reference}). {openClaim.method === 'usdt' && openClaim.cryptoAmount ? 'A USDT transfer of the exact amount is confirmed by itself within minutes; otherwise we check it within one business day.' : 'We confirm it usually within one business day.'}</>
               : <>Waiting for your payment of {money(openClaim.amountCents)} for {openClaim.planName}. Use reference <span className="font-mono font-medium">{openClaim.reference}</span>, then tell us you paid.</>}
           </span>
           <Button size="sm" variant="secondary" onClick={() => setManualPay({ claim: openClaim, methods: d.manual?.methods || [], note: d.manual?.note })}>{openClaim.status === 'submitted' ? 'View' : 'Pay or report payment'}</Button>

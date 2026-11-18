@@ -3,7 +3,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 const { registerUser, createAdmin, prisma } = await import('./helpers.js');
 const { setSetting } = await import('../src/lib/settings.js');
 const { invalidatePlans } = await import('../src/lib/plans.js');
-const { runManualRenewalReminders } = await import('../src/services/billing/manual.js');
+const manualSvc = await import('../src/services/billing/manual.js');
+const tronSvc = await import('../src/services/billing/tron.js');
+const { runManualRenewalReminders } = manualSvc;
 const { termsHtml } = await import('../src/content/legal.js');
 
 describe('manual payments (bank wire, USDT, Taptap Send)', () => {
@@ -106,5 +108,106 @@ describe('manual payments (bank wire, USDT, Taptap Send)', () => {
     await runManualRenewalReminders();
     await runManualRenewalReminders();
     expect(await prisma.notification.count({ where: { userId: V.user.id, title: { startsWith: 'Your Pro plan ends' } } })).toBe(1);
+  });
+});
+
+describe('USDT payments confirmed automatically on the TRON chain', () => {
+  const WALLET = 'TXYZabcdefghijkmnopqrstuvwxyz12345'; // fictional, in TRON address format
+  const { confirmUsdtPayments } = manualSvc;
+  let transfers = [];
+  let calls = 0;
+  let admin;
+  const txId = (n) => (BigInt(Date.now()) * 1000n + BigInt(n)).toString(16).padStart(64, '0');
+  const transfer = (value, { id, at = Date.now(), to = WALLET, contract = tronSvc.USDT_TRC20, decimals = 6 } = {}) => ({
+    transaction_id: id, token_info: { address: contract, decimals, symbol: 'USDT' }, block_timestamp: at,
+    from: 'TSenderWalletExample1111111111111', to, type: 'Transfer', value: String(value),
+  });
+  const micros = (claim) => claim.cryptoAmount.replace('.', '').replace(/^0+/, '');
+  const startPro = async (U) => (await U.agent.post('/api/billing/checkout').send({ planKey: 'pro' })).body.claim;
+
+  beforeAll(async () => {
+    admin = await createAdmin();
+    await setSetting('billing.provider', 'manual');
+    await setSetting('manual.usdt', `Network: TRON (TRC20) only\nAddress: ${WALLET}`);
+    invalidatePlans();
+    tronSvc.__setTronFetch(async (url) => {
+      calls += 1;
+      expect(String(url)).toContain(`/v1/accounts/${WALLET}/transactions/trc20?`);
+      expect(String(url)).toContain(`contract_address=${tronSvc.USDT_TRC20}`);
+      return { ok: true, status: 200, json: async () => ({ success: true, data: transfers, meta: {} }) };
+    });
+  });
+  afterAll(async () => {
+    tronSvc.__setTronFetch(null);
+    for (const k of ['billing.provider', 'manual.usdt', 'manual.usdtAutoConfirm']) await setSetting(k, '');
+    invalidatePlans();
+  });
+
+  it('gives each payment its own exact amount and starts the plan when that transfer arrives', async () => {
+    const pro = await prisma.plan.findUnique({ where: { key: 'pro' } });
+    const U = await registerUser();
+    const claim = await startPro(U);
+    expect(claim.cryptoAmount).toMatch(/^\d+\.\d{6}$/);
+    const extra = Number(micros(claim)) - pro.priceCents * 10_000;
+    expect(extra).toBeGreaterThanOrEqual(1);
+    expect(extra).toBeLessThanOrEqual(9999);
+
+    transfers = [];
+    expect((await confirmUsdtPayments()).confirmed).toBe(0);
+    // A look-alike token, another wallet, a rounded amount and a transfer from before the payment started: ignored.
+    transfers = [
+      transfer(micros(claim), { id: txId(1), contract: 'TFakeTetherTokenExample1111111111' }),
+      transfer(micros(claim), { id: txId(2), to: 'TOtherWalletExample11111111111111' }),
+      transfer(pro.priceCents * 10_000, { id: txId(3) }),
+      transfer(micros(claim), { id: txId(4), at: Date.now() - 3_600_000 }),
+    ];
+    expect((await confirmUsdtPayments()).confirmed).toBe(0);
+    expect((await U.agent.get('/api/billing/me')).body.plan.key).not.toBe('pro');
+
+    const good = txId(5);
+    transfers.push(transfer(micros(claim), { id: good }));
+    expect((await confirmUsdtPayments()).confirmed).toBe(1);
+    const me = await U.agent.get('/api/billing/me');
+    expect(me.body.plan.key).toBe('pro');
+    expect(me.body.subscription).toMatchObject({ provider: 'manual' });
+    expect(me.body.payments[0].description).toContain('USDT');
+    expect(me.body.manual.claims[0]).toMatchObject({ status: 'approved', autoConfirmed: true, chainTxId: good });
+    expect(await prisma.notification.count({ where: { userId: admin.user.id, title: 'USDT payment confirmed' } })).toBeGreaterThan(0);
+    // Running again changes nothing.
+    expect((await confirmUsdtPayments()).confirmed).toBe(0);
+  });
+
+  it('approves at once when the customer reports a transfer that already confirmed, and never reuses a transfer', async () => {
+    const U = await registerUser();
+    const claim = await startPro(U);
+    const id = txId(6);
+    transfers = [transfer(micros(claim), { id })];
+    const res = await U.agent.post(`/api/billing/manual/${claim.id}/submit`).send({ method: 'usdt', transactionRef: id });
+    expect(res.status).toBe(200);
+    expect(res.body.claim).toMatchObject({ status: 'approved', autoConfirmed: true, chainTxId: id, transactionRef: id });
+
+    // Another payment given the same amount cannot be paid by the same transfer.
+    const V = await registerUser();
+    const other = await startPro(V);
+    await prisma.manualPayment.update({ where: { id: other.id }, data: { cryptoAmount: micros(claim) } });
+    expect((await confirmUsdtPayments()).confirmed).toBe(0);
+    expect((await prisma.manualPayment.findUnique({ where: { id: other.id } })).status).toBe('awaiting');
+  });
+
+  it('leaves the payment to an admin when two open payments share an amount, or when the check is off', async () => {
+    const A = await registerUser();
+    const B = await registerUser();
+    const a = await startPro(A);
+    const b = await startPro(B);
+    await prisma.manualPayment.update({ where: { id: b.id }, data: { cryptoAmount: micros(a) } });
+    transfers = [transfer(micros(a), { id: txId(7) })];
+    expect((await confirmUsdtPayments()).confirmed).toBe(0);
+
+    await setSetting('manual.usdtAutoConfirm', 'false');
+    calls = 0;
+    const r = await confirmUsdtPayments();
+    expect(r.off).toBe(true);
+    expect(calls).toBe(0);
+    await setSetting('manual.usdtAutoConfirm', '');
   });
 });

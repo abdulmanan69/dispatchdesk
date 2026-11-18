@@ -32,6 +32,7 @@ const LABELS = {
   'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
   'billing.provider': 'Billing provider', 'paddle.environment': 'Paddle environment', 'paddle.apiKey': 'Paddle API key',
   'paddle.clientToken': 'Paddle client-side token', 'paddle.webhookSecret': 'Paddle webhook secret (Set up Paddle saves it)',
+  'manual.usdtAutoConfirm': 'Manual: confirm USDT (TRC20) payments automatically on the TRON chain', 'manual.trongridKey': 'Manual: TronGrid API key (optional, raises the TRON lookup limit)',
   'manual.bank': 'Manual: bank wire details (bank, account name, IBAN, SWIFT)', 'manual.usdt': 'Manual: USDT wallet address and network', 'manual.taptapsend': 'Manual: Taptap Send details (receiver name, number or account)', 'manual.note': 'Manual: note shown under the payment details (optional)',
   'polar.environment': 'Polar environment', 'polar.accessToken': 'Polar organization access token', 'polar.webhookSecret': 'Polar webhook secret (Set up Polar saves it)', 'polar.products': 'Polar products (Set up Polar saves them)',
   'app.legalName': 'Legal name (business or owner, shown in the terms)',

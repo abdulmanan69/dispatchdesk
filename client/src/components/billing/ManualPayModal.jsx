@@ -44,7 +44,7 @@ export default function ManualPayModal({ claim, methods = [], note, onClose, onD
   };
   const submit = useApiMutation((body) => api.post(`/api/billing/manual/${claim.id}/submit`, body), {
     invalidate: [['billing']],
-    success: 'Thank you. We will confirm your payment soon.',
+    success: (r) => (r?.claim?.status === 'approved' ? `Payment confirmed. ${claim.planName} is active.` : 'Thank you. We will confirm your payment soon.'),
     onSuccess: () => { onDone?.(); onClose(); },
   });
   const drop = useApiMutation(() => api.del(`/api/billing/manual/${claim.id}`), {
@@ -85,6 +85,15 @@ export default function ManualPayModal({ claim, methods = [], note, onClose, onD
               </button>
             ))}
           </div>
+          {chosen?.key === 'usdt' && claim.cryptoAmount && (
+            <div className="mt-2 rounded-lg border border-brand-600/30 bg-brand-600/5 p-3">
+              <p className="text-xs text-muted">Send exactly</p>
+              <p className="flex items-center gap-1.5 font-mono text-lg font-medium tabular">{claim.cryptoAmount} USDT
+                <button type="button" aria-label="Copy USDT amount" className="rounded p-1 text-muted hover:bg-surface hover:text-fg" onClick={() => copy(claim.cryptoAmount)}><Copy className="size-3.5" /></button>
+              </p>
+              <p className="mt-1 text-xs text-muted">This exact amount identifies your payment, so it is confirmed by itself a few minutes after the transfer, with no need to wait for us. If your wallet or exchange cannot send these decimals, send {money(claim.amountCents)} and report the transaction ID below; we then check it by hand.</p>
+            </div>
+          )}
           {chosen && (
             <div className="mt-2 flex flex-col gap-3 rounded-lg border border-line p-3 sm:flex-row sm:items-start">
               <div className="min-w-0 flex-1">

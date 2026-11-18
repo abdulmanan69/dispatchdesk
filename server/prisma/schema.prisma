@@ -1965,6 +1965,11 @@ model ManualPayment {
   reviewedById   String?
   rejectReason   String?
   paymentId      String?
+  // USDT: the exact amount to send in micro-USDT (6 decimals, as a string), unique among open payments so a transfer on
+  // the TRON chain identifies its payment; the matching transfer and whether it was confirmed automatically.
+  cryptoAmount   String?
+  chainTxId      String?   @unique
+  autoConfirmed  Boolean   @default(false)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1972,4 +1977,5 @@ model ManualPayment {
 
   @@index([status, submittedAt])
   @@index([userId, createdAt])
+  @@index([status, cryptoAmount])
 }

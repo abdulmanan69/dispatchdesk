@@ -77,6 +77,9 @@ export const SETTING_DEFS = {
   'manual.usdt': { group: 'billing', default: () => '' },
   'manual.taptapsend': { group: 'billing', default: () => '' },
   'manual.note': { group: 'billing', default: () => '' },
+  // USDT on TRON: confirm payments automatically by reading the transfers to the wallet in manual.usdt (TronGrid).
+  'manual.usdtAutoConfirm': { group: 'billing', type: 'bool', default: () => 'true' },
+  'manual.trongridKey': { group: 'billing', secret: true, default: () => process.env.TRONGRID_API_KEY || '' },
   // { planKey: productId } for the Polar products made by Admin → Setup → "Set up Polar".
   'polar.products': { group: 'billing', default: () => '' },
 };

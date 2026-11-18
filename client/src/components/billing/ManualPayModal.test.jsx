@@ -31,4 +31,13 @@ describe('ManualPayModal', () => {
     expect(img.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
     expect(screen.getByRole('button', { name: 'Copy address' })).toBeInTheDocument();
   });
+
+  it('asks for the exact USDT amount that confirms the payment by itself', () => {
+    wrap(<ManualPayModal claim={{ ...claim, cryptoAmount: '9.990317' }} methods={methods} onClose={() => {}} />);
+    expect(screen.queryByText(/Send exactly/)).toBeNull(); // bank wire selected
+    fireEvent.click(screen.getByRole('tab', { name: 'USDT (crypto)' }));
+    expect(screen.getByText('Send exactly')).toBeInTheDocument();
+    expect(screen.getByText(/9\.990317 USDT/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy USDT amount' })).toBeInTheDocument();
+  });
 });

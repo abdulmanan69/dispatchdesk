@@ -53,7 +53,11 @@ export default function ManualPayments() {
                 { key: 'pay', header: 'Payment', render: (r) => (
                   <div className="max-w-xs text-xs">
                     <p><span className="font-mono">{r.reference}</span>{r.method ? ` · ${METHOD[r.method] || r.method}` : ''}</p>
-                    {r.transactionRef && <p className="break-all font-mono text-muted">{r.transactionRef}</p>}
+                    {r.cryptoAmount && <p className="text-muted">Expected <span className="font-mono">{r.cryptoAmount} USDT</span></p>}
+                    {r.transactionRef && (/^(0x)?[0-9a-f]{64}$/i.test(r.transactionRef) && r.method === 'usdt'
+                      ? <a className="block break-all font-mono text-muted underline" href={`https://tronscan.org/#/transaction/${r.transactionRef.replace(/^0x/i, '')}`} target="_blank" rel="noreferrer noopener">{r.transactionRef}</a>
+                      : <p className="break-all font-mono text-muted">{r.transactionRef}</p>)}
+                    {r.autoConfirmed && <p className="text-emerald-700 dark:text-emerald-400">Confirmed on the TRON chain automatically</p>}
                     {r.note && <p className="text-muted">{r.note}</p>}
                     {r.rejectReason && <p className="text-red-600">{r.rejectReason}</p>}
                   </div>
