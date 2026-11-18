@@ -5,8 +5,9 @@ import { notFound, forbidden } from './errors.js';
  * Tenant isolation rules
  * - Every CRM record has an ownerId (the dispatcher whose pipeline it belongs to).
  * - A user always sees their own records.
- * - Team owners/managers (when team.managersSeeAll) and members granted canViewTeamData
- *   may READ records owned by other members of the same team.
+ * - Team owners/managers (when team.managersSeeAll), members granted canViewTeamData, and every member when the
+ *   owner turned on team.membersSeeAll may READ records owned by other members of the same team.
+ * - A carrier assigned to a member is readable and writable by them (sales hands signed carriers to dispatchers).
  * - Writes are allowed for the owner, the assigned dispatcher, or a team owner/manager.
  * Platform admins do NOT get implicit access to private pipelines.
  */
@@ -31,7 +32,7 @@ export async function teamMemberIds(user) {
 export function canViewTeam(user) {
   const m = user.teamMembership;
   if (!m) return false;
-  if (m.canViewTeamData) return true;
+  if (m.canViewTeamData || m.team?.membersSeeAll) return true;
   return isTeamLead(user) && (m.role === 'owner' || m.team?.managersSeeAll !== false);
 }
 

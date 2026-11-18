@@ -27,6 +27,8 @@ import CommandPalette, { CommandHint } from '../components/CommandPalette.jsx';
 import FloatingDock from '../components/market/FloatingDock.jsx';
 
 // Guided tours load after the shell (driver.js itself loads only when a tour starts).
+import { areaOfPath, hasArea } from '../lib/teamAreas.js';
+
 const TourHost = lazy(() => import('../components/tour/TourHost.jsx'));
 
 const NAV = [
@@ -124,7 +126,9 @@ async function todayCount({ signal }) {
 }
 
 /** Live counts shown at the right edge of nav rows. */
-function useNavCounts(uid) {
+function useNavCounts(uid, user) {
+  const sales = hasArea(user, 'sales');
+  const dispatch = hasArea(user, 'dispatch');
   const fu = useQuery({
     queryKey: ['follow-ups', 'nav-count', uid],
     queryFn: sharedQueryFn(`fu-count:${uid}`, ({ signal }) => api.get('/api/follow-ups', { view: 'today', pageSize: 1 }, { signal }), 100_000),
@@ -136,6 +140,7 @@ function useNavCounts(uid) {
     staleTime: 60_000,
     refetchInterval: (q) => (q.state.data?.unavailable ? false : 120_000),
     retry: false,
+    enabled: sales,
     ...POLL,
   });
   const today = useQuery({
@@ -146,6 +151,7 @@ function useNavCounts(uid) {
     staleTime: 120_000,
     refetchInterval: (q) => (q.state.data?.unavailable ? false : 300_000),
     retry: false,
+    enabled: dispatch,
     ...POLL,
   });
   const c = fu.data?.counts;
@@ -162,11 +168,11 @@ function useNavCounts(uid) {
 const Sidebar = memo(function Sidebar({ onNavigate, collapsed }) {
   const { can, user } = useAuth();
   const { features } = useSite();
-  const counts = useNavCounts(user.id);
+  const counts = useNavCounts(user.id, user);
   return (
     <nav className={cx('flex-1 overflow-y-auto pb-6', collapsed ? 'px-2' : 'px-3')} aria-label="App">
       {NAV.map((section, i) => {
-        const items = section.items.filter((it) => (!it.perm || can(it.perm)) && (!it.feature || features[it.feature]));
+        const items = section.items.filter((it) => (!it.perm || can(it.perm)) && (!it.feature || features[it.feature]) && (!areaOfPath(it.to) || hasArea(user, areaOfPath(it.to))));
         if (!items.length) return null;
         const hue = GROUP_HUE[section.hue] || GROUP_HUE.gray;
         return (

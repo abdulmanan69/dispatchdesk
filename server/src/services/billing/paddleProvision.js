@@ -43,12 +43,15 @@ export async function provisionPaddle(userId) {
   const plans = await prisma.plan.findMany({ where: { active: true, key: { not: 'free' } }, orderBy: { sortOrder: 'asc' } });
   for (const plan of plans) {
     if (plan.paddlePriceId) {
-      // A price from the other environment (sandbox → live) does not exist in this account: make a new one.
-      const exists = await paddleApi('GET', `/prices/${encodeURIComponent(plan.paddlePriceId)}`).then(() => true, (err) => {
-        if (err.status === 404) return false;
+      // A price from the other environment (sandbox → live) does not exist in this account, and a price that no longer
+      // matches the plan (its price or interval changed) would charge the old amount: both get a new price.
+      const linked = await paddleApi('GET', `/prices/${encodeURIComponent(plan.paddlePriceId)}`).then((p) => p, (err) => {
+        if (err.status === 404) return null;
         throw err;
       });
-      if (exists) { report.plans.push({ plan: plan.key, action: 'kept', priceId: plan.paddlePriceId }); continue; }
+      const matches = linked && linked.unit_price?.amount === String(plan.priceCents)
+        && linked.billing_cycle?.interval === (plan.interval === 'year' ? 'year' : 'month');
+      if (matches) { report.plans.push({ plan: plan.key, action: 'kept', priceId: plan.paddlePriceId }); continue; }
       plan.paddlePriceId = null;
     }
     if (!plan.priceCents) { report.plans.push({ plan: plan.key, action: 'skipped', reason: 'price is 0' }); continue; }

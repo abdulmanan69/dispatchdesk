@@ -310,6 +310,7 @@ r.post('/bulk', ah(async (req, res) => {
       const assignee = value ? String(value) : null;
       await assertAssignable(req.user, assignee);
       affected = await bulkOps.updateField(carriers, { assignedToId: assignee });
+      if (assignee) await prisma.carrier.updateMany({ where: { id: { in: carriers.map((c) => c.id) }, handoffStatus: 'pending' }, data: { handoffStatus: 'assigned', handoffAt: new Date() } });
       break;
     }
     case 'delete':
@@ -504,6 +505,8 @@ r.get('/:id', ah(async (req, res) => {
   }));
   out.lists = carrier.listItems.map((li) => li.list);
   delete out.listItems;
+  // Teams: who signed it (kept after they leave the team, shown as a former member).
+  if (carrier.soldById) out.soldBy = (await prisma.user.findUnique({ where: { id: carrier.soldById }, select: { id: true, name: true } })) || { id: carrier.soldById, name: 'Former member' };
   // The stored FMCSA profile (10-25 KB) has its own endpoint (/api/carrier-profile/carrier/:id); keep it off this payload.
   // Only its verdict travels here, for the header chip and the next step.
   out.fmcsaVerdict = verdictOfSnapshot(carrier.fmcsaSnapshot);
@@ -533,6 +536,8 @@ r.patch('/:id', ah(async (req, res) => {
     if (dups.length) throw conflict(`Another carrier already uses this USDOT/MC: ${dups[0].companyName}`, { duplicates: dups });
   }
   const data = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+  // A carrier waiting for a dispatcher (Team → To assign) is handed over once a lead assigns it here.
+  if (data.assignedToId && carrier.handoffStatus === 'pending') Object.assign(data, { handoffStatus: 'assigned', handoffAt: new Date() });
   const updated = await prisma.carrier.update({ where: { id: carrier.id }, data, include: listInclude });
   if (data.assignedToId && data.assignedToId !== carrier.assignedToId && data.assignedToId !== req.user.id) {
     const { notify } = await import('../lib/activity.js');

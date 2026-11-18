@@ -8,6 +8,7 @@ import { unauthorized, forbidden } from '../lib/errors.js';
 import { broadcast, onBroadcast } from '../lib/broadcast.js';
 import { getBool } from '../lib/settings.js';
 import { systemMailConfigured } from '../services/email/system.js';
+import { memberAreas } from '../lib/teamAreas.js';
 
 export const SESSION_COOKIE = 'dd_session';
 
@@ -255,7 +256,7 @@ export function publicUser(user, permissions) {
     notifyPush: user.notifyPush,
     notifyDigest: user.notifyDigest,
     team: user.teamMembership
-      ? { id: user.teamMembership.teamId, name: user.teamMembership.team?.name, role: user.teamMembership.role, canViewTeamData: user.teamMembership.canViewTeamData, canManageMembers: user.teamMembership.canManageMembers }
+      ? { id: user.teamMembership.teamId, name: user.teamMembership.team?.name, role: user.teamMembership.role, canViewTeamData: user.teamMembership.canViewTeamData, canManageMembers: user.teamMembership.canManageMembers, areas: memberAreas(user.teamMembership) }
       : null,
     createdAt: user.createdAt,
   };

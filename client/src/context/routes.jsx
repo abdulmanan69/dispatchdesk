@@ -5,6 +5,7 @@ import { Button, Loading } from '../components/ui.jsx';
 import { useAuth } from './AuthContext.jsx';
 import { importWithReload, isChunkError, reloadForNewVersion } from './reload.js';
 import { useSite } from '../lib/site.js';
+import { AREA_HELP, AREA_LABEL, hasArea } from '../lib/teamAreas.js';
 
 /**
  * Building blocks for the route table in src/router.jsx: lazy page and layout loaders (with the one-time reload on a
@@ -49,6 +50,21 @@ export function RequireFeature({ name, to, children }) {
   return features[name] ? children : <Navigate to={to} replace />;
 }
 export const feature = (name, to) => (el) => <RequireFeature name={name} to={to}>{el}</RequireFeature>;
+
+/** Route guard for a team work area (Leads & sales, Dispatch) the team manager turns on per member. */
+export function RequireArea({ name, children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <Loading />;
+  if (hasArea(user, name)) return children;
+  return (
+    <div className="mx-auto max-w-md py-16 text-center">
+      <p className="font-medium">{AREA_LABEL[name]} is not turned on for you</p>
+      <p className="mt-1 text-sm text-muted">Your team manager decides which tools each member uses. Ask them to add {AREA_LABEL[name]} for you on the Team page ({AREA_HELP[name].toLowerCase()}).</p>
+      <Link to="/app" className="mt-5 inline-block text-sm font-medium text-brand-700 hover:underline dark:text-brand-300">Back to the dashboard</Link>
+    </div>
+  );
+}
+export const area = (name) => (el) => <RequireArea name={name}>{el}</RequireArea>;
 
 export function NotFound() {
   return (

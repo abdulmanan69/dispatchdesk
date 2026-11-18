@@ -3,6 +3,7 @@ import { badRequest } from '../lib/errors.js';
 import { STAGE_KEYS } from '../lib/constants.js';
 import { logActivity } from '../lib/activity.js';
 import { runAutomations } from './automation.js';
+import { onCarrierSigned } from './teamHandoff.js';
 
 let stageCache = null;
 export async function stages() {
@@ -57,6 +58,8 @@ export async function changeStage(user, carrier, stageKey, { depth = 0, reason }
     });
     // A signed carrier is a truck on the fleet map (Carrier.isFleet drives the indexed fleet query).
     if (!carrier.isFleet) await prisma.carrier.update({ where: { id: carrier.id }, data: { isFleet: true } });
+    // Teams: remember who signed it and hand it to dispatch when the signer does not dispatch it.
+    if (carrier.stageId !== target.id) await onCarrierSigned(user, carrier);
   }
   if (stageKey === 'archived') {
     await prisma.sequenceEnrollment.updateMany({

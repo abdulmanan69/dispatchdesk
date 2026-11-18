@@ -1,6 +1,6 @@
 import { createBrowserRouter } from 'react-router';
 import { Loading } from './components/ui.jsx';
-import { page, layout, requires, feature, bindRouter, NotFound, RouteError, PageError } from './context/routes.jsx';
+import { page, layout, requires, feature, area, bindRouter, NotFound, RouteError, PageError } from './context/routes.jsx';
 
 /**
  * Routes load lazily with React Router's route-level `lazy`, so a page's chunk downloads in parallel with the
@@ -59,40 +59,40 @@ export const router = createBrowserRouter([
       children: [
         { index: true, lazy: page(() => import('./pages/dashboard/Dashboard.jsx')) },
         // Leads & CRM
-        { path: 'discover', lazy: page(() => import('./pages/carriers/Discover.jsx')) },
+        { path: 'discover', lazy: page(() => import('./pages/carriers/Discover.jsx'), area('sales')) },
         { path: 'carrier-check', lazy: page(() => import('./pages/carriers/CarrierCheck.jsx')) },
         { path: 'market', lazy: page(() => import('./pages/market/Market.jsx')) },
-        { path: 'fleet', lazy: page(() => import('./pages/fleet/Fleet.jsx')) },
-        { path: 'today', lazy: page(() => import('./pages/today/Today.jsx')) },
+        { path: 'fleet', lazy: page(() => import('./pages/fleet/Fleet.jsx'), area('dispatch')) },
+        { path: 'today', lazy: page(() => import('./pages/today/Today.jsx'), area('dispatch')) },
         { path: 'templates', lazy: page(() => import('./pages/templates/Templates.jsx')) },
-        { path: 'invoices', lazy: page(() => import('./pages/invoices/Invoices.jsx')) },
-        { path: 'reports', lazy: page(() => import('./pages/reports/Reports.jsx')) },
-        { path: 'new-authority', lazy: page(() => import('./pages/leads/NewAuthority.jsx')) },
-        { path: 'truck-posts', lazy: page(() => import('./pages/leads/TruckPosts.jsx')) },
-        { path: 'lead-generator', lazy: page(() => import('./pages/carriers/LeadGenerator.jsx')) },
+        { path: 'invoices', lazy: page(() => import('./pages/invoices/Invoices.jsx'), area('dispatch')) },
+        { path: 'reports', lazy: page(() => import('./pages/reports/Reports.jsx'), area('dispatch')) },
+        { path: 'new-authority', lazy: page(() => import('./pages/leads/NewAuthority.jsx'), area('sales')) },
+        { path: 'truck-posts', lazy: page(() => import('./pages/leads/TruckPosts.jsx'), area('dispatch')) },
+        { path: 'lead-generator', lazy: page(() => import('./pages/carriers/LeadGenerator.jsx'), area('sales')) },
         { path: 'carriers', lazy: page(() => import('./pages/carriers/CarrierList.jsx')) },
         { path: 'carriers/:id', lazy: page(() => import('./pages/carriers/CarrierDetail.jsx')) },
-        { path: 'import', lazy: page(() => import('./pages/carriers/ImportCsv.jsx')) },
+        { path: 'import', lazy: page(() => import('./pages/carriers/ImportCsv.jsx'), area('sales')) },
         { path: 'pipeline', lazy: page(() => import('./pages/carriers/Pipeline.jsx')) },
-        { path: 'prospecting', lazy: page(() => import('./pages/prospecting/Prospecting.jsx')) },
-        { path: 'sequences', lazy: page(() => import('./pages/prospecting/Sequences.jsx')) },
-        { path: 'sequences/:id', lazy: page(() => import('./pages/prospecting/SequenceEditor.jsx')) },
-        { path: 'dialer', lazy: page(() => import('./pages/calling/PowerDialer.jsx')) },
-        { path: 'call-scripts', lazy: page(() => import('./pages/calling/CallScripts.jsx')) },
-        { path: 'tools', lazy: page(() => import('./pages/tools/ToolsHub.jsx')) },
+        { path: 'prospecting', lazy: page(() => import('./pages/prospecting/Prospecting.jsx'), area('sales')) },
+        { path: 'sequences', lazy: page(() => import('./pages/prospecting/Sequences.jsx'), area('sales')) },
+        { path: 'sequences/:id', lazy: page(() => import('./pages/prospecting/SequenceEditor.jsx'), area('sales')) },
+        { path: 'dialer', lazy: page(() => import('./pages/calling/PowerDialer.jsx'), area('sales')) },
+        { path: 'call-scripts', lazy: page(() => import('./pages/calling/CallScripts.jsx'), area('sales')) },
+        { path: 'tools', lazy: page(() => import('./pages/tools/ToolsHub.jsx'), area('dispatch')) },
         { path: 'extension', lazy: page(() => import('./pages/calling/ExtensionSetup.jsx')) },
         { path: 'follow-ups', lazy: page(() => import('./pages/prospecting/FollowUps.jsx')) },
         // Deals & dispatch
-        { path: 'opportunities', lazy: page(() => import('./pages/deals/Opportunities.jsx')) },
+        { path: 'opportunities', lazy: page(() => import('./pages/deals/Opportunities.jsx'), area('sales')) },
         { path: 'customers', lazy: page(() => import('./pages/deals/Customers.jsx')) },
         { path: 'customers/:id', lazy: page(() => import('./pages/deals/CustomerDetail.jsx')) },
-        { path: 'brokers', lazy: page(() => import('./pages/dispatch/Brokers.jsx')) },
-        { path: 'brokers/:id', lazy: page(() => import('./pages/dispatch/BrokerDetail.jsx')) },
-        { path: 'loads', lazy: page(() => import('./pages/dispatch/Loads.jsx')) },
-        { path: 'loads/calculator', lazy: page(() => import('./pages/dispatch/RateCalculator.jsx')) },
+        { path: 'brokers', lazy: page(() => import('./pages/dispatch/Brokers.jsx'), area('dispatch')) },
+        { path: 'brokers/:id', lazy: page(() => import('./pages/dispatch/BrokerDetail.jsx'), area('dispatch')) },
+        { path: 'loads', lazy: page(() => import('./pages/dispatch/Loads.jsx'), area('dispatch')) },
+        { path: 'loads/calculator', lazy: page(() => import('./pages/dispatch/RateCalculator.jsx'), area('dispatch')) },
         // Outreach & AI
         { path: 'email', lazy: page(() => import('./pages/email/EmailCenter.jsx')) },
-        { path: 'automations', lazy: page(() => import('./pages/email/Automations.jsx')) },
+        { path: 'automations', lazy: page(() => import('./pages/email/Automations.jsx'), area('sales')) },
         { path: 'ai', lazy: page(() => import('./pages/ai/AiDispatcher.jsx')) },
         { path: 'ai/knowledge', lazy: page(() => import('./pages/ai/KnowledgeBase.jsx')) },
         // Grow

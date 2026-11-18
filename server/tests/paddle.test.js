@@ -13,7 +13,7 @@ const SECRET = 'pdl_ntfset_test_secret';
 const sign = (body, ts = Math.floor(Date.now() / 1000), secret = SECRET) => `ts=${ts};h1=${crypto.createHmac('sha256', secret).update(`${ts}:${body}`).digest('hex')}`;
 
 // Fake Paddle API: answers by method + path, records calls.
-const paddle = { calls: [], subs: new Map(), discounts: [] };
+const paddle = { calls: [], subs: new Map(), discounts: [], prices: new Map(), priceSeq: 0 };
 const reply = (status, data) => ({ ok: status < 300, status, json: async () => (status < 300 ? { data } : { error: data }) });
 function fakeFetch(url, opts = {}) {
   const u = new URL(url);
@@ -31,8 +31,19 @@ function fakeFetch(url, opts = {}) {
   if (u.pathname === '/products' && opts.method === 'GET') return reply(200, []);
   if (u.pathname === '/products' && opts.method === 'POST') return reply(201, { id: `pro_${body.custom_data.dispatchdesk_plan}`, ...body });
   if (u.pathname === '/prices' && opts.method === 'GET') return reply(200, []);
-  if (opts.method === 'GET' && m(/^\/prices\/(.+)$/)) return m(/^\/prices\/pri_sandbox_old$/) ? reply(404, { code: 'entity_not_found', detail: 'price not found' }) : reply(200, { id: m(/^\/prices\/(.+)$/)[1] });
-  if (u.pathname === '/prices' && opts.method === 'POST') return reply(201, { id: `pri_${body.custom_data.dispatchdesk_plan}`, ...body });
+  if (opts.method === 'GET' && m(/^\/prices\/(.+)$/)) {
+    const id = m(/^\/prices\/(.+)$/)[1];
+    return id === 'pri_sandbox_old' ? reply(404, { code: 'entity_not_found', detail: 'price not found' }) : reply(200, paddle.prices.get(id) || { id });
+  }
+  if (u.pathname === '/prices' && opts.method === 'POST') {
+    // A plan's price is pri_<plan>; a price with a new amount gets a number.
+    const base = `pri_${body.custom_data.dispatchdesk_plan}`;
+    const same = paddle.prices.get(base)?.unit_price?.amount === body.unit_price?.amount;
+    const id = !paddle.prices.has(base) || same ? base : `${base}_${++paddle.priceSeq}`;
+    const price = { id, ...body };
+    paddle.prices.set(id, price);
+    return reply(201, price);
+  }
   if (u.pathname === '/notification-settings' && opts.method === 'GET') return reply(200, []);
   if (u.pathname === '/notification-settings' && opts.method === 'POST') return reply(201, { id: 'ntfset_1', endpoint_secret_key: 'pdl_ntfset_created', ...body });
   if (u.pathname === '/discounts' && opts.method === 'POST') { paddle.discounts.push(body); return reply(201, { id: 'dsc_1', ...body }); }
@@ -201,6 +212,20 @@ describe('selling plans through Paddle', () => {
       const again = await provisionPaddle(null);
       expect(again.plans.find((p) => p.plan === 'pro')).toMatchObject({ action: expect.stringContaining('price created'), priceId: 'pri_pro' });
       expect(again.plans.find((p) => p.plan === 'annual')).toMatchObject({ action: 'kept' });
+
+      // A new plan price gets a new Paddle price, so checkout never charges the old amount.
+      const before = await prisma.plan.findUnique({ where: { key: 'annual' } });
+      await prisma.plan.update({ where: { key: 'annual' }, data: { priceCents: before.priceCents + 1000 } });
+      try {
+        const third = await provisionPaddle(null);
+        const annual = third.plans.find((p) => p.plan === 'annual');
+        expect(annual.action).toContain('price created');
+        expect(annual.priceId).not.toBe(before.paddlePriceId);
+        const call = paddle.calls.filter((c) => c.method === 'POST' && c.path === '/prices' && c.body.custom_data.dispatchdesk_plan === 'annual').at(-1);
+        expect(call.body.unit_price.amount).toBe(String(before.priceCents + 1000));
+      } finally {
+        await prisma.plan.update({ where: { key: 'annual' }, data: { priceCents: before.priceCents } });
+      }
     } finally {
       config.appUrl = appUrl;
     }

@@ -58,8 +58,8 @@ const AREAS = [
   },
   {
     id: 'teams', icon: Users, hue: 'green', title: 'Teams',
-    text: 'Private pipelines per dispatcher with a shared team board for owners and managers.',
-    points: ['Owner, manager and dispatcher roles', 'Team board, activity and leaderboard', 'Seat-based billing'],
+    text: 'Sales signs carriers, the manager hands them to dispatchers, and every carrier, call and file stays in the team CRM.',
+    points: ['Manager, sales and dispatcher roles', 'Signed carriers handed to dispatch', 'Work areas the manager turns on per member', 'Work stays with the team when someone leaves', 'Manager overview and leaderboard'],
   },
   {
     id: 'tools', icon: Calculator, hue: 'amber', title: 'Dispatch tools',

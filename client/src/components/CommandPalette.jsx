@@ -10,6 +10,7 @@ import {
 import { api } from '../lib/api.js';
 import { label as statusLabel } from '../lib/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { areaOfPath, hasArea } from '../lib/teamAreas.js';
 import { useSite } from '../lib/site.js';
 import { cx } from './ui.jsx';
 
@@ -95,7 +96,8 @@ export default function CommandPalette() {
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const navigate = useNavigate();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  const dispatchOn = hasArea(user, 'dispatch');
   const { features } = useSite();
   const canSearch = can('crm.use');
 
@@ -133,18 +135,18 @@ export default function CommandPalette() {
       const list = (url, params) => (params.q ? api.get(url, params, opts).then((res) => res.items || []) : Promise.resolve([]));
       const [carriers, loads, brokers] = await Promise.allSettled([
         list('/api/carriers', { q: terms.carriers, pageSize: 6 }),
-        list('/api/loads', { q: terms.loads, pageSize: 4 }),
-        list('/api/brokers', { q: terms.brokers, pageSize: 4 }),
+        dispatchOn ? list('/api/loads', { q: terms.loads, pageSize: 4 }) : Promise.resolve([]),
+        dispatchOn ? list('/api/brokers', { q: terms.brokers, pageSize: 4 }) : Promise.resolve([]),
       ]);
       const rows = (r) => (r.status === 'fulfilled' ? r.value : []);
       if (!cancelled) setFound({ q, carriers: rows(carriers), loads: rows(loads), brokers: rows(brokers), loading: false });
     }, 200);
     return () => { cancelled = true; clearTimeout(t); ctrl.abort(); };
-  }, [query, open, canSearch]);
+  }, [query, open, canSearch, dispatchOn]);
 
   const results = useMemo(() => {
     const q = query.trim();
-    const base = [...ACTIONS, ...PAGES.filter((p) => (!p.perm || can(p.perm)) && (p.to !== '/app/marketplace' || features.marketplace))]
+    const base = [...ACTIONS, ...PAGES.filter((p) => (!p.perm || can(p.perm)) && (p.to !== '/app/marketplace' || features.marketplace) && (!areaOfPath(p.to) || hasArea(user, areaOfPath(p.to))))]
       .map((it) => ({ ...it, s: score(q, `${it.label} ${it.keywords || ''}`) }))
       .filter((it) => it.s >= 0)
       .sort((a, b) => (q ? b.s - a.s : 0));
@@ -162,7 +164,7 @@ export default function CommandPalette() {
     }));
     const limited = q ? base.slice(0, 8) : base.filter((x) => x.group === 'Actions').concat(base.filter((x) => x.group === 'Go to').slice(0, 6));
     return [...carrierItems, ...loadItems, ...brokerItems, ...limited];
-  }, [query, found, can, features]);
+  }, [query, found, can, features, user]);
 
   useEffect(() => { setActive(0); }, [query, found]);
   useEffect(() => {

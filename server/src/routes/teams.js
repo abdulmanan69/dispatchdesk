@@ -6,7 +6,9 @@ import { parse, z, reqStr, reqEmail, pageQuery, paginate, pageResult } from '../
 import { randomToken, sha256 } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { logActivity, notify } from '../lib/activity.js';
-import { canViewTeam } from '../lib/access.js';
+import { canViewTeam, loadCarrier } from '../lib/access.js';
+import { AREAS, ROLE_AREAS, formatAreas, memberAreas } from '../lib/teamAreas.js';
+import { assignHandoff, keepTeamWork, listHandoffs, queueHandoff } from '../services/teamHandoff.js';
 import { requireAuth, requirePermission, invalidateUserSessions, avatarUrl } from '../middleware/auth.js';
 import { invalidatePlans } from '../lib/plans.js';
 import { sendSystemMail } from '../services/email/system.js';
@@ -99,6 +101,7 @@ async function assertSeat(teamId, { includePending = false } = {}) {
 function serializeMember(m) {
   return {
     id: m.id, userId: m.userId, role: m.role, canViewTeamData: m.canViewTeamData, canManageMembers: m.canManageMembers, joinedAt: m.joinedAt,
+    areas: memberAreas(m),
     name: m.user.name, email: m.user.email, lastLoginAt: m.user.lastLoginAt, platformRole: m.user.role?.name,
     avatarUrl: avatarUrl(m.user),
   };
@@ -141,8 +144,15 @@ r.get('/mine', ah(async (req, res) => {
     teamSeatLimit(m.teamId),
   ]);
   res.json({
-    team: { id: m.team.id, name: m.team.name, ownerId: m.team.ownerId, leaderboardEnabled: m.team.leaderboardEnabled, managersSeeAll: m.team.managersSeeAll, createdAt: m.team.createdAt },
-    me: { role: m.role, canViewTeamData: m.canViewTeamData, canManageMembers: m.canManageMembers, canManage: canManage(m), canViewTeam: canViewTeam({ teamMembership: m }) },
+    team: {
+      id: m.team.id, name: m.team.name, ownerId: m.team.ownerId, leaderboardEnabled: m.team.leaderboardEnabled, managersSeeAll: m.team.managersSeeAll,
+      membersSeeAll: m.team.membersSeeAll, handoffMode: m.team.handoffMode, keepWorkOnLeave: m.team.keepWorkOnLeave, createdAt: m.team.createdAt,
+    },
+    me: {
+      role: m.role, canViewTeamData: m.canViewTeamData, canManageMembers: m.canManageMembers, canManage: canManage(m), canViewTeam: canViewTeam({ teamMembership: m }),
+      isLead: isLead(m), areas: memberAreas(m),
+      toAssign: isLead(m) ? await prisma.carrier.count({ where: { handoffStatus: 'pending', ownerId: { in: members.map((x) => x.userId) } } }) : 0,
+    },
     seats,
     members: members.map(serializeMember),
     invitations: invitations.map((i) => ({ id: i.id, email: i.email, role: i.role, status: i.expiresAt < new Date() ? 'expired' : i.status, expiresAt: i.expiresAt, invitedBy: i.invitedBy.name, createdAt: i.createdAt })),
@@ -164,8 +174,13 @@ r.post('/', requirePermission('team.create'), ah(async (req, res) => {
 r.patch('/mine', ah(async (req, res) => {
   const m = await requireMembership(req);
   if (!isLead(m)) throw forbidden('Only the team owner or a manager can change team settings');
-  const body = parse(z.object({ name: reqStr(80).optional(), leaderboardEnabled: z.boolean().optional(), managersSeeAll: z.boolean().optional() }), req.body);
-  if (body.managersSeeAll !== undefined && m.role !== 'owner') throw forbidden('Only the owner can change visibility rules');
+  const body = parse(z.object({
+    name: reqStr(80).optional(), leaderboardEnabled: z.boolean().optional(), managersSeeAll: z.boolean().optional(),
+    membersSeeAll: z.boolean().optional(), handoffMode: z.enum(['manager', 'round_robin']).optional(), keepWorkOnLeave: z.boolean().optional(),
+  }), req.body);
+  if ((body.managersSeeAll !== undefined || body.membersSeeAll !== undefined || body.keepWorkOnLeave !== undefined) && m.role !== 'owner') {
+    throw forbidden('Only the owner can change who sees what and what happens to work when someone leaves');
+  }
   const team = await prisma.team.update({ where: { id: m.teamId }, data: body });
   await audit(req, 'team.updated', { entityType: 'team', entityId: team.id, details: body });
   res.json({ team });
@@ -210,7 +225,7 @@ r.post('/transfer', ah(async (req, res) => {
 r.post('/invitations', ah(async (req, res) => {
   const m = await requireMembership(req);
   if (!canManage(m)) throw forbidden('You do not have permission to invite members');
-  const body = parse(z.object({ email: reqEmail, role: z.enum(['manager', 'dispatcher']).default('dispatcher') }), req.body);
+  const body = parse(z.object({ email: reqEmail, role: z.enum(['manager', 'sales', 'dispatcher']).default('dispatcher') }), req.body);
   if (body.role === 'manager' && m.role !== 'owner') throw forbidden('Only the owner can invite managers');
   const existingUser = await prisma.user.findUnique({ where: { email: body.email }, include: { teamMembership: true } });
   if (existingUser?.teamMembership?.teamId === m.teamId) throw conflict('That person is already a member of this team');
@@ -252,7 +267,7 @@ async function acceptInvitation(req, inv) {
   if (await myMembership(req.user.id)) throw conflict('You are already in a team. Leave it before joining another.');
   await assertSeat(inv.teamId);
   await prisma.$transaction([
-    prisma.teamMember.create({ data: { teamId: inv.teamId, userId: req.user.id, role: inv.role, canViewTeamData: inv.role === 'manager' } }),
+    prisma.teamMember.create({ data: { teamId: inv.teamId, userId: req.user.id, role: inv.role, canViewTeamData: inv.role === 'manager', areas: ROLE_AREAS[inv.role] ? formatAreas(ROLE_AREAS[inv.role]) : null } }),
     prisma.invitation.update({ where: { id: inv.id }, data: { status: 'accepted', acceptedAt: new Date() } }),
     prisma.activity.updateMany({ where: { userId: req.user.id, teamId: null }, data: { teamId: inv.teamId } }),
   ]);
@@ -284,13 +299,25 @@ r.post('/invitations/:id/accept-by-id', ah(async (req, res) => {
 r.patch('/members/:userId', ah(async (req, res) => {
   const m = await requireMembership(req);
   if (!canManage(m)) throw forbidden();
-  const body = parse(z.object({ role: z.enum(['manager', 'dispatcher']).optional(), canViewTeamData: z.boolean().optional(), canManageMembers: z.boolean().optional() }), req.body);
+  const body = parse(z.object({
+    role: z.enum(['manager', 'sales', 'dispatcher']).optional(), canViewTeamData: z.boolean().optional(), canManageMembers: z.boolean().optional(),
+    areas: z.array(z.enum(AREAS)).max(AREAS.length).optional(),
+  }), req.body);
   const target = await prisma.teamMember.findFirst({ where: { teamId: m.teamId, userId: String(req.params.userId) } });
   if (!target) throw notFound('Member not found');
   if (target.role === 'owner') throw forbidden('The owner\'s role cannot be changed. Transfer ownership instead.');
-  if ((body.role !== undefined || body.canManageMembers !== undefined) && m.role !== 'owner') throw forbidden('Only the owner can change roles and member-management rights');
   if (target.userId === req.user.id && m.role !== 'owner') throw forbidden('You cannot change your own permissions');
-  const updated = await prisma.teamMember.update({ where: { id: target.id }, data: body, include: memberInclude });
+  // Managers move people between sales and dispatch and set their work areas; making or unmaking a manager, and
+  // member-management rights, stay with the owner.
+  const managerChange = body.role !== undefined && (body.role === 'manager' || target.role === 'manager') && body.role !== target.role;
+  if ((managerChange || body.canManageMembers !== undefined) && m.role !== 'owner') throw forbidden('Only the owner can make or remove managers and change member-management rights');
+  if ((body.role !== undefined || body.areas !== undefined) && !isLead(m)) throw forbidden('Only the team owner or a manager can change roles and work areas');
+  const data = { ...body };
+  delete data.areas;
+  if (body.areas !== undefined) data.areas = formatAreas(body.areas);
+  else if (body.role !== undefined && body.role !== target.role) data.areas = ROLE_AREAS[body.role] ? formatAreas(ROLE_AREAS[body.role]) : null;
+  if (body.role === 'manager') data.canViewTeamData = true;
+  const updated = await prisma.teamMember.update({ where: { id: target.id }, data, include: memberInclude });
   await audit(req, 'team.member_updated', { entityType: 'teamMember', entityId: target.id, details: body });
   res.json({ member: serializeMember(updated) });
 }));
@@ -305,14 +332,92 @@ r.delete('/members/:userId', ah(async (req, res) => {
     if (!canManage(m)) throw forbidden();
     if (target.role === 'manager' && m.role !== 'owner') throw forbidden('Only the owner can remove a manager');
   }
+  // Work added while in the team stays with it: handed to the member the lead picks, or to the owner.
+  let kept = { carriers: 0, skipped: 0 };
+  let receiver = null;
+  if (m.team.keepWorkOnLeave) {
+    const { transferTo } = parse(z.object({ transferTo: z.string().max(60).optional() }), req.query);
+    receiver = transferTo && targetId !== req.user.id ? transferTo : m.team.ownerId;
+    if (receiver === targetId) throw badRequest('Choose another member to receive their work');
+    if (!(await prisma.teamMember.findFirst({ where: { teamId: m.teamId, userId: receiver } }))) throw badRequest('The member to receive their work is not in this team');
+    kept = await keepTeamWork(targetId, target.joinedAt, receiver);
+  }
   await prisma.teamMember.delete({ where: { id: target.id } });
   // Unassign carriers between the departing user and the team (both directions), and stop the sequences and
   // scheduled emails that cross between them.
   const memberIds = (await prisma.teamMember.findMany({ where: { teamId: m.teamId }, select: { userId: true } })).map((x) => x.userId);
   const stopped = await stopCrossMemberWork(targetId, memberIds);
   if (targetId !== req.user.id) await notify(targetId, { type: 'team', title: `You were removed from ${m.team.name}` });
-  await audit(req, targetId === req.user.id ? 'team.left' : 'team.member_removed', { entityType: 'team', entityId: m.teamId, details: { userId: targetId, sequencesStopped: stopped.enrollments, emailsCanceled: stopped.emails } });
-  res.json({ ok: true });
+  if (kept.carriers && receiver !== req.user.id) {
+    const who = await prisma.user.findUnique({ where: { id: targetId }, select: { name: true } });
+    await notify(receiver, { type: 'team', title: `${kept.carriers} carrier${kept.carriers === 1 ? '' : 's'} from ${who?.name || 'a former member'} are yours now`, body: 'They left the team; their team work stays with the team.', link: '/app/carriers' });
+  }
+  await audit(req, targetId === req.user.id ? 'team.left' : 'team.member_removed', { entityType: 'team', entityId: m.teamId, details: { userId: targetId, sequencesStopped: stopped.enrollments, emailsCanceled: stopped.emails, carriersKept: kept.carriers, carriersNotMoved: kept.skipped, receiver } });
+  res.json({ ok: true, kept, receiver });
+}));
+
+// ---------------------------------------------------------------------------
+// Sales → dispatch handoffs
+// ---------------------------------------------------------------------------
+/** Team leads: carriers waiting for a dispatcher, the recently handed ones, and who can dispatch. */
+r.get('/handoffs', ah(async (req, res) => {
+  const m = await requireMembership(req);
+  if (!isLead(m)) throw forbidden('Only the team owner or a manager sees the To assign list');
+  res.json({ ...(await listHandoffs(m.teamId)), handoffMode: m.team.handoffMode });
+}));
+
+/** Any member who may edit the carrier: send it to dispatch (To assign, or the next dispatcher in turn). */
+r.post('/handoffs/:carrierId', ah(async (req, res) => {
+  const m = await requireMembership(req);
+  const carrier = await loadCarrier(req.user, req.params.carrierId, { write: true });
+  if (carrier.handoffStatus === 'pending') throw conflict('This carrier is already waiting for a dispatcher');
+  const out = await queueHandoff(req.user, carrier, { membership: m });
+  await audit(req, 'team.handoff', { entityType: 'carrier', entityId: carrier.id, details: out });
+  res.json(out);
+}));
+
+/** Team leads: give a carrier to a member who dispatches. */
+r.post('/handoffs/:carrierId/assign', ah(async (req, res) => {
+  const { userId } = parse(z.object({ userId: reqStr(60) }), req.body);
+  const carrier = await assignHandoff(req.user, String(req.params.carrierId), userId);
+  await audit(req, 'team.handoff_assigned', { entityType: 'carrier', entityId: carrier.id, details: { to: userId } });
+  res.json({ carrier });
+}));
+
+/**
+ * Team leads: how each member is doing over `range` (week or month): sales numbers (dials, carriers added, in touch,
+ * carriers signed) and dispatch numbers (signed carriers they handle, loads booked, revenue of delivered loads).
+ */
+r.get('/overview', ah(async (req, res) => {
+  const m = await requireMembership(req);
+  if (!isLead(m)) throw forbidden('Only the team owner or a manager sees the team overview');
+  const q = parse(z.object({ range: z.enum(['week', 'month']).default('week') }), req.query);
+  const since = new Date(Date.now() - (q.range === 'week' ? 7 : 30) * DAY);
+  const members = await prisma.teamMember.findMany({ where: { teamId: m.teamId }, include: memberInclude, orderBy: { joinedAt: 'asc' } });
+  const ids = members.map((x) => x.userId);
+  const g = (rows, key) => Object.fromEntries(rows.map((x) => [x[key], x._count?._all ?? x._sum?.rateCents ?? 0]));
+  const [metrics, signed, handling, loads, revenue, toAssign] = await Promise.all([
+    memberMetrics(ids, since),
+    prisma.carrier.groupBy({ by: ['soldById'], where: { soldById: { in: ids }, customer: { signedAt: { gte: since } } }, _count: { _all: true } }),
+    prisma.carrier.groupBy({ by: ['assignedToId'], where: { assignedToId: { in: ids }, customer: { status: 'active' } }, _count: { _all: true } }),
+    prisma.load.groupBy({ by: ['ownerId'], where: { ownerId: { in: ids }, createdAt: { gte: since }, status: { not: 'canceled' } }, _count: { _all: true } }),
+    prisma.load.groupBy({ by: ['ownerId'], where: { ownerId: { in: ids }, createdAt: { gte: since }, status: { in: ['delivered', 'invoiced', 'paid'] } }, _sum: { rateCents: true } }),
+    prisma.carrier.count({ where: { handoffStatus: 'pending', ownerId: { in: ids } } }),
+  ]);
+  const maps = { signed: g(signed, 'soldById'), handling: g(handling, 'assignedToId'), loads: g(loads, 'ownerId'), revenue: g(revenue, 'ownerId') };
+  const rows = members.map((x) => ({
+    ...serializeMember(x),
+    sales: { dials: metrics[x.userId].dials, added: metrics[x.userId].downloaded, inTouch: metrics[x.userId].inTouch, followUps: metrics[x.userId].followUps, signed: maps.signed[x.userId] || 0 },
+    dispatch: { carriers: maps.handling[x.userId] || 0, loads: maps.loads[x.userId] || 0, revenueCents: maps.revenue[x.userId] || 0 },
+  }));
+  const sum = (path) => rows.reduce((n, r) => n + path(r), 0);
+  res.json({
+    range: q.range, since, toAssign, rows,
+    totals: {
+      dials: sum((r) => r.sales.dials), added: sum((r) => r.sales.added), inTouch: sum((r) => r.sales.inTouch), signed: sum((r) => r.sales.signed),
+      loads: sum((r) => r.dispatch.loads), revenueCents: sum((r) => r.dispatch.revenueCents),
+    },
+  });
 }));
 
 // ---------------------------------------------------------------------------

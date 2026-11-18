@@ -18,6 +18,7 @@ import EnrichModal from '../../components/carriers/EnrichModal.jsx';
 import TextLogModal from '../../components/carriers/TextLogModal.jsx';
 import DieselCard from '../../components/carriers/DieselCard.jsx';
 import ActivityRail from '../../components/carriers/ActivityRail.jsx';
+import TeamHandoff from '../../components/carriers/TeamHandoff.jsx';
 import CallButton from '../../components/calling/CallButton.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import DocumentsPanel from '../../components/documents/DocumentsPanel.jsx';
@@ -157,6 +158,7 @@ export default function CarrierDetail() {
             <Card title="Pipeline">
               <div className="space-y-3">
                 <AssigneeField carrier={c} canWrite={canWrite} onSave={(v) => patch.mutate({ assignedToId: v || null })} />
+                <TeamHandoff carrier={c} canWrite={canWrite} />
                 <Field label="Priority">
                   <Select value={c.priority} disabled={!canWrite} onChange={(e) => patch.mutate({ priority: Number(e.target.value) })}>
                     <option value={0}>Normal</option><option value={1}>High</option><option value={2}>Hot</option>

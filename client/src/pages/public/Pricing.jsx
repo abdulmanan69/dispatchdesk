@@ -21,7 +21,7 @@ const ROWS = [
   ['CRM, pipeline & prospecting', () => true],
   ['Advanced reporting', (p) => p.advancedReports],
   ['Training entitlement', (p) => p.trainingIncluded],
-  ['Team board & permissions', (p) => p.teamFeatures],
+  ['Sales and dispatcher roles, handoffs, manager overview', (p) => p.teamFeatures],
 ];
 
 export default function Pricing() {

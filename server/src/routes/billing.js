@@ -43,7 +43,7 @@ export function planFeatures(p) {
   f.push(`${storageMb >= 1024 ? `${Math.round((storageMb / 1024) * 10) / 10} GB` : `${storageMb} MB`} file storage${p.perSeat ? ' per member' : ''}`);
   if (p.advancedReports) f.push('Advanced reporting');
   if (p.trainingIncluded) f.push('Dispatch training entitlement');
-  if (p.teamFeatures) f.push('Team board, leaderboard & permissions');
+  if (p.teamFeatures) f.push('Sales and dispatcher roles, signed carriers handed to dispatch, manager overview');
   return f;
 }
 

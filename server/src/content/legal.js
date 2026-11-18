@@ -86,7 +86,7 @@ export function privacyHtml({ appName = 'DispatchDesk', appUrl = '', supportEmai
 <li>Browser push services (if you turn on notifications on a device).</li>
 <li>An AI provider, only if the operator turned on AI features and you use them; requests include only your own records needed for that request.</li>
 </ul>
-<p>Within a team, the team owner and managers can see team members' records as the team's permissions allow. Links you create (driver location, broker tracking, carrier portal, onboarding) show the people you send them to only the information on that page. We may also disclose information if the law requires it or to protect the rights and safety of users and the public.</p>
+<p>Within a team, the team owner and managers can see team members' records as the team's permissions allow, and carriers a member added while in the team stay with the team when they leave. Links you create (driver location, broker tracking, carrier portal, onboarding) show the people you send them to only the information on that page. We may also disclose information if the law requires it or to protect the rights and safety of users and the public.</p>
 
 <h2>Retention</h2>
 <ul>
@@ -137,7 +137,7 @@ ${legalName ? `<p>${n} is operated by ${esc(legalName)}.</p>
 <h2>Your account</h2>
 <ul>
 <li>Give accurate information and keep your sign-in details secure. You are responsible for activity in your account.</li>
-<li>Team owners are responsible for the members they invite and the permissions they grant.</li>
+<li>Team owners are responsible for the members they invite and the permissions they grant. Carriers and the records attached to them that a member adds while in a team belong to the team: when the member leaves or is removed, they stay with the team owner or the member the team chooses. The member keeps their own account, connected mailboxes and anything they had before joining.</li>
 <li>Tell us promptly if you believe your account was accessed without permission.</li>
 </ul>
 

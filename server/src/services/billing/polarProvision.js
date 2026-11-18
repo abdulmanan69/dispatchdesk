@@ -45,12 +45,15 @@ export async function provisionPolar(userId) {
   const plans = await prisma.plan.findMany({ where: { active: true, key: { not: 'free' } }, orderBy: { sortOrder: 'asc' } });
   for (const plan of plans) {
     if (products[plan.key]) {
-      // A product from the other environment (sandbox → production) does not exist in this organization: make a new one.
-      const exists = await polarApi('GET', `/products/${encodeURIComponent(products[plan.key])}`).then((p) => !!p?.id && !p.is_archived, (err) => {
-        if (err.status === 404) return false;
+      // A product from the other environment (sandbox → production) does not exist in this organization, and one whose
+      // price no longer matches the plan would charge the old amount: both get a new product.
+      const linked = await polarApi('GET', `/products/${encodeURIComponent(products[plan.key])}`).then((p) => (p?.id && !p.is_archived ? p : null), (err) => {
+        if (err.status === 404) return null;
         throw err;
       });
-      if (exists) { report.plans.push({ plan: plan.key, action: 'kept', productId: products[plan.key] }); continue; }
+      const price = linked?.prices?.find((x) => !x.is_archived) || linked?.prices?.[0];
+      const amount = price?.amount_type === 'seat_based' ? price.seat_tiers?.tiers?.[0]?.price_per_seat : price?.price_amount;
+      if (linked && (amount == null || amount === plan.priceCents)) { report.plans.push({ plan: plan.key, action: 'kept', productId: products[plan.key] }); continue; }
       delete products[plan.key];
     }
     if (!plan.priceCents) { report.plans.push({ plan: plan.key, action: 'skipped', reason: 'price is 0' }); continue; }

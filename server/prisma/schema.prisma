@@ -187,6 +187,13 @@ model Team {
   ownerId            String
   leaderboardEnabled Boolean        @default(true)
   managersSeeAll     Boolean        @default(true)
+  // Every member reads all team carriers (off: own carriers plus the ones assigned to them; leads always see all).
+  membersSeeAll      Boolean        @default(false)
+  // Who gets a carrier sales signed: "manager" (it waits in To assign) or "round_robin" (the next dispatcher in turn).
+  handoffMode        String         @default("manager")
+  roundRobinLastId   String?
+  // Work a member added while in the team stays with the team when they leave (handed to the owner or a member).
+  keepWorkOnLeave    Boolean        @default(true)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   owner              User           @relation("TeamOwner", fields: [ownerId], references: [id])
@@ -202,7 +209,10 @@ model TeamMember {
   id               String   @id @default(cuid())
   teamId           String
   userId           String   @unique // one team per user
-  role             String   @default("dispatcher") // owner | manager | dispatcher
+  role             String   @default("dispatcher") // owner | manager | sales | dispatcher
+  // Work areas the member uses, comma-separated: "sales", "dispatch" or both; null = every area (owners, managers
+  // and members who joined before work areas existed).
+  areas            String?
   canViewTeamData  Boolean  @default(false)
   canManageMembers Boolean  @default(false)
   joinedAt         DateTime @default(now())
@@ -341,6 +351,11 @@ model Carrier {
   id                String    @id @default(cuid())
   ownerId           String
   assignedToId      String?
+  // Teams: the member who signed this carrier (a user id, no foreign key), and its handoff to dispatch: "pending" (waiting in the manager's
+  // To assign list) or "assigned" (a dispatcher has it).
+  soldById          String?
+  handoffStatus     String?
+  handoffAt         DateTime?
   stageId           Int
   companyName       String
   dbaName           String?
@@ -418,6 +433,7 @@ model Carrier {
   @@index([ownerId, companyName])
   @@index([ownerId, phone])
   @@index([assignedToId])
+  @@index([handoffStatus])
   @@index([state])
   @@index([ownerId, createdAt])
   @@index([ownerId, isFleet])

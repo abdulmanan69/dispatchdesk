@@ -98,6 +98,8 @@ describe('teams', () => {
   it('stops sequences and scheduled emails that cross between a removed member and the team', async () => {
     const owner = await registerUser();
     await owner.agent.post('/api/teams').send({ name: 'Cross Team' });
+    // Members keep their own carriers here, to test what stops between the two sides (teams-v2 covers the team keeping work).
+    await owner.agent.patch('/api/teams/mine').send({ keepWorkOnLeave: false });
     const email = `x${Date.now()}@example.test`;
     const inv = await owner.agent.post('/api/teams/invitations').send({ email });
     const member = await registerUser({ email });

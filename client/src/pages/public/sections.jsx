@@ -159,7 +159,7 @@ export const FEATURES = [
   { icon: Puzzle, hue: 'orange', title: 'Chrome extension', text: 'Dialer and Google Voice side by side, a side panel for dispositions, and lookups from any page.', to: '/features#extension' },
   { icon: Mail, hue: 'blue', title: 'Your own mailbox', text: 'Connect Google, Microsoft or any SMTP mailbox. Templates, scheduling, limits and opt-outs.', to: '/features#email' },
   { icon: Bot, hue: 'purple', title: 'AI dispatcher', text: 'Drafts broker emails, scripts and objection replies from your own documents. It never invents rates.', to: '/features#ai' },
-  { icon: Users, hue: 'green', title: 'Teams', text: 'Private pipelines per dispatcher, a team board, roles, permissions and a leaderboard.', to: '/features#teams' },
+  { icon: Users, hue: 'green', title: 'Teams', text: 'Sales and dispatcher roles, signed carriers handed to dispatch, and one team CRM the manager oversees.', to: '/features#teams' },
 ];
 
 export function FeatureGrid() {
@@ -384,7 +384,7 @@ export function PricingTeaser({ user }) {
         return (
           <div key={p.key} className={cx('flex flex-col rounded-2xl border bg-surface p-6', hot ? 'border-brand-600 ring-1 ring-brand-600' : 'border-line')}>
             <span className={cx('w-fit rounded-full px-2.5 py-0.5 text-xs font-semibold', `bg-c-${hue}-soft text-c-${hue}`)}>{p.name}</span>
-            <p className="mt-4 text-3xl font-semibold tracking-tight text-fg tabular">{money(p.priceCents)}<span className="text-sm font-normal text-muted"> /{p.interval}{p.perSeat ? ' per seat' : ''}</span></p>
+            <p className="mt-4 text-3xl font-semibold tracking-tight text-fg tabular">{money(p.priceCents)}<span className="text-sm font-normal text-muted"> /{p.interval}{p.perSeat ? ' per member' : ''}</span></p>
             <p className="mt-2 min-h-12 text-sm leading-6 text-fg-2">{p.description}</p>
             <ul className="mt-4 space-y-2 text-sm text-fg-2">
               <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />{lim(p.limits.maxCarriers)} carrier records</li>
@@ -392,7 +392,7 @@ export function PricingTeaser({ user }) {
               <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />{lim(p.limits.dailyEmailLimit)} emails a day</li>
               <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />{lim(p.limits.monthlyAiMessages)} AI messages a month</li>
               {p.leadGenAutoRun && <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />Scheduled lead generation</li>}
-              {p.teamFeatures && <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />Team board and permissions</li>}
+              {p.teamFeatures && <li className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-c-green" />Sales and dispatch roles, handoffs, manager overview</li>}
             </ul>
             <div className="mt-auto pt-6">
               <Button className="w-full" variant={hot ? 'primary' : 'secondary'} to={p.key === 'free' ? (user ? '/app' : '/register') : '/pricing'}>
@@ -416,7 +416,7 @@ export const FAQ = [
   ['Where do the carrier leads come from?', 'From the public FMCSA Company Census on data.transportation.gov. Each run checks the live dataset, skips carriers already in your CRM, and scores leads on contact details, authority age and fleet size.'],
   ['Which email accounts can I connect?', 'Google and Microsoft accounts with one click once your administrator enables them, or any mailbox with SMTP such as Gmail with an app password, Outlook, Yahoo, Zoho, iCloud, Hostinger, GoDaddy and Fastmail. Emails go out from your own address.'],
   ['Where do fuel prices, weather and maps come from?', 'Diesel and gasoline from the U.S. Energy Information Administration, weather alerts from the National Weather Service, current weather from Open-Meteo, map tiles from OpenFreeMap with OpenStreetMap data, and road routes from OSRM. Every number links to its source.'],
-  ['Can my team use it together?', 'Yes. Each dispatcher keeps a private pipeline. Team owners and managers see a shared board, activity and a leaderboard, with roles and permissions.'],
+  ['Can my team use it together?', 'Yes, on the Teams plan. Salespeople find and sign carriers, the manager hands each signed carrier to a dispatcher, and the work everyone adds stays in the team CRM, even when someone leaves. The manager decides who uses the sales tools and who uses the dispatch tools.'],
 ];
 
 export function FaqList() {
