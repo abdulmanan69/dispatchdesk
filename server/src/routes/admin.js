@@ -577,7 +577,9 @@ r.put('/settings', requirePermission('admin.settings'), ah(async (req, res) => {
     if (key === 'search.provider' && !['', 'tavily', 'brave'].includes(value)) throw badRequest('Search provider must be tavily, brave or empty');
     if (key === 'ai.provider' && !['', 'openai', 'anthropic'].includes(value)) throw badRequest('AI provider must be openai or anthropic');
     if (key === 'app.supportEmail' && value && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(value)) throw badRequest('Support email must be a valid email address');
-    if (key === 'billing.provider' && !['', 'stripe', 'paddle'].includes(value)) throw badRequest('Billing provider must be stripe or paddle');
+    if (key === 'billing.provider' && !['', 'stripe', 'paddle', 'polar', 'manual'].includes(value)) throw badRequest('Billing provider must be stripe, paddle, polar or manual');
+    if (key === 'polar.environment' && !['', 'production', 'sandbox'].includes(value)) throw badRequest('Polar environment must be production or sandbox');
+    if (key.startsWith('manual.') && value.length > 2000) throw badRequest('Keep the payment details under 2000 characters');
     if (key === 'paddle.environment' && !['', 'live', 'sandbox'].includes(value)) throw badRequest('Paddle environment must be live or sandbox');
     if (key === 'paddle.clientToken' && value && !/^(live|test)_[A-Za-z0-9]{8,}$/.test(value)) throw badRequest('The Paddle client-side token starts with live_ or test_');
     if (key === 'paddle.apiKey' && value && !/^pdl_(live|sdbx)_apikey_[A-Za-z0-9_]{10,}$/.test(value) && !/^[A-Za-z0-9_]{20,}$/.test(value)) throw badRequest('That does not look like a Paddle API key (pdl_live_apikey_…)');

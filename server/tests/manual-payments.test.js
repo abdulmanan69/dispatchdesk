@@ -20,6 +20,14 @@ describe('manual payments (bank wire, USDT, Taptap Send)', () => {
     invalidatePlans();
   });
 
+  it('lets an admin switch the billing provider to manual or polar from System settings', async () => {
+    const save = (values) => admin.agent.put('/api/admin/settings').send({ values });
+    expect((await save({ 'billing.provider': 'manual', 'manual.usdt': 'USDT (TRC20): TExampleAddress123' })).status).toBe(200);
+    expect((await save({ 'billing.provider': 'polar' })).status).toBe(200);
+    expect((await save({ 'billing.provider': 'bitcoin' })).status).toBe(400);
+    expect((await save({ 'billing.provider': 'manual' })).status).toBe(200);
+  });
+
   it('shows only the methods that have details and sells every paid plan', async () => {
     const U = await registerUser();
     const plans = await U.agent.get('/api/billing/plans');
