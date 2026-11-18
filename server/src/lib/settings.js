@@ -61,7 +61,7 @@ export const SETTING_DEFS = {
   'usda.marsApiKey': { group: 'integrations', secret: true, default: () => process.env.USDA_MARS_API_KEY || '' },
   'stripe.secretKey': { group: 'billing', secret: true, default: () => config.stripe.secretKey },
   'stripe.webhookSecret': { group: 'billing', secret: true, default: () => config.stripe.webhookSecret },
-  // Who sells the plans: stripe | paddle | polar. Paddle and Polar are merchants of record (they work for sellers Stripe
+  // Who sells the plans: stripe | paddle | polar | manual (paid outside the app, approved by an admin). Paddle and Polar are merchants of record (they work for sellers Stripe
   // does not serve; Polar pays out to Pakistan through Stripe Connect Express).
   'billing.provider': { group: 'billing', default: () => process.env.BILLING_PROVIDER || 'stripe' },
   'paddle.environment': { group: 'billing', default: () => process.env.PADDLE_ENVIRONMENT || 'live' }, // live | sandbox
@@ -72,6 +72,11 @@ export const SETTING_DEFS = {
   'polar.environment': { group: 'billing', default: () => process.env.POLAR_ENVIRONMENT || 'production' }, // production | sandbox
   'polar.accessToken': { group: 'billing', secret: true, default: () => process.env.POLAR_ACCESS_TOKEN || '' },
   'polar.webhookSecret': { group: 'billing', secret: true, default: () => '' },
+  // Manual payment (billing.provider = manual): what the customer sees for each method. Empty = method not offered.
+  'manual.bank': { group: 'billing', default: () => '' },
+  'manual.usdt': { group: 'billing', default: () => '' },
+  'manual.taptapsend': { group: 'billing', default: () => '' },
+  'manual.note': { group: 'billing', default: () => '' },
   // { planKey: productId } for the Polar products made by Admin → Setup → "Set up Polar".
   'polar.products': { group: 'billing', default: () => '' },
 };

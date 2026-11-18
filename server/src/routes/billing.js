@@ -18,6 +18,7 @@ import { billingProvider, paddleConfig, paddleMode } from '../services/paddle.js
 import { paddleCheckout, paddleCancel, paddleResume, paddleChangePlan, paddlePortalUrl, paddleInvoiceUrl } from '../services/billing/paddleBilling.js';
 import { polarConfig, polarMode } from '../services/polar.js';
 import { polarCheckout, polarCancel, polarResume, polarChangePlan, polarPortalUrl } from '../services/billing/polarBilling.js';
+import { manualMethods, manualMode, startManualPayment, submitManualPayment, cancelManualPayment, shapeClaim, MANUAL_METHODS } from '../services/billing/manual.js';
 
 const r = Router();
 // Signature verification is a local HMAC check and needs no real API key.
@@ -49,7 +50,7 @@ export function planFeatures(p) {
 const publicPlan = (p, provider = 'stripe', polarProducts = {}) => ({
   id: p.id, key: p.key, name: p.name, description: p.description, priceCents: p.priceCents, interval: p.interval,
   perSeat: p.perSeat, minSeats: p.minSeats, trialDays: p.trialDays,
-  purchasable: p.key !== 'free' && !!(provider === 'paddle' ? p.paddlePriceId : provider === 'polar' ? polarProducts[p.key] : p.stripePriceId),
+  purchasable: p.key !== 'free' && (provider === 'manual' ? !!p.priceCents : !!(provider === 'paddle' ? p.paddlePriceId : provider === 'polar' ? polarProducts[p.key] : p.stripePriceId)),
   limits: {
     maxCarriers: p.maxCarriers, dailyEmailLimit: p.dailyEmailLimit, monthlyAiMessages: p.monthlyAiMessages, maxSequences: p.maxSequences,
     maxAutomations: p.maxAutomations, maxDiscoveryPerDay: p.maxDiscoveryPerDay,
@@ -64,7 +65,7 @@ const publicPlan = (p, provider = 'stripe', polarProducts = {}) => ({
 /** The active payment provider and whether it can take payments. */
 async function paymentSetup() {
   const provider = await billingProvider();
-  const mode = provider === 'paddle' ? await paddleMode() : provider === 'polar' ? await polarMode() : await stripeMode();
+  const mode = provider === 'paddle' ? await paddleMode() : provider === 'polar' ? await polarMode() : provider === 'manual' ? await manualMode() : await stripeMode();
   const polarProducts = provider === 'polar' ? (await polarConfig()).products : {};
   return { provider, mode, enabled: mode !== 'unconfigured', polarProducts };
 }
@@ -105,6 +106,9 @@ r.get('/me', ah(async (req, res) => {
     paymentSetup(),
   ]);
   const paddle = pay.provider === 'paddle' ? await paddleConfig() : null;
+  // Manual payments: the methods (when manual is the provider) and the user's recent payments to show their status.
+  const claims = await prisma.manualPayment.findMany({ where: { userId: req.user.id, status: { not: 'canceled' } }, include: { plan: true }, orderBy: { createdAt: 'desc' }, take: 5 });
+  const manual = pay.provider === 'manual' || claims.length ? { ...(await manualMethods()), claims: claims.map(shapeClaim) } : null;
   const teamOwned = subscription?.teamId && subscription.userId !== req.user.id;
   res.json({
     plan: publicPlan(plan, pay.provider, pay.polarProducts),
@@ -116,7 +120,8 @@ r.get('/me', ah(async (req, res) => {
       id: subscription.id, status: subscription.status, seats: subscription.seats, planKey: subscription.plan.key,
       currentPeriodEnd: subscription.currentPeriodEnd, trialEndsAt: subscription.trialEndsAt, cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
       managedByTeam: !!teamOwned, isOwner: subscription.userId === req.user.id, hasPortal: !!subscription.stripeCustomerId,
-      granted: !subscription.stripeSubscriptionId && !subscription.stripeCheckoutId,
+      granted: !subscription.stripeSubscriptionId && !subscription.stripeCheckoutId && subscription.provider !== 'manual',
+      manual: subscription.provider === 'manual',
     },
     trial: trial ? { enabled: true, active: trial.active, locked: trial.locked, endsAt: trial.endsAt, daysLeft: trial.daysLeft, planName: trial.planName } : null,
     pendingSubscription: pending && { id: pending.id, status: pending.status, planKey: pending.plan.key, createdAt: pending.createdAt },
@@ -125,7 +130,25 @@ r.get('/me', ah(async (req, res) => {
     payments: payments.map((p) => ({ id: p.id, amountCents: p.amountCents, currency: p.currency, status: p.status, description: p.description, invoiceUrl: p.provider === 'paddle' ? `/api/billing/payments/${p.id}/invoice` : p.invoiceUrl, invoicePdf: p.invoicePdf, periodStart: p.periodStart, periodEnd: p.periodEnd, paidAt: p.paidAt, createdAt: p.createdAt })),
     stripeMode: mode,
     paymentMode: pay.mode,
+    ...(manual ? { manual } : {}),
   });
+}));
+
+/** "I've paid": the customer reports a manual payment with the method and the transaction ID. */
+r.post('/manual/:id/submit', ah(async (req, res) => {
+  const b = parse(z.object({
+    method: z.enum(MANUAL_METHODS.map((m) => m.key)),
+    transactionRef: z.string().trim().min(3).max(200),
+    note: z.string().trim().max(1000).optional(),
+  }), req.body);
+  const row = await submitManualPayment(req.user, req.params.id, b);
+  await audit(req, 'billing.manual_submitted', { entityType: 'manual_payment', entityId: row.id, details: { method: b.method, reference: row.reference } });
+  res.json({ claim: shapeClaim(row) });
+}));
+
+r.delete('/manual/:id', ah(async (req, res) => {
+  await cancelManualPayment(req.user, req.params.id);
+  res.json({ ok: true });
 }));
 
 /** Redeem a code for free plan months (Admin → Codes). */
@@ -171,7 +194,9 @@ r.post('/checkout', ah(async (req, res) => {
   if (!plan || !plan.active) throw notFound('Plan not found');
   if (plan.key === 'free') throw badRequest('The Free plan does not need checkout');
   const { subscription: current } = await effectivePlan(req.user);
-  if (current) throw conflict('You already have an active subscription. Use "Change plan" or manage it in the billing portal.');
+  // A plan paid manually is renewed by paying again (the new period is added to the current end date).
+  const renewingManual = current?.provider === 'manual' && current.userId === req.user.id && (await billingProvider()) === 'manual';
+  if (current && !renewingManual) throw conflict('You already have an active subscription. Use "Change plan" or manage it in the billing portal.');
   let teamId = null;
   let seats = 1;
   if (plan.perSeat) {
@@ -186,6 +211,12 @@ r.post('/checkout', ah(async (req, res) => {
     const out = await paddleCheckout(req.user, plan, { seats, teamId });
     await audit(req, 'billing.checkout_started', { entityType: 'subscription', entityId: out.localSubscriptionId, details: { plan: plan.key, seats, provider: 'paddle' } });
     return res.json({ provider: 'paddle', checkout: out.checkout });
+  }
+  // Manual: the customer gets the amount and a reference to pay with, then reports the payment; an admin approves it.
+  if ((await billingProvider()) === 'manual') {
+    const claim = await startManualPayment(req.user, plan, { seats, teamId });
+    await audit(req, 'billing.manual_started', { entityType: 'manual_payment', entityId: claim.id, details: { plan: plan.key, seats, reference: claim.reference } });
+    return res.json({ provider: 'manual', claim: shapeClaim(claim), ...(await manualMethods()) });
   }
   // Polar: the browser is sent to Polar's hosted checkout; the plan activates from Polar's signed webhook.
   if ((await billingProvider()) === 'polar') {

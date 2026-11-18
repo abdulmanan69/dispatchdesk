@@ -80,6 +80,8 @@ export default function Pricing() {
           <div className="mt-8 grid gap-6 text-sm text-muted sm:grid-cols-2 lg:grid-cols-4">
             <p><span className="font-medium text-fg">Payments.</span> {q.data.provider === 'paddle'
               ? 'Orders are processed by Paddle.com, our online reseller and Merchant of Record. Pay by card or PayPal; we never see or store your card number.'
+              : q.data.provider === 'manual'
+                ? 'Pay by bank wire, USDT or Taptap Send with the reference shown in Billing. Your plan starts when we confirm the payment and does not renew by itself.'
               : q.data.provider === 'polar'
                 ? 'Orders are processed by Polar (polar.sh), our online reseller and Merchant of Record. We never see or store your card number.'
                 : 'Card payments are processed securely by Stripe. We never see or store your card number.'}</p>

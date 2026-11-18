@@ -14,6 +14,7 @@ import { checkOAuthClient, OAUTH_PROVIDERS, redirectUri } from '../services/emai
 import { getStripe } from '../services/stripe.js';
 import { paddleApi, paddleConfig, billingProvider } from '../services/paddle.js';
 import { polarApi, polarConfig } from '../services/polar.js';
+import { approveManualPayment, rejectManualPayment, shapeClaim } from '../services/billing/manual.js';
 import { grantPlan, planPhrase } from '../services/billing/grant.js';
 import { trialSettings, trialState } from '../services/billing/trial.js';
 import { COUPON_KINDS, DISCOUNT_DURATIONS, CODE_RE, normCode, createStripeDiscount, setStripeDiscountActive, stripeRedemptions, findCoupon } from '../services/billing/coupons.js';
@@ -278,6 +279,31 @@ function giftEmailText({ name, phrase, appName, message }) {
     `Open your desk: ${config.appUrl}/app`,
   ].join('\n');
 }
+
+/** Manual payments to check (Admin → Payments): reported ones first, then the rest. */
+r.get('/manual-payments', requirePermission('admin.billing'), ah(async (req, res) => {
+  const { status } = parse(z.object({ status: z.enum(['submitted', 'awaiting', 'approved', 'rejected', 'all']).default('submitted') }), req.query);
+  const rows = await prisma.manualPayment.findMany({
+    where: status === 'all' ? { status: { not: 'canceled' } } : { status },
+    include: { plan: true, user: { select: { id: true, name: true, email: true } } },
+    orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }], take: 200,
+  });
+  const counts = Object.fromEntries((await prisma.manualPayment.groupBy({ by: ['status'], _count: { _all: true } })).map((g) => [g.status, g._count._all]));
+  res.json({ items: rows.map((r) => ({ ...shapeClaim(r), user: r.user })), counts });
+}));
+
+r.post('/manual-payments/:id/approve', requirePermission('admin.billing'), ah(async (req, res) => {
+  const out = await approveManualPayment(req.user.id, req.params.id);
+  await audit(req, 'admin.manual_payment_approved', { entityType: 'manual_payment', entityId: req.params.id, details: { userId: out.claim.userId, plan: out.claim.plan.key, amountCents: out.claim.amountCents, endsAt: out.endsAt } });
+  res.json({ ok: true, endsAt: out.endsAt });
+}));
+
+r.post('/manual-payments/:id/reject', requirePermission('admin.billing'), ah(async (req, res) => {
+  const { reason } = parse(z.object({ reason: z.string().trim().min(3).max(500) }), req.body);
+  const row = await rejectManualPayment(req.user.id, req.params.id, reason);
+  await audit(req, 'admin.manual_payment_rejected', { entityType: 'manual_payment', entityId: row.id, details: { userId: row.userId, reason } });
+  res.json({ ok: true });
+}));
 
 /**
  * Email selected users from the platform address (Admin → Users → select → Email). Replies go to the support email.

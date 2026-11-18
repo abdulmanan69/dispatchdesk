@@ -7,6 +7,7 @@ import AdminUsers from '../../components/admin/Users.jsx';
 import AdminSubscriptions from '../../components/admin/Subscriptions.jsx';
 import AdminPlans from '../../components/admin/Plans.jsx';
 import Coupons from '../../components/admin/Coupons.jsx';
+import ManualPayments from '../../components/admin/ManualPayments.jsx';
 import Moderation from '../../components/admin/Moderation.jsx';
 import SystemSettings from '../../components/admin/SystemSettings.jsx';
 import AuditLog from '../../components/admin/AuditLog.jsx';
@@ -17,6 +18,7 @@ const TABS = [
   { value: 'overview', label: 'Overview', perm: 'admin.access' },
   { value: 'users', label: 'Users', perm: 'admin.users' },
   { value: 'subscriptions', label: 'Subscriptions', perm: 'admin.billing' },
+  { value: 'payments', label: 'Payments', perm: 'admin.billing' },
   { value: 'plans', label: 'Plans', perm: 'admin.billing' },
   { value: 'codes', label: 'Codes', perm: 'admin.billing' },
   { value: 'moderation', label: 'Moderation', perm: 'admin.moderate' },
@@ -39,6 +41,7 @@ export default function Admin() {
       {tab === 'overview' && <Overview onTab={setTab} />}
       {tab === 'users' && <AdminUsers />}
       {tab === 'subscriptions' && <AdminSubscriptions />}
+      {tab === 'payments' && <ManualPayments />}
       {tab === 'plans' && <AdminPlans />}
       {tab === 'codes' && <Coupons />}
       {tab === 'moderation' && <Moderation />}

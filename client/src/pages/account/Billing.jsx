@@ -10,6 +10,7 @@ import { money, date, label } from '../../lib/format.js';
 import { Card, PageHeader, Badge, Button, Loading, ErrorState, EmptyState, DataTable, Input, Textarea, cx } from '../../components/ui.jsx';
 import PlanCard from '../../components/billing/PlanCard.jsx';
 import PlanCelebration from '../../components/billing/PlanCelebration.jsx';
+import ManualPayModal from '../../components/billing/ManualPayModal.jsx';
 import { openPaddleCheckout } from '../../lib/paddle.js';
 import { useToast } from '../../components/Toast.jsx';
 
@@ -112,7 +113,9 @@ export default function Billing() {
   const toast = useToast();
   const go = (r) => { if (r?.url) window.location.assign(r.url); };
   // Stripe and Polar return a page to go to; Paddle returns what its checkout overlay needs.
+  const [manualPay, setManualPay] = useState(null); // { claim, methods, note }
   const onCheckout = (r) => {
+    if (r?.provider === 'manual') return setManualPay({ claim: r.claim, methods: r.methods, note: r.note });
     if (r?.provider !== 'paddle') return go(r);
     openPaddleCheckout(r.checkout).catch((e) => toast.error(e.message));
   };
@@ -137,7 +140,11 @@ export default function Billing() {
   const paddle = d.provider === 'paddle';
   const activated = checkout === 'success' && sub && ['active', 'trialing'].includes(sub.status);
   const trial = d.trial;
-  const providerName = paddle ? 'Paddle' : d.provider === 'polar' ? 'Polar' : 'Stripe';
+  const manualProvider = d.provider === 'manual';
+  const providerName = paddle ? 'Paddle' : d.provider === 'polar' ? 'Polar' : manualProvider ? 'DispatchDesk' : 'Stripe';
+  const claims = d.manual?.claims || [];
+  const openClaim = claims.find((c) => c.status === 'awaiting' || c.status === 'submitted');
+  const lastRejected = claims[0]?.status === 'rejected' ? claims[0] : null;
   const trialOn = !!plans.data?.trial;
   // Monthly Pro subscribers: the yearly plan costs less per month (shown as a small offer under the current plan).
   const annual = (plans.data?.plans || []).find((p) => p.key === 'annual' && p.purchasable);
@@ -150,7 +157,7 @@ export default function Billing() {
     if (sub?.granted) return null; // plan given by an admin: no checkout changes from here
     if (p.key === 'free') return sub && sub.isOwner && !sub.cancelAtPeriodEnd ? <Button variant="secondary" className="w-full" onClick={onCancel}>Downgrade to Free</Button> : null;
     if (!p.purchasable || !payable) return <Button variant="secondary" className="w-full" disabled title="This plan is not available for online checkout yet">Not available yet</Button>;
-    if (sub?.isOwner) {
+    if (sub?.isOwner && !sub.manual) {
       return <Button variant="secondary" className="w-full" loading={change.isPending && change.variables === p.key} onClick={async () => {
         if (await confirm({ title: `Switch to ${p.name}?`, message: `${providerName} charges or credits the difference for the rest of this billing period. Your plan updates once ${providerName} confirms the change.`, confirmLabel: 'Switch plan' })) change.mutate(p.key);
       }}>Switch to {p.name}</Button>;
@@ -158,7 +165,7 @@ export default function Billing() {
     if (sub?.managedByTeam) return null;
     if (p.perSeat && user.team?.role !== 'owner') return <Button variant="secondary" className="w-full" to="/app/team">Create a team first</Button>;
     return <Button className="w-full" loading={startCheckout.isPending && startCheckout.variables === p.key} onClick={() => startCheckout.mutate(p.key)}>
-      {p.trialDays ? `Start ${p.trialDays}-day trial` : `Upgrade to ${p.name}`}
+      {manualProvider ? `Pay for ${p.name}` : p.trialDays ? `Start ${p.trialDays}-day trial` : `Upgrade to ${p.name}`}
     </Button>;
   };
 
@@ -181,9 +188,25 @@ export default function Billing() {
           <button type="button" className="text-xs underline" onClick={() => setParams({})}>Dismiss</button>
         </div>
       )}
+      {openClaim && (
+        <div className={cx('flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 text-sm', openClaim.status === 'submitted' ? 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200' : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200')}>
+          <Info className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1">
+            {openClaim.status === 'submitted'
+              ? <>Payment under review: {money(openClaim.amountCents)} for {openClaim.planName} ({openClaim.reference}). We confirm it usually within one business day.</>
+              : <>Waiting for your payment of {money(openClaim.amountCents)} for {openClaim.planName}. Use reference <span className="font-mono font-medium">{openClaim.reference}</span>, then tell us you paid.</>}
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => setManualPay({ claim: openClaim, methods: d.manual?.methods || [], note: d.manual?.note })}>{openClaim.status === 'submitted' ? 'View' : 'Pay or report payment'}</Button>
+        </div>
+      )}
+      {!openClaim && lastRejected && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          We could not confirm payment {lastRejected.reference} for {lastRejected.planName}: {lastRejected.rejectReason}
+        </div>
+      )}
       {!payable && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-          Online payments are not set up yet. An administrator needs to connect {providerName} before plans can be purchased.
+          {manualProvider ? 'Payment details are not set up yet. An administrator needs to add them before plans can be purchased.' : `Online payments are not set up yet. An administrator needs to connect ${providerName} before plans can be purchased.`}
         </div>
       )}
 
@@ -200,6 +223,7 @@ export default function Billing() {
               <div className="flex justify-between"><dt className="text-muted">{sub.cancelAtPeriodEnd || sub.granted ? 'Ends on' : 'Renews on'}</dt><dd>{sub.currentPeriodEnd ? date(sub.currentPeriodEnd) : 'No end date'}</dd></div>
               {sub.seats > 1 && <div className="flex justify-between"><dt className="text-muted">Seats</dt><dd className="tabular">{sub.seats}</dd></div>}
               {sub.granted && <p className="text-xs text-muted">Given to you by an administrator{sub.currentPeriodEnd ? '' : ' with no end date'}. No payment is taken.</p>}
+              {sub.manual && <p className="text-xs text-muted">Paid manually. It does not renew by itself: pay for the next period before it ends to keep working without a break.</p>}
               {sub.managedByTeam && <p className="text-xs text-muted">Provided by your team. The team owner manages this subscription.</p>}
             </dl>
           ) : trial?.locked ? (
@@ -212,8 +236,9 @@ export default function Billing() {
           )}
           <div className="mt-4 flex flex-wrap gap-2">
             {sub?.isOwner && sub.hasPortal && <Button variant="secondary" size="sm" icon={ExternalLink} loading={portal.isPending} onClick={() => portal.mutate()}>Payment methods & invoices</Button>}
-            {sub?.isOwner && !sub.cancelAtPeriodEnd && <Button variant="ghost" size="sm" className="text-red-600" loading={cancel.isPending} onClick={onCancel}>Cancel subscription</Button>}
-            {sub?.isOwner && sub.cancelAtPeriodEnd && <Button size="sm" loading={resume.isPending} onClick={() => resume.mutate()}>Keep my subscription</Button>}
+            {sub?.isOwner && !sub.manual && !sub.cancelAtPeriodEnd && <Button variant="ghost" size="sm" className="text-red-600" loading={cancel.isPending} onClick={onCancel}>Cancel subscription</Button>}
+            {sub?.isOwner && !sub.manual && sub.cancelAtPeriodEnd && <Button size="sm" loading={resume.isPending} onClick={() => resume.mutate()}>Keep my subscription</Button>}
+            {sub?.isOwner && sub.manual && manualProvider && !openClaim && <Button size="sm" loading={startCheckout.isPending} onClick={() => startCheckout.mutate(d.plan.key)}>Pay for the next period</Button>}
           </div>
           {offerAnnual && (
             <div className="mt-4 rounded-lg border border-brand-600/25 bg-brand-600/5 p-3 text-sm">
@@ -263,7 +288,9 @@ export default function Billing() {
         <p className="mt-3 text-xs text-muted">
           {paddle
             ? <>Payments are processed by Paddle.com, our reseller and merchant of record, which adds sales tax or VAT where it applies{d.paddle?.environment === 'sandbox' ? ' (sandbox: use Paddle test cards)' : ''}. See our <a href="/refunds" className="underline">refund policy</a>.</>
-            : d.provider === 'polar'
+            : manualProvider
+              ? <>Plans are paid manually by {(d.manual?.methods || []).map((m) => m.label).join(', ') || 'bank wire, USDT or Taptap Send'} and start when we confirm the payment. They do not renew by themselves. See our <a href="/refunds" className="underline">refund policy</a>.</>
+              : d.provider === 'polar'
               ? <>Payments are processed by Polar (polar.sh), our reseller and merchant of record, which adds sales tax or VAT where it applies{d.paymentMode === 'sandbox' ? ' (sandbox: use Stripe test cards)' : ''}. See our <a href="/refunds" className="underline">refund policy</a>.</>
               : <>Prices exclude applicable taxes. Payments are processed by Stripe{d.stripeMode === 'test' ? ' (test mode — use Stripe test cards)' : ''}.</>}
         </p>
@@ -294,6 +321,7 @@ export default function Billing() {
           ]}
         />
       </Card>
+      {manualPay && <ManualPayModal claim={manualPay.claim} methods={manualPay.methods || d.manual?.methods || []} note={manualPay.note ?? d.manual?.note} onClose={() => setManualPay(null)} />}
       {canceling && <CancelModal readOnlyAfter={trialOn} loading={cancel.isPending} onClose={() => setCanceling(false)} onConfirm={(body) => cancel.mutate(body)} />}
       {celebrate && <PlanCelebration plan={celebrate.plan} note={celebrate.note} onClose={() => setCelebrate(null)} />}
     </div>

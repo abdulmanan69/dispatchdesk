@@ -230,7 +230,7 @@ export function createApp() {
   /** What the privacy policy, terms and refund policy print: names, contact, and who processes payments. */
   const legalArgs = async () => {
     const s = await getSettings(['app.name', 'app.supportEmail', 'app.legalName', 'billing.provider']);
-    return { appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'], legalName: s['app.legalName'] || '', provider: ['paddle', 'polar'].includes(s['billing.provider']) ? s['billing.provider'] : 'stripe' };
+    return { appName: s['app.name'] || 'DispatchDesk', appUrl: config.appUrl, supportEmail: s['app.supportEmail'], legalName: s['app.legalName'] || '', provider: ['paddle', 'polar', 'manual'].includes(s['billing.provider']) ? s['billing.provider'] : 'stripe' };
   };
   // Privacy policy, terms and refund policy as HTML for the React pages (the same text the server writes into the page for crawlers).
   app.get('/api/public/legal/:doc', async (req, res, next) => {

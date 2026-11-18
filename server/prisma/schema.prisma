@@ -85,6 +85,7 @@ model User {
   subscriptions      Subscription[]
   couponRedemptions  CouponRedemption[]
   payments           Payment[]
+  manualPayments     ManualPayment[]
   carriers           Carrier[]             @relation("CarrierOwner")
   assignedCarriers   Carrier[]             @relation("CarrierAssignee")
   carrierNotes       CarrierNote[]
@@ -264,6 +265,7 @@ model Plan {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   subscriptions       Subscription[]
+  manualPayments      ManualPayment[]
 }
 
 model Subscription {
@@ -1940,4 +1942,34 @@ model CarrierShareDoc {
 
   @@unique([shareId, vaultDocumentId])
   @@index([vaultDocumentId])
+}
+
+/// A plan paid outside the app (bank wire, USDT, Taptap Send): the customer gets a reference, pays, reports it with the
+/// transaction ID, and an admin approves it, which activates the plan for `months` (provider "manual" subscription).
+model ManualPayment {
+  id             String    @id @default(cuid())
+  userId         String
+  teamId         String?
+  planId         Int
+  seats          Int       @default(1)
+  months         Int       @default(1)
+  amountCents    Int
+  currency       String    @default("usd")
+  reference      String    @unique
+  status         String    @default("awaiting") // awaiting | submitted | approved | rejected | canceled
+  method         String? // bank | usdt | taptapsend | other
+  transactionRef String?
+  note           String?
+  submittedAt    DateTime?
+  reviewedAt     DateTime?
+  reviewedById   String?
+  rejectReason   String?
+  paymentId      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan           Plan      @relation(fields: [planId], references: [id])
+
+  @@index([status, submittedAt])
+  @@index([userId, createdAt])
 }

@@ -5,7 +5,7 @@ import { api } from '../../lib/api.js';
 import { useApiMutation } from '../../lib/hooks.js';
 import { useToast } from '../Toast.jsx';
 import { dateTime } from '../../lib/format.js';
-import { Card, QueryState, Badge, Button, Field, Input, Select, Switch, cx } from '../ui.jsx';
+import { Card, QueryState, Badge, Button, Field, Input, Select, Switch, Textarea, cx } from '../ui.jsx';
 import OAuthSetupGuide from './OAuthSetupGuide.jsx';
 import AiUsage from './AiUsage.jsx';
 
@@ -15,7 +15,7 @@ const GROUPS = [
   { key: 'ai', title: 'AI dispatcher & web research', test: ['ai', 'search'] },
   { key: 'email', title: 'Platform email (SMTP or Brevo)', test: ['smtp'], help: 'Used for verification, password reset, team invitations and notifications. Either fill in SMTP (Hostinger: smtp.hostinger.com, port 465, secure on), or paste a Brevo API key and a From address on your authenticated domain.' },
   { key: 'integrations', title: 'Integrations (OAuth & carrier data)', test: ['google', 'microsoft', 'fmcsa'], help: 'Google and Microsoft OAuth apps let users connect Gmail and Outlook mailboxes with one click. FMCSA Census works without a key; a QCMobile webKey adds authority-status lookups. A free EIA API key turns on weekly diesel prices on the Market page.' },
-  { key: 'billing', title: 'Billing (Stripe, Paddle or Polar)', test: ['stripe', 'paddle', 'polar'], help: 'Billing provider picks who sells the plans. Paddle and Polar are merchants of record and pay out to Pakistan (Polar through Stripe Connect Express); Stripe needs a business in a Stripe country.' },
+  { key: 'billing', title: 'Billing (Stripe, Paddle, Polar or manual)', test: ['stripe', 'paddle', 'polar'], help: 'Billing provider picks who sells the plans. Manual: customers pay by bank wire, USDT or Taptap Send with a reference, report it, and you approve it in Admin → Payments; fill in the details of each method you offer. Paddle and Polar are merchants of record; Stripe needs a business in a Stripe country.' },
 ];
 
 const LABELS = {
@@ -32,6 +32,7 @@ const LABELS = {
   'stripe.secretKey': 'Stripe secret key', 'stripe.webhookSecret': 'Stripe webhook signing secret',
   'billing.provider': 'Billing provider', 'paddle.environment': 'Paddle environment', 'paddle.apiKey': 'Paddle API key',
   'paddle.clientToken': 'Paddle client-side token', 'paddle.webhookSecret': 'Paddle webhook secret (Set up Paddle saves it)',
+  'manual.bank': 'Manual: bank wire details (bank, account name, IBAN, SWIFT)', 'manual.usdt': 'Manual: USDT wallet address and network', 'manual.taptapsend': 'Manual: Taptap Send details (receiver name, number or account)', 'manual.note': 'Manual: note shown under the payment details (optional)',
   'polar.environment': 'Polar environment', 'polar.accessToken': 'Polar organization access token', 'polar.webhookSecret': 'Polar webhook secret (Set up Polar saves it)', 'polar.products': 'Polar products (Set up Polar saves them)',
   'app.legalName': 'Legal name (business or owner, shown in the terms)',
 };
@@ -60,7 +61,10 @@ function SettingInput({ s, value, onChange, id }) {
     return <Select id={id} value={value || 'openai'} onChange={(e) => onChange(e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Claude by Anthropic</option></Select>;
   }
   if (s.key === 'billing.provider') {
-    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option></Select>;
+    return <Select id={id} value={value || 'stripe'} onChange={(e) => onChange(e.target.value)}><option value="stripe">Stripe</option><option value="paddle">Paddle (merchant of record)</option><option value="polar">Polar (merchant of record)</option><option value="manual">Manual (bank wire, USDT, Taptap Send; you approve)</option></Select>;
+  }
+  if (['manual.bank', 'manual.usdt', 'manual.taptapsend', 'manual.note'].includes(s.key)) {
+    return <Textarea id={id} rows={3} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={s.key === 'manual.note' ? 'For example: payments are checked Monday to Friday.' : 'Leave empty to not offer this method'} />;
   }
   if (s.key === 'polar.environment') {
     return <Select id={id} value={value || 'production'} onChange={(e) => onChange(e.target.value)}><option value="production">Production</option><option value="sandbox">Sandbox (test)</option></Select>;
