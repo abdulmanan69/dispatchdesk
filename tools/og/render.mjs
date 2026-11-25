@@ -104,7 +104,7 @@ const images = {
     ${text(['The CRM and dispatch desk for truck', 'dispatchers. Free plan, no card needed.'], 64, 418, { size: 25, weight: 400, color: FG2, lh: 1.35 })}
     ${chips(64, 492, [['Lead generator', '#3b82f6'], ['Google Voice dialer', '#22c55e'], ['Fleet map', '#f59e0b'], ['Sequences', '#a855f7']], 560)}
     <g>${usMap({ x: 640, y: 110, w: 520, h: 360, route: ROUTE })}</g>
-    <text x="1136" y="586" font-size="20" font-family="IBM Plex Mono" font-weight="500" fill="${MUTED}" text-anchor="end">dispatchdesk.work.gd</text>
+    <text x="1136" y="586" font-size="20" font-family="IBM Plex Mono" font-weight="500" fill="${MUTED}" text-anchor="end">dispatchdeskcrm.com</text>
   `),
   'og/og-track.png': frame(`
     ${logo(64, 58, 52)}
