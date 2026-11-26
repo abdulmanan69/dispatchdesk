@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { FEATURE_PAGES, breadcrumbsFor } from '../content/featurePages.js';
 
 /**
  * Server-side SEO for the single-page app: per-route <title>, description, canonical URL, Open Graph and
@@ -7,13 +8,14 @@ import { config } from '../config.js';
  * Private areas (/app, driver links, invites, auth tokens) are marked noindex.
  */
 const SITE = 'DispatchDesk';
-const DEFAULT_DESC = 'The CRM and dispatch desk for truck dispatchers: generate carrier leads from the FMCSA census, call with Google Voice or your phone service, run sequences and follow-ups, and plan every truck’s next trip on a live map. Free plan, no card needed.';
+const DEFAULT_DESC = 'The CRM and dispatch desk for truck dispatchers: generate carrier leads from the FMCSA census, call with Google Voice or your phone service, run sequences and follow-ups, and plan every truck’s next trip on a live map. 14-day free trial, no card needed.';
 const IMG = { default: '/og/og-default.png', track: '/og/og-track.png', load: '/og/og-load.png', invite: '/og/og-invite.png' };
 
 const PAGES = [
   { match: /^\/$/, title: `${SITE} · CRM and dispatch desk for truck dispatchers`, description: DEFAULT_DESC, sitemap: { path: '/', priority: '1.0' }, home: true },
   { match: /^\/features\/?$/, title: `Features · ${SITE}`, description: 'Lead generator from FMCSA data, power dialer with Google Voice and 8x8, sequences with call, email and text steps, follow-ups, fleet map with live driver links, market data and a Chrome extension.', sitemap: { path: '/features', priority: '0.9' } },
-  { match: /^\/pricing\/?$/, title: `Pricing · ${SITE}`, description: 'Start free and keep it as long as you like. Upgrade for more generated leads, scheduled lead runs, higher email limits, automations and team features.', sitemap: { path: '/pricing', priority: '0.9' } },
+  ...FEATURE_PAGES.map((f) => ({ match: new RegExp(`^/features/${f.slug}/?$`), title: `${f.seoTitle} · ${SITE}`, description: f.description, sitemap: { path: `/features/${f.slug}`, priority: '0.8' } })),
+  { match: /^\/pricing\/?$/, title: `Pricing · ${SITE}`, description: 'Try every Pro feature free for 14 days, no card needed. Then choose a plan for higher limits, scheduled lead generation, the advanced AI dispatcher or a team.', sitemap: { path: '/pricing', priority: '0.9' } },
   { match: /^\/training\/?$/, title: `Dispatch training · ${SITE}`, description: 'Practical courses for new and growing truck dispatchers: finding carriers, booking loads, negotiating rates and running the desk.', sitemap: { path: '/training', priority: '0.7' } },
   { match: /^\/marketplace\/?$/, title: `Marketplace · ${SITE}`, description: 'Services, trucks and dispatch offers listed by the DispatchDesk community.', sitemap: { path: '/marketplace', priority: '0.6' } },
   { match: /^\/marketplace\/.+/, title: `Marketplace listing · ${SITE}`, description: 'A listing on the DispatchDesk marketplace.' },
@@ -21,7 +23,7 @@ const PAGES = [
   { match: /^\/community\/.+/, title: `Community post · ${SITE}`, description: 'A discussion in the DispatchDesk dispatcher community.' },
   { match: /^\/u\/.+/, title: `Dispatcher profile · ${SITE}`, description: 'A dispatcher on DispatchDesk.', noindex: true },
   { match: /^\/login\/?$/, title: `Log in · ${SITE}`, description: 'Log in to your DispatchDesk account.' },
-  { match: /^\/register\/?$/, title: `Create your free account · ${SITE}`, description: 'Create a free DispatchDesk account. No card needed.', sitemap: { path: '/register', priority: '0.8' } },
+  { match: /^\/register\/?$/, title: `Create your account · ${SITE}`, description: 'Create a DispatchDesk account and try every Pro feature free for 14 days. No card needed.', sitemap: { path: '/register', priority: '0.8' } },
   { match: /^\/terms\/?$/, title: `Terms of service · ${SITE}`, description: 'The terms for using DispatchDesk.', sitemap: { path: '/terms', priority: '0.2' } },
   { match: /^\/privacy\/?$/, title: `Privacy policy · ${SITE}`, description: 'How DispatchDesk handles your data.', sitemap: { path: '/privacy', priority: '0.2' } },
   { match: /^\/refunds\/?$/, title: `Refund policy · ${SITE}`, description: 'When and how DispatchDesk refunds plan payments.', sitemap: { path: '/refunds', priority: '0.2' } },
@@ -43,22 +45,40 @@ export function metaFor(pathname) {
   return { image: IMG.default, ...page };
 }
 
-function jsonLd() {
-  const data = [
-    {
-      '@context': 'https://schema.org',
-      '@type': 'SoftwareApplication',
-      name: SITE,
-      applicationCategory: 'BusinessApplication',
-      operatingSystem: 'Web, Chrome',
-      url: `${config.appUrl}/`,
-      description: DEFAULT_DESC,
-      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', description: 'Free plan' },
-    },
-    { '@context': 'https://schema.org', '@type': 'Organization', name: SITE, url: `${config.appUrl}/`, logo: `${config.appUrl}/icons/icon-512.png` },
-  ];
-  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, '\\u003c')}</script>`;
+const abs = (p) => `${config.appUrl}${p === '/' ? '/' : p}`;
+
+/**
+ * schema.org data. Home page: WebSite (the site name Google shows next to results), the app and the organization.
+ * Other public pages: a BreadcrumbList, which Google shows as "dispatchdeskcrm.com › Features › Power dialer".
+ */
+export function structuredData(pathname, m) {
+  if (m.noindex) return [];
+  if (m.home) {
+    return [
+      { '@context': 'https://schema.org', '@type': 'WebSite', name: SITE, url: abs('/') },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: SITE,
+        applicationCategory: 'BusinessApplication',
+        operatingSystem: 'Web, Chrome',
+        url: abs('/'),
+        description: DEFAULT_DESC,
+        offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', description: '14-day free trial, no card needed' },
+      },
+      { '@context': 'https://schema.org', '@type': 'Organization', name: SITE, url: abs('/'), logo: abs('/icons/icon-512.png') },
+    ];
+  }
+  const crumbs = breadcrumbsFor(pathname);
+  if (!crumbs) return [];
+  return [{
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: crumbs.map((c, i) => ({ '@type': 'ListItem', position: i + 1, name: c.name, item: abs(c.path) })),
+  }];
 }
+
+const ldTag = (data) => `<script type="application/ld+json">${JSON.stringify(data.length === 1 ? data[0] : data).replace(/</g, '\\u003c')}</script>`;
 
 /** The <head> block for one request path. */
 export function headTags(pathname) {
@@ -85,7 +105,8 @@ export function headTags(pathname) {
     `<meta name="twitter:description" content="${escAttr(m.description)}" />`,
     `<meta name="twitter:image" content="${escAttr(img)}" />`,
   ];
-  if (m.home) tags.push(jsonLd());
+  const ld = structuredData(pathname, m);
+  if (ld.length) tags.push(ldTag(ld));
   return { html: tags.join('\n    '), status: m.status || 200 };
 }
 

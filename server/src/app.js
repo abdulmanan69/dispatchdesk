@@ -3,6 +3,8 @@ import helmet from 'helmet';
 import compression from 'compression';
 import { renderIndex, robotsTxt, sitemapXml, webManifest } from './lib/seo.js';
 import { LEGAL_DOCS, homeHtml } from './content/legal.js';
+import { featuresHtml, featurePageHtml } from './content/featureHtml.js';
+import { FEATURE_PAGES } from './content/featurePages.js';
 import { getSettings } from './lib/settings.js';
 import { siteFeatures } from './lib/siteFeatures.js';
 import cookieParser from 'cookie-parser';
@@ -322,7 +324,8 @@ export function createApp() {
     // Every other path gets index.html with that page's title, description and link-preview tags.
     // The home page, privacy policy and terms also carry their text in the HTML, for crawlers and reviewers (for example
     // Google's OAuth verification) that do not run JavaScript. React replaces it when the app starts.
-    const SSR = { '/': homeHtml, '/privacy': LEGAL_DOCS.privacy, '/terms': LEGAL_DOCS.terms, '/refunds': LEGAL_DOCS.refunds };
+    const SSR = { '/': homeHtml, '/privacy': LEGAL_DOCS.privacy, '/terms': LEGAL_DOCS.terms, '/refunds': LEGAL_DOCS.refunds, '/features': featuresHtml };
+    for (const f of FEATURE_PAGES) SSR[`/features/${f.slug}`] = (args) => featurePageHtml(f.slug, args);
     app.get('*', async (req, res, next) => {
       try {
         const template = loadIndex();

@@ -24,18 +24,20 @@
 
 /* Graphite neutrals: surfaces stay grey so carriers, figures and charts carry the color.
    Three text roles: fg (primary), fg-2 (secondary), muted (meta). */
+/* Light theme is tuned for crisp edges: white cards on a slightly darker page, hairlines that read at 1px,
+   and secondary text dark enough to stay sharp on low-DPI screens. */
 :root {
-  --bg: #fafafa;
+  --bg: #f4f4f5;
   --surface: #ffffff;
-  --surface-2: #f4f4f5;
-  --sidebar: #f4f4f5;
-  --fg: #0a0a0a;
-  --fg-2: #3f3f46;
-  --muted: #63636b;
-  --line: color-mix(in srgb, #171717 9%, transparent);
-  --line-strong: color-mix(in srgb, #171717 16%, transparent);
-  --ring: #149c8e;
-  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.05);
+  --surface-2: #eeeef0;
+  --sidebar: #efeff1;
+  --fg: #09090b;
+  --fg-2: #2f2f35;
+  --muted: #55555d;
+  --line: color-mix(in srgb, #18181b 14%, transparent);
+  --line-strong: color-mix(in srgb, #18181b 24%, transparent);
+  --ring: #0f7d73;
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.09);
   /* Categorical palette: each hue carries a meaning (nav group, stage, series, type). */
   --c-blue: #2563eb;   --c-blue-soft: #dbeafe;
   --c-green: #16a34a;  --c-green-soft: #dcfce7;
@@ -45,7 +47,7 @@
   --c-teal: #0d9488;   --c-teal-soft: #ccfbf1;
   --c-pink: #db2777;   --c-pink-soft: #fce7f3;
   --c-orange: #ea580c; --c-orange-soft: #ffedd5;
-  --c-gray: #52525b;   --c-gray-soft: #f4f4f5;
+  --c-gray: #52525b;   --c-gray-soft: #ebebee;
   --scroll-thumb: color-mix(in srgb, #171717 22%, transparent);
   --scroll-thumb-hover: color-mix(in srgb, #171717 38%, transparent);
   color-scheme: light;
@@ -101,9 +103,11 @@
 
 html, body, #root { height: 100%; }
 body {
-  @apply bg-bg text-fg font-sans antialiased;
+  @apply bg-bg text-fg font-sans;
   font-feature-settings: "tnum" 0;
 }
+/* Grayscale smoothing only for light-on-dark text; dark-on-light text keeps the sharper default rendering. */
+.dark body { @apply antialiased; }
 .tabular { font-variant-numeric: tabular-nums; }
 
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }

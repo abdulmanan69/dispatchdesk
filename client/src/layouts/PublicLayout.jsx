@@ -7,6 +7,8 @@ import { applyTheme } from '../context/theme.js';
 import { Button, cx } from '../components/ui.jsx';
 import { Logo } from '../components/Logo.jsx';
 import AnnouncementBar from '../components/announcement/AnnouncementBar.jsx';
+import Breadcrumbs from '../components/Breadcrumbs.jsx';
+import { AREAS, breadcrumbsFor } from '../pages/public/featureIcons.js';
 
 const NAV = [
   { to: '/features', label: 'Product' },
@@ -17,7 +19,7 @@ const NAV = [
 ];
 
 const FOOTER = [
-  { title: 'Product', links: [['/features#leads', 'Lead generator'], ['/features#calling', 'Power dialer'], ['/features#sequences', 'Sequences'], ['/features#fleet', 'Fleet map'], ['/features#extension', 'Chrome extension'], ['/pricing', 'Pricing']] },
+  { title: 'Product', links: [['/features/lead-generator', 'Lead generator'], ['/features/carrier-check', 'Carrier check'], ['/features/power-dialer', 'Power dialer'], ['/features/sequences', 'Sequences'], ['/features/fleet-map', 'Fleet map'], ['/features/invoices', 'Invoices'], ['/features/chrome-extension', 'Chrome extension'], ['/features', 'All features'], ['/pricing', 'Pricing']] },
   { title: 'Learn', links: [['/training', 'Training'], ['/community', 'Community'], ['/marketplace', 'Marketplace']] },
   { title: 'Company', links: [['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds'], ['/login', 'Log in'], ['/register', 'Create account']] },
 ];
@@ -57,7 +59,8 @@ export default function PublicLayout() {
   useEffect(() => {
     const T = { '/': 'DispatchDesk · CRM and dispatch desk for truck dispatchers', '/features': 'Features · DispatchDesk', '/pricing': 'Pricing · DispatchDesk',
       '/training': 'Dispatch training · DispatchDesk', '/marketplace': 'Marketplace · DispatchDesk', '/community': 'Community · DispatchDesk',
-      '/login': 'Log in · DispatchDesk', '/register': 'Create your free account · DispatchDesk', '/terms': 'Terms of service · DispatchDesk', '/privacy': 'Privacy policy · DispatchDesk', '/refunds': 'Refund policy · DispatchDesk' };
+      '/login': 'Log in · DispatchDesk', '/register': 'Create your account · DispatchDesk', '/terms': 'Terms of service · DispatchDesk', '/privacy': 'Privacy policy · DispatchDesk', '/refunds': 'Refund policy · DispatchDesk' };
+    for (const a of AREAS) T[`/features/${a.slug}`] = `${a.seoTitle} · DispatchDesk`;
     const key = pathname.replace(/\/$/, '') || '/';
     if (T[key]) document.title = T[key];
   }, [pathname]);
@@ -106,7 +109,10 @@ export default function PublicLayout() {
           </nav>
         )}
       </header>
-      <main id="main" className="flex-1"><Outlet /></main>
+      <main id="main" className="flex-1">
+        <Breadcrumbs trail={breadcrumbsFor(pathname)} className="mx-auto max-w-6xl px-4 pt-4 sm:px-6" />
+        <Outlet />
+      </main>
       <footer className="border-t border-line bg-surface">
         <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
           <div>

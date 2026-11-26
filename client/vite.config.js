@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -12,6 +12,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: { '/api': { target: 'http://localhost:3000', changeOrigin: false } },
+    // The product-area text is shared with the server (one file, no imports); the dev server may serve only that file.
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), '../server/src/content/featurePages.js'] },
   },
   build: {
     outDir: 'dist',

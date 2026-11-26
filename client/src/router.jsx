@@ -28,6 +28,7 @@ export const router = createBrowserRouter([
       children: [
         { path: '/', lazy: page(() => import('./pages/public/Home.jsx')) },
         { path: '/features', lazy: page(() => import('./pages/public/Features.jsx')) },
+        { path: '/features/:slug', lazy: page(() => import('./pages/public/FeaturePage.jsx')) },
         { path: '/pricing', lazy: page(() => import('./pages/public/Pricing.jsx')) },
         { path: '/training', lazy: page(() => import('./pages/training/PublicTraining.jsx'), feature('trainingProgram', '/features')) },
         { path: '/marketplace', lazy: page(() => import('./pages/marketplace/MarketplaceBrowse.jsx'), feature('marketplace', '/')) },

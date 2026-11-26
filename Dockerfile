@@ -11,6 +11,8 @@ WORKDIR /build/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY client/ ./
+# Product-area text shared with the server (imported as ../server/src/content/featurePages.js).
+COPY server/src/content/featurePages.js /build/server/src/content/featurePages.js
 RUN npm run build
 
 # ---- 2. Install server dependencies (native better-sqlite3) --------------

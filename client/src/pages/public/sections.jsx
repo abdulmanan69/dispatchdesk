@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   Crosshair, PhoneCall, PhoneOutgoing, ListOrdered, CalendarClock, MapPinned, Map as MapIcon, Puzzle, Bot, Mail, Users,
-  ArrowRight, Check, ChevronDown, Truck, MessageSquare, Clock, Route, CloudSun,
+  ArrowRight, Check, ChevronDown, Truck, MessageSquare, Route, CloudSun,
 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { Button, cx } from '../../components/ui.jsx';
@@ -17,11 +17,11 @@ export function Chip({ icon: Icon, hue = 'teal', size = 'md' }) {
   return <span className={cx('inline-flex shrink-0 items-center justify-center', s, `bg-c-${hue}-soft text-c-${hue}`)}><Icon strokeWidth={1.9} aria-hidden /></span>;
 }
 
-export function SectionHead({ eyebrow, hue = 'teal', title, sub, center }) {
+export function SectionHead({ as: H = 'h2', eyebrow, hue = 'teal', title, sub, center }) {
   return (
     <div className={cx('max-w-2xl', center && 'mx-auto text-center')}>
       {eyebrow && <p className={cx('mb-3 text-[13px] font-semibold', `text-c-${hue}`)}>{eyebrow}</p>}
-      <h2 className="text-[30px] font-semibold leading-tight tracking-[-0.02em] text-fg sm:text-[38px]">{title}</h2>
+      <H className="text-[30px] font-semibold leading-tight tracking-[-0.02em] text-fg sm:text-[38px]">{title}</H>
       {sub && <p className="mt-3 text-[17px] leading-7 text-fg-2">{sub}</p>}
     </div>
   );
@@ -38,7 +38,8 @@ const QUEUE = [
   { name: 'Saguarine Flatbed Inc', meta: 'MC 000000 · Mesa, AZ · 7 trucks', tz: 'America/Phoenix', step: 'Rate talk', hue: 'purple', stage: 'Opportunity' },
   { name: 'Larchwick Hauling', meta: 'MC 000000 · Missoula, MT · 1 truck', tz: 'America/Denver', step: 'First call', hue: 'green', stage: 'New lead' },
 ];
-const OUTCOMES = [['1', 'No answer', 'gray'], ['2', 'Voicemail', 'blue'], ['3', 'Interested', 'green'], ['4', 'Call back', 'amber'], ['5', 'Not interested', 'red'], ['6', 'Signed', 'teal']];
+// The dialer's real outcome hotkeys (components/calling/outcomes.js), first eight.
+const KEYPAD = [['1', 'No answer'], ['2', 'Busy'], ['3', 'Voicemail'], ['4', 'Interested'], ['5', 'Not interested'], ['6', 'Call back'], ['7', 'Follow up'], ['8', 'Converted']];
 
 function useNow(ms = 30000) {
   const [now, setNow] = useState(() => new Date());
@@ -46,70 +47,84 @@ function useNow(ms = 30000) {
   return now;
 }
 
-function WindowChrome({ title, children, className }) {
+function WindowChrome({ title, right, children, className }) {
   return (
     <div className={cx('overflow-hidden rounded-2xl border border-line bg-surface shadow-[0_24px_60px_-20px_rgba(0,0,0,0.35)]', className)}>
       <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-2.5">
         <span className="size-2.5 rounded-full bg-[#ff5f57]" /><span className="size-2.5 rounded-full bg-[#febc2e]" /><span className="size-2.5 rounded-full bg-[#28c840]" />
-        <span className="ml-3 truncate text-xs text-muted">{title}</span>
+        <span className="ml-3 min-w-0 flex-1 truncate text-xs text-muted">{title}</span>
+        {right}
       </div>
       {children}
     </div>
   );
 }
 
+const Kbd = ({ children, className }) => <kbd className={cx('inline-flex min-w-[18px] items-center justify-center rounded border border-line bg-surface px-1 font-mono text-[10px] leading-4 text-fg-2 shadow-[0_1px_0_var(--line)]', className)}>{children}</kbd>;
+
+/** Hero product preview: one live call in the power dialer (example data; the carriers are fictional). */
 export function HeroPreview() {
-  const now = useNow();
+  const now = useNow(1000);
+  const [start] = useState(() => Date.now() - 42_000);
+  const secs = Math.max(0, Math.floor((now.getTime() - start) / 1000));
+  const timer = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  const active = QUEUE[0];
+  const next = QUEUE[1];
   return (
-    <WindowChrome title="dispatchdesk · Power dialer" className="pub-float">
-      <div className="grid md:grid-cols-[1.25fr_1fr]">
-        <div className="border-b border-line md:border-b-0 md:border-r">
-          <div className="flex items-center justify-between px-4 py-3">
-            <span className="flex items-center gap-2 text-sm font-semibold"><Chip icon={PhoneCall} hue="blue" size="sm" />Today's call queue</span>
-            <span className="rounded-full bg-c-red-soft px-2 py-0.5 text-[11px] font-semibold text-c-red">1 overdue</span>
+    <WindowChrome
+      title="Power dialer · Sequence: New authority, small fleets"
+      right={<span className="hidden shrink-0 items-center gap-2 text-[11px] text-muted sm:flex">Call 3 of 24<span className="h-1 w-14 overflow-hidden rounded-full bg-line"><span className="block h-full w-[12.5%] rounded-full bg-brand-600" /></span></span>}
+      className="pub-float"
+    >
+      <div className="@container p-5">
+        <div className="flex items-start gap-3.5">
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-c-blue-soft text-[15px] font-semibold text-c-blue" aria-hidden>FT</span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[17px] font-semibold tracking-[-0.01em] text-fg">{active.name}</p>
+            <p className="mt-0.5 truncate font-mono text-[12px] text-muted">{active.meta}</p>
           </div>
-          <ul className="divide-y divide-line">
-            {QUEUE.map((c, i) => (
-              <li key={c.name} className={cx('flex items-center gap-3 px-4 py-2.5', i === 0 && 'bg-c-blue-soft/50')}>
-                <span className={cx('h-8 w-1 shrink-0 rounded-full', `bg-c-${c.hue}`)} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-semibold text-fg">{c.name}</p>
-                  <p className="truncate font-mono text-[11px] text-muted">{c.meta}</p>
-                </div>
-                <div className="hidden shrink-0 text-right sm:block">
-                  <p className="font-mono text-[11px] text-fg-2">{localTime(c.tz, now)}</p>
-                  <p className={cx('text-[11px] font-medium', `text-c-${c.hue}`)}>{c.step}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <div className="flex items-end justify-between gap-4 border-t border-line bg-bg/60 px-4 py-3">
-            <div className="min-w-0">
-              <p className="truncate text-[11px] text-muted">Rate check · Dallas, TX to Atlanta, GA · dry van</p>
-              <p className="mt-0.5 font-mono text-xs text-fg-2">$2,200 ÷ 781 loaded mi</p>
-            </div>
-            <p className="shrink-0 text-right"><span className="block text-2xl font-semibold leading-none text-c-teal tabular">$2.82</span><span className="font-mono text-[10px] text-muted">per loaded mile</span></p>
+          <div className="hidden shrink-0 text-right sm:block">
+            <p className="font-mono text-[15px] font-medium tabular text-fg">{localTime(active.tz, now)}</p>
+            <p className="text-[11px] text-muted">their local time</p>
           </div>
         </div>
-        <div className="space-y-3 p-4">
-          <div className="rounded-xl border border-line bg-bg p-3">
-            <p className="text-[11px] font-medium text-muted">Calling with</p>
-            <p className="mt-0.5 flex items-center gap-2 text-sm font-semibold"><span className="size-2 rounded-full bg-c-green" />Google Voice</p>
-            <p className="mt-2 font-mono text-lg text-fg tabular">(318) 555-0142</p>
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-muted"><Clock className="size-3.5" />{localTime('America/Chicago', now)} in Shreveport · good time to call</div>
-          </div>
-          <div>
-            <p className="mb-1.5 text-[11px] font-medium text-muted">Disposition</p>
-            <div className="grid grid-cols-2 gap-1.5">
-              {OUTCOMES.map(([k, l, h]) => (
-                <span key={k} className={cx('flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11px] font-medium', `border-c-${h}/30 bg-c-${h}-soft text-c-${h}`)}>
-                  <kbd className="rounded bg-surface px-1 font-mono text-[10px] text-fg-2">{k}</kbd>{l}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 rounded-lg bg-c-purple-soft px-3 py-2 text-[11px] font-medium text-c-purple"><Mail className="size-3.5" />Next: email step · template "Intro + rate sheet"</div>
+        <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-medium sm:pl-[58px]">
+          <span className="rounded-full bg-c-green-soft px-2 py-0.5 text-c-green">Lead score 86 · A</span>
+          <span className="rounded-full bg-c-purple-soft px-2 py-0.5 text-c-purple">Step 2 of 4 · call</span>
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-fg-2">Dry van</span>
         </div>
+
+        <div className="mt-5 flex items-center gap-3 rounded-xl border border-line bg-surface-2/60 p-3.5">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-c-green text-surface"><PhoneCall className="size-[18px]" strokeWidth={2} aria-hidden /></span>
+          <div className="min-w-0 flex-1">
+            <p className="whitespace-nowrap font-mono text-[17px] font-medium tabular text-fg">(318) 555-0142</p>
+            <p className="mt-0.5 flex items-center gap-1.5 whitespace-nowrap text-[12px] text-fg-2"><span className="size-1.5 rounded-full bg-c-green" />Google Voice · on call <span className="font-mono tabular">{timer}</span></p>
+          </div>
+          <span className="hidden shrink-0 items-center gap-1 text-[11px] text-muted sm:flex"><Kbd>C</Kbd>call<Kbd className="ml-1.5">S</Kbd>skip</span>
+        </div>
+
+        <p className="mt-5 text-[12px] font-medium text-fg-2">Log the outcome</p>
+        <div className="mt-2 grid grid-cols-2 gap-1.5 @[480px]:grid-cols-4">
+          {KEYPAD.map(([k, label]) => {
+            const on = k === '4';
+            return (
+              <span key={k} className={cx('flex min-w-0 items-center gap-1.5 rounded-lg border px-1.5 py-1.5', on ? 'border-c-green bg-c-green-soft' : 'border-line bg-surface')}>
+                <Kbd className={on ? '!border-c-green !bg-c-green !text-surface' : ''}>{k}</Kbd>
+                <span className={cx('truncate text-[11px] font-medium', on ? 'text-c-green' : 'text-fg-2')}>{label}</span>
+              </span>
+            );
+          })}
+        </div>
+        <p className="mt-2.5 flex items-start gap-1.5 text-[12px] leading-5 text-fg-2"><Check className="mt-0.5 size-3.5 shrink-0 text-c-green" aria-hidden />Interested moves the carrier to Opportunities and ends its sequences.</p>
+      </div>
+
+      <div className="flex items-center gap-3 border-t border-line bg-surface-2/50 px-5 py-3">
+        <span className={cx('h-8 w-1 shrink-0 rounded-full', `bg-c-${next.hue}`)} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] text-muted">Up next · {next.step.toLowerCase()}</p>
+          <p className="truncate text-[13px] font-medium text-fg">{next.name} <span className="hidden font-mono font-normal text-fg-2 sm:inline">· {localTime(next.tz, now)}</span></p>
+        </div>
+        <span className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-[12px] font-medium text-white">Save and next<span className="hidden font-mono text-[10px] text-white/75 sm:inline">Ctrl ↵</span></span>
       </div>
     </WindowChrome>
   );
@@ -150,16 +165,16 @@ export function WorkflowStrip() {
 /* ------------------------------------------------------------------ */
 
 export const FEATURES = [
-  { icon: Crosshair, hue: 'blue', title: 'Lead generator', text: 'Saved FMCSA Census searches that add fresh, scored carriers to your CRM, by hand or on a schedule.', to: '/features#leads' },
-  { icon: PhoneOutgoing, hue: 'green', title: 'Power dialer', text: 'Work the queue with click-to-call through your own phone provider, scripts and 1–8 outcome keys.', to: '/features#calling' },
-  { icon: ListOrdered, hue: 'purple', title: 'Sequences', text: 'Call, email and text steps on a schedule. Emails send from your mailbox; texts wait for you.', to: '/features#sequences' },
-  { icon: CalendarClock, hue: 'pink', title: 'Follow-ups', text: 'Overdue, today and upcoming in one place, with priorities, repeats, reminders and snooze.', to: '/features#followups' },
-  { icon: MapPinned, hue: 'amber', title: 'Fleet map', text: 'Every truck on a live street map. Plan the next trip with road miles, deadhead, fuel and weather.', to: '/features#fleet' },
-  { icon: MapIcon, hue: 'teal', title: 'Market map', text: 'States by time zone, active carriers per state, diesel by region and a trip fuel calculator.', to: '/features#market' },
-  { icon: Puzzle, hue: 'orange', title: 'Chrome extension', text: 'Dialer and Google Voice side by side, a side panel for dispositions, and lookups from any page.', to: '/features#extension' },
-  { icon: Mail, hue: 'blue', title: 'Your own mailbox', text: 'Connect Google, Microsoft or any SMTP mailbox. Templates, scheduling, limits and opt-outs.', to: '/features#email' },
-  { icon: Bot, hue: 'purple', title: 'AI dispatcher', text: 'Drafts broker emails, scripts and objection replies from your own documents. It never invents rates.', to: '/features#ai' },
-  { icon: Users, hue: 'green', title: 'Teams', text: 'Sales and dispatcher roles, signed carriers handed to dispatch, and one team CRM the manager oversees.', to: '/features#teams' },
+  { icon: Crosshair, hue: 'blue', title: 'Lead generator', text: 'Saved FMCSA Census searches that add fresh, scored carriers to your CRM, by hand or on a schedule.', to: '/features/lead-generator' },
+  { icon: PhoneOutgoing, hue: 'green', title: 'Power dialer', text: 'Work the queue with click-to-call through your own phone provider, scripts and 1–8 outcome keys.', to: '/features/power-dialer' },
+  { icon: ListOrdered, hue: 'purple', title: 'Sequences', text: 'Call, email and text steps on a schedule. Emails send from your mailbox; texts wait for you.', to: '/features/sequences' },
+  { icon: CalendarClock, hue: 'pink', title: 'Follow-ups', text: 'Overdue, today and upcoming in one place, with priorities, repeats, reminders and snooze.', to: '/features/follow-ups' },
+  { icon: MapPinned, hue: 'amber', title: 'Fleet map', text: 'Every truck on a live street map. Plan the next trip with road miles, deadhead, fuel and weather.', to: '/features/fleet-map' },
+  { icon: MapIcon, hue: 'teal', title: 'Market map', text: 'States by time zone, active carriers per state, diesel by region and a trip fuel calculator.', to: '/features/market-map' },
+  { icon: Puzzle, hue: 'orange', title: 'Chrome extension', text: 'Dialer and Google Voice side by side, a side panel for dispositions, and lookups from any page.', to: '/features/chrome-extension' },
+  { icon: Mail, hue: 'blue', title: 'Your own mailbox', text: 'Connect Google, Microsoft or any SMTP mailbox. Templates, scheduling, limits and opt-outs.', to: '/features/email' },
+  { icon: Bot, hue: 'purple', title: 'AI dispatcher', text: 'Drafts broker emails, scripts and objection replies from your own documents. It never invents rates.', to: '/features/ai-dispatcher' },
+  { icon: Users, hue: 'green', title: 'Teams', text: 'Sales and dispatcher roles, signed carriers handed to dispatch, and one team CRM the manager oversees.', to: '/features/teams' },
 ];
 
 export function FeatureGrid() {
